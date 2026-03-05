@@ -59,7 +59,7 @@ WPA
 chmod 600 "\${WPA_CONF}"
 systemctl restart wpa_supplicant || true
 
-echo "[3.5/7] Waiting for network after Wi-Fi reconfiguration"
+echo "[4/7] Waiting for network after Wi-Fi reconfiguration"
 _dns_ok=0
 for _cnt in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if getent hosts deb.debian.org >/dev/null 2>&1; then
@@ -76,7 +76,7 @@ if [[ \${_dns_ok} -eq 0 ]]; then
   apt-get update -q
 fi
 
-echo "[4/7] Install QLC+ (best effort)"
+echo "[5/7] Install QLC+ (best effort)"
 if apt-cache show qlcplus >/dev/null 2>&1; then
   apt-get install -y qlcplus || {
     echo "  Install failed; refreshing package lists and retrying..."
@@ -88,7 +88,7 @@ else
   echo "We'll still set up the service assuming /usr/bin/qlcplus exists after you install it."
 fi
 
-echo "[5/7] Create QLC+ systemd service (headless web UI)"
+echo "[6/7] Create QLC+ systemd service (headless web UI)"
 SERVICE_FILE="/etc/systemd/system/qlcplus-web.service"
 
 cat > "\${SERVICE_FILE}" <<SERVICE
@@ -101,6 +101,9 @@ Wants=network-online.target
 Type=simple
 User=${PI_USER}
 Environment=HOME=/home/${PI_USER}
+Environment=QT_QPA_PLATFORM=minimal
+Environment=XDG_RUNTIME_DIR=/run/qlcplus
+RuntimeDirectory=qlcplus
 WorkingDirectory=/home/${PI_USER}
 ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --operate
 Restart=always
@@ -114,11 +117,9 @@ systemctl daemon-reload
 systemctl enable qlcplus-web.service
 systemctl restart qlcplus-web.service || true
 
-echo "[6/7] Useful info"
-echo "ENTTEC check (plug it in and run): lsusb"
-echo "QLC+ web: http://${HOSTNAME}.local:${QLC_PORT}  (or http://<pi-ip>:${QLC_PORT})"
-
-echo "[7/7] Status"
+echo "[7/7] Done"
+echo "  ENTTEC check:  lsusb"
+echo "  QLC+ web:      http://${HOSTNAME}.local:${QLC_PORT}"
 systemctl status qlcplus-web.service --no-pager || true
 EOF
 

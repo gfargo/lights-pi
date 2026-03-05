@@ -1,4 +1,5 @@
-backups
 .env
-
-scratch.md
+backups/
+certs/
+scratch*
+.vscode/

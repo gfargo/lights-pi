@@ -39,8 +39,8 @@ SERVICE="qlcplus-web.service"
 EDITOR="${EDITOR:-nano}"
 SSH_KEY="${SSH_KEY:-}"
 BACKUP_STORAGE="${BACKUP_STORAGE:-${SCRIPT_DIR}/backups}"
-SSL_CERT="${SSL_CERT:-certs/qlc.crt}"
-SSL_KEY="${SSL_KEY:-certs/qlc.key}"
+SSL_CERT="${SSL_CERT:-${SCRIPT_DIR}/certs/qlc.crt}"
+SSL_KEY="${SSL_KEY:-${SCRIPT_DIR}/certs/qlc.key}"
 SSH_OPTIONS=()
 if [[ -n "$SSH_KEY" ]]; then
   SSH_OPTIONS+=("-i" "$SSH_KEY")
@@ -65,7 +65,9 @@ Commands:
   wifi-reconf     run sudo wpa_cli -i wlan0 reconfigure
   wifi-status     run wpa_cli status and ip a show wlan0
   update          sudo apt update && sudo apt -y upgrade
-  open-web        print the URLs for the headless UI
+  health          check service status, web UI reachability, and ENTTEC USB
+  open-web        open the web UI in the default browser (prints URL if unavailable)
+  deploy-workspace <file.qxw>  upload a QLC+ workspace to the Pi and restart the service
   ssh             open an interactive shell on the Pi
   wifi-edit       open the Pi's Wi-Fi config in `$EDITOR`
   edit <path>     open an arbitrary file on the Pi (defaults to the Wi-Fi config)
@@ -106,6 +108,29 @@ function command_tail() {
 
 function command_lsusb() {
   run lsusb
+}
+
+function command_health() {
+  printf '%-20s' "Service:"
+  if run systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+    echo "running"
+  else
+    echo "NOT running"
+  fi
+
+  printf '%-20s' "Web UI:"
+  if run curl -sf --max-time 5 "http://127.0.0.1:${QLC_PORT}" >/dev/null 2>&1; then
+    echo "reachable (port ${QLC_PORT})"
+  else
+    echo "unreachable (port ${QLC_PORT})"
+  fi
+
+  printf '%-20s' "ENTTEC USB:"
+  if run lsusb 2>/dev/null | grep -qi "FTDI\|0403:6001"; then
+    echo "detected"
+  else
+    echo "not found"
+  fi
 }
 
 function command_qlc_version() {
@@ -168,9 +193,39 @@ function command_backup() {
   echo "Backup saved to ${local_target}"
 }
 
+function command_deploy_workspace() {
+  local workspace="${1:-}"
+  if [[ -z "$workspace" ]]; then
+    echo "Usage: deploy-workspace <path/to/file.qxw>" >&2
+    return 1
+  fi
+  if [[ ! -f "$workspace" ]]; then
+    echo "Workspace file not found: ${workspace}" >&2
+    return 1
+  fi
+  local filename remote_path service_file
+  filename="$(basename "$workspace")"
+  remote_path="/home/${PI_USER}/${filename}"
+  service_file="/etc/systemd/system/qlcplus-web.service"
+
+  "${SCP_CMD[@]}" "$workspace" "${PI_USER}@${PI_HOST}:${remote_path}"
+  echo "Uploaded ${filename} → ${remote_path}"
+
+  run_sudo sed -i "s|ExecStart=.*qlcplus.*|ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --operate --workspace ${remote_path}|" "$service_file"
+  run_sudo systemctl daemon-reload
+  run_sudo systemctl restart "${SERVICE}"
+  echo "Service updated with --workspace ${remote_path} and restarted"
+}
+
 function command_open_web() {
-  echo "Headless UI: http://${HOSTNAME}.local:${QLC_PORT}"
-  echo "Direct IP: http://${PI_HOST}:${QLC_PORT}"
+  local url="http://${HOSTNAME}.local:${QLC_PORT}"
+  echo "Headless UI: ${url}"
+  echo "Direct IP:   http://${PI_HOST}:${QLC_PORT}"
+  if command -v open >/dev/null 2>&1; then
+    open "$url"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url"
+  fi
 }
 
 function command_ssh() {
@@ -284,6 +339,8 @@ case "$1" in
   hdmi-disable) command_hdmi_disable ;;
   setup) command_setup ;;
   ssl-proxy) shift; command_ssl_proxy "$@" ;;
+  health) command_health ;;
+  deploy-workspace) shift; command_deploy_workspace "$@" ;;
   open-web) command_open_web ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
