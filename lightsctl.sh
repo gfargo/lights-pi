@@ -73,6 +73,7 @@ Commands:
   edit <path>     open an arbitrary file on the Pi (defaults to the Wi-Fi config)
   backup          pull .config/qlcplus and .qlcplus from ${PI_USER} home to ${BACKUP_STORAGE}
   hdmi-disable    append `hdmi_blanking=2` to `/boot/config.txt`
+  gen-cert [days]     generate a self-signed TLS cert/key in certs/ (default: 730 days)
   ssl-proxy <cert> <key>  install SSL cert, run stunnel, redirect 443 → ${QLC_PORT}
   setup               run scripts/pi_lights_setup.sh (first-time Pi provisioning)
                       requires: WIFI1_SSID, WIFI1_PSK, WIFI2_SSID, WIFI2_PSK
@@ -267,6 +268,64 @@ function command_setup() {
   bash "$script"
 }
 
+function command_gen_cert() {
+  local days="${1:-730}"
+  local cert_dir="${SCRIPT_DIR}/certs"
+  local cert="${cert_dir}/qlc.crt"
+  local key="${cert_dir}/qlc.key"
+
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "openssl not found. Install it with: brew install openssl" >&2
+    return 1
+  fi
+  if [[ -f "$cert" || -f "$key" ]]; then
+    echo "Certs already exist in ${cert_dir}/. Delete them first to regenerate." >&2
+    return 1
+  fi
+
+  # Build SANs: always include hostname.local; add IP or extra DNS if PI_HOST is set
+  local san="DNS:${HOSTNAME}.local,DNS:localhost"
+  if [[ -n "$PI_HOST" && "$PI_HOST" != "${HOSTNAME}.local" ]]; then
+    if [[ "$PI_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      san="${san},IP:${PI_HOST}"
+    else
+      san="${san},DNS:${PI_HOST}"
+    fi
+  fi
+
+  local tmpconf
+  tmpconf="$(mktemp /tmp/qlc-openssl-XXXXXX.cnf)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmpconf'" RETURN
+
+  cat > "$tmpconf" <<CONF
+[req]
+distinguished_name = dn
+x509_extensions    = san
+prompt             = no
+
+[dn]
+CN = ${HOSTNAME}.local
+
+[san]
+subjectAltName = ${san}
+CONF
+
+  mkdir -p "$cert_dir"
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$key" -out "$cert" \
+    -days "$days" \
+    -config "$tmpconf" 2>/dev/null
+  chmod 600 "$key"
+
+  echo "Certificate: ${cert}"
+  echo "Private key: ${key}"
+  echo "Valid for:   ${days} days"
+  echo "SANs:        ${san}"
+  echo ""
+  echo "Run: ./lightsctl.sh ssl-proxy  to install on the Pi."
+}
+
 function command_ssl_proxy() {
   local cert_local="${1:-${SSL_CERT}}"
   local key_local="${2:-${SSL_KEY}}"
@@ -338,6 +397,7 @@ case "$1" in
   backup) command_backup ;;
   hdmi-disable) command_hdmi_disable ;;
   setup) command_setup ;;
+  gen-cert) shift; command_gen_cert "$@" ;;
   ssl-proxy) shift; command_ssl_proxy "$@" ;;
   health) command_health ;;
   deploy-workspace) shift; command_deploy_workspace "$@" ;;
