@@ -33,7 +33,7 @@ fi
 
 PI_HOST="${PI_HOST:-lights.local}"
 PI_USER="${PI_USER:-pi}"
-HOSTNAME="${HOSTNAME:-lights}"
+PI_PI_HOSTNAME="${PI_PI_HOSTNAME:-lights}"
 QLC_PORT="${QLC_PORT:-9999}"
 SERVICE="qlcplus-web.service"
 EDITOR="${EDITOR:-nano}"
@@ -100,7 +100,8 @@ Landing page (http://lights.local):
   landing-setup                 install nginx and deploy the landing page (first time)
   landing-deploy                push updated landing/index.html (no nginx reinstall)
 
-Set env vars to override defaults: PI_HOST, PI_USER, HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
+Set env vars to override defaults: PI_HOST, PI_USER, PI_HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
+(Note: use PI_HOSTNAME not HOSTNAME — HOSTNAME is a macOS shell built-in)
 EOF
 }
 
@@ -359,7 +360,7 @@ function command_deploy_workspace() {
 }
 
 function command_open_web() {
-  local url="http://${HOSTNAME}.local:${QLC_PORT}"
+  local url="http://${PI_HOSTNAME}.local:${QLC_PORT}"
   echo "Headless UI: ${url}"
   echo "Direct IP:   http://${PI_HOST}:${QLC_PORT}"
   if command -v open >/dev/null 2>&1; then
@@ -438,7 +439,7 @@ function command_setup() {
   fi
   PI_HOST="${PI_HOST}" \
   PI_USER="${PI_USER}" \
-  HOSTNAME="${HOSTNAME}" \
+  PI_HOSTNAME="${PI_HOSTNAME}" \
   QLC_PORT="${QLC_PORT}" \
   bash "$script"
 }
@@ -488,8 +489,8 @@ function command_gen_cert() {
   fi
 
   # Build SANs: always include hostname.local; add IP or extra DNS if PI_HOST is set
-  local san="DNS:${HOSTNAME}.local,DNS:localhost"
-  if [[ -n "$PI_HOST" && "$PI_HOST" != "${HOSTNAME}.local" ]]; then
+  local san="DNS:${PI_HOSTNAME}.local,DNS:localhost"
+  if [[ -n "$PI_HOST" && "$PI_HOST" != "${PI_HOSTNAME}.local" ]]; then
     if [[ "$PI_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       san="${san},IP:${PI_HOST}"
     else
@@ -509,7 +510,7 @@ x509_extensions    = san
 prompt             = no
 
 [dn]
-CN = ${HOSTNAME}.local
+CN = ${PI_HOSTNAME}.local
 
 [san]
 subjectAltName = ${san}

@@ -211,7 +211,7 @@ Landing page (http://lights.local):
 | ---------------- | -------------------- | ------------------------------- |
 | `PI_HOST`        | `lights.local`       | Pi hostname or IP               |
 | `PI_USER`        | `pi`                 | SSH username                    |
-| `HOSTNAME`       | `lights`             | mDNS hostname                   |
+| `PI_HOSTNAME`    | `lights`             | mDNS hostname set on the Pi     |
 | `QLC_PORT`       | `9999`               | QLC+ web UI port                |
 | `SSH_KEY`        | _(none)_             | Path to SSH private key         |
 | `BACKUP_STORAGE` | `./backups`          | Local backup destination        |

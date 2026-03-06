@@ -10,7 +10,7 @@ WIFI1_PSK="${WIFI1_PSK:-}"
 WIFI2_SSID="${WIFI2_SSID:-}"
 WIFI2_PSK="${WIFI2_PSK:-}"
 
-HOSTNAME="${HOSTNAME:-lights}"
+PI_HOSTNAME="${PI_HOSTNAME:-lights}"
 QLC_PORT="${QLC_PORT:-9999}"
 
 if [[ -z "$PI_HOST" ]]; then
@@ -22,7 +22,7 @@ ssh "${PI_USER}@${PI_HOST}" "sudo bash -s" <<EOF
 set -euo pipefail
 
 echo "[1/8] Hostname"
-hostnamectl set-hostname "${HOSTNAME}"
+hostnamectl set-hostname "${PI_HOSTNAME}"
 
 echo "[2/8] Packages"
 apt-get update
@@ -135,7 +135,7 @@ echo "  ${PI_USER} added to dialout group (takes effect on next login)."
 
 echo "[8/8] Done"
 echo "  ENTTEC check:  lsusb"
-echo "  QLC+ web:      http://${HOSTNAME}.local:${QLC_PORT}"
+echo "  QLC+ web:      http://${PI_HOSTNAME}.local:${QLC_PORT}"
 systemctl status qlcplus-web.service --no-pager || true
 EOF
 
