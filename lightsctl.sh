@@ -87,6 +87,7 @@ Network / WiFi:
 System:
   lsusb                         show USB devices (ENTTEC should appear)
   backup                        pull QLC+ config dirs to ${BACKUP_STORAGE}
+  restore <backup.tar.gz>       restore QLC+ config from backup and restart service
   hdmi-disable                  disable HDMI to save power
   reboot                        reboot the Pi
   poweroff                      shut down the Pi
@@ -338,6 +339,58 @@ function command_backup() {
   "${SCP_CMD[@]}" "${PI_USER}@${PI_HOST}:${remote_tmp}" "${local_target}"
   run_sudo rm -f "${remote_tmp}"
   echo "Backup saved to ${local_target}"
+}
+
+function command_restore() {
+  local backup_file="${1:-}"
+  if [[ -z "$backup_file" ]]; then
+    echo "Usage: restore <path/to/backup.tar.gz>" >&2
+    echo "" >&2
+    echo "Available backups in ${BACKUP_STORAGE}:" >&2
+    if [[ -d "$BACKUP_STORAGE" ]]; then
+      ls -1t "${BACKUP_STORAGE}"/*.tar.gz 2>/dev/null | head -5 || echo "  (none found)"
+    else
+      echo "  (backup directory does not exist)"
+    fi
+    return 1
+  fi
+  if [[ ! -f "$backup_file" ]]; then
+    echo "Backup file not found: ${backup_file}" >&2
+    return 1
+  fi
+
+  local remote_tmp="/tmp/qlcplus-restore-$$.tar.gz"
+  
+  echo "Stopping ${SERVICE}..."
+  run_sudo systemctl stop "${SERVICE}"
+  
+  echo "Uploading backup to Pi..."
+  "${SCP_CMD[@]}" "$backup_file" "${PI_USER}@${PI_HOST}:${remote_tmp}"
+  
+  echo "Backing up current config (just in case)..."
+  run_sudo tar -czf "/tmp/qlcplus-pre-restore-backup.tar.gz" -C "/home/${PI_USER}" \
+    ".config/qlcplus" ".qlcplus" 2>/dev/null || true
+  
+  echo "Removing existing QLC+ config..."
+  run_sudo rm -rf "/home/${PI_USER}/.config/qlcplus" "/home/${PI_USER}/.qlcplus"
+  
+  echo "Extracting backup..."
+  run_sudo tar -xzf "${remote_tmp}" -C "/home/${PI_USER}"
+  
+  echo "Fixing ownership..."
+  run_sudo chown -R "${PI_USER}:${PI_USER}" "/home/${PI_USER}/.config/qlcplus" "/home/${PI_USER}/.qlcplus" 2>/dev/null || true
+  
+  echo "Cleaning up..."
+  run_sudo rm -f "${remote_tmp}"
+  
+  echo "Restarting ${SERVICE}..."
+  run_sudo systemctl start "${SERVICE}"
+  
+  echo ""
+  echo "Restore complete! Pre-restore backup saved on Pi at:"
+  echo "  /tmp/qlcplus-pre-restore-backup.tar.gz"
+  echo ""
+  command_status
 }
 
 function command_deploy_workspace() {
@@ -607,6 +660,7 @@ case "$1" in
   update) command_update ;;
   update-qlc) command_update_qlc ;;
   backup) command_backup ;;
+  restore) shift; command_restore "$@" ;;
   check) command_check ;;
   diagnose) command_diagnose ;;
   add-key) shift; command_add_key "$@" ;;

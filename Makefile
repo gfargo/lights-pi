@@ -1,6 +1,6 @@
 CTL := ./lightsctl.sh
 
-.PHONY: help check status logs logs-errors tail health diagnose restart update update-qlc backup \
+.PHONY: help check status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless deploy-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
         reboot poweroff hdmi-disable landing-setup landing-deploy
@@ -43,6 +43,10 @@ update-qlc:
 
 backup:
 	$(CTL) backup
+
+# restore usage: make restore BACKUP=backups/qlcplus-backup-20260305T203838Z.tar.gz
+restore:
+	$(CTL) restore $(BACKUP)
 
 # ── Provisioning ──────────────────────────────────────────────────────────────
 setup:
