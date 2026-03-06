@@ -83,6 +83,7 @@ QLC+:
   pull-workspace [output.qxw]   download current workspace from Pi
   list-fixtures                 show installed fixture definitions
   install-fixture <file.qxf>    upload and install custom fixture definition
+  test-dmx                      verify ENTTEC USB and DMX output capability
   open-web                      open the web UI in the default browser
 
 Network / WiFi:
@@ -903,6 +904,95 @@ function command_install_fixture() {
   echo "Run: ./lightsctl.sh restart"
 }
 
+function command_test_dmx() {
+  echo "=== DMX Output Test ==="
+  echo "Testing ENTTEC USB and DMX capability..."
+  echo ""
+  
+  # Test 1: Check USB device
+  echo "--- USB Device Detection ---"
+  printf '%-30s' "ENTTEC USB Pro:"
+  if run lsusb 2>/dev/null | grep -qi "FTDI\|0403:6001"; then
+    echo "✓ detected"
+    run lsusb 2>/dev/null | grep -iE "FTDI|0403:6001"
+  else
+    echo "✗ not found"
+    echo ""
+    echo "ENTTEC USB Pro not detected. Check:"
+    echo "  • USB cable is connected"
+    echo "  • Device is powered"
+    echo "  • Try different USB port"
+    return 1
+  fi
+  
+  echo ""
+  echo "--- Device Permissions ---"
+  printf '%-30s' "User in dialout group:"
+  if run groups "${PI_USER}" 2>/dev/null | grep -q dialout; then
+    echo "✓ yes"
+  else
+    echo "✗ no"
+    echo "Add user to dialout group: sudo usermod -a -G dialout ${PI_USER}"
+    echo "Then reboot or log out/in"
+  fi
+  
+  # Check for udev rule
+  printf '%-30s' "udev rule for /dev/dmx0:"
+  if run test -f /etc/udev/rules.d/99-dmx.rules 2>/dev/null; then
+    echo "✓ exists"
+    if run test -e /dev/dmx0 2>/dev/null; then
+      echo "                              /dev/dmx0 symlink: ✓ present"
+    else
+      echo "                              /dev/dmx0 symlink: ✗ missing (replug USB)"
+    fi
+  else
+    echo "⚠ not found"
+    echo "Run 'harden' to create udev rule for stable /dev/dmx0 symlink"
+  fi
+  
+  echo ""
+  echo "--- QLC+ Configuration ---"
+  printf '%-30s' "QLC+ service:"
+  if run systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+    echo "✓ running"
+  else
+    echo "✗ not running"
+    echo "Start with: ./lightsctl.sh restart"
+  fi
+  
+  printf '%-30s' "DMX USB plugin:"
+  if run test -f /usr/lib/*/qt5/plugins/qlcplus/libdmxusb.so 2>/dev/null; then
+    echo "✓ installed"
+  else
+    echo "⚠ not found (may be in different location)"
+  fi
+  
+  echo ""
+  echo "--- DMX Output Test ---"
+  echo "To verify DMX output is working:"
+  echo ""
+  echo "1. Open QLC+ web UI:"
+  echo "   ./lightsctl.sh open-web"
+  echo ""
+  echo "2. Go to Inputs/Outputs tab"
+  echo ""
+  echo "3. Check that 'DMX USB' appears in the output list"
+  echo ""
+  echo "4. Enable output for Universe 1 (or your universe)"
+  echo ""
+  echo "5. In Simple Desk, move a slider and check if your fixture responds"
+  echo ""
+  echo "If fixtures don't respond:"
+  echo "  • Verify fixture DMX address matches QLC+ configuration"
+  echo "  • Check DMX cable connections"
+  echo "  • Ensure fixtures are powered and in DMX mode"
+  echo "  • Try different DMX cable (check for shorts/breaks)"
+  echo "  • Verify DMX terminator on last fixture (120Ω resistor)"
+  
+  echo ""
+  echo "Hardware test complete. Use web UI to test actual DMX output."
+}
+
 function command_wifi() {
   run_sudo cat /etc/wpa_supplicant/wpa_supplicant.conf
 }
@@ -1465,6 +1555,7 @@ case "$1" in
   qlc-headless) command_qlc_headless ;;
   list-fixtures) command_list_fixtures ;;
   install-fixture) shift; command_install_fixture "$@" ;;
+  test-dmx) command_test_dmx ;;
   wifi) command_wifi ;;
   wifi-reconf) command_wifi_reconf ;;
   wifi-status) command_wifi_status ;;

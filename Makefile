@@ -2,7 +2,7 @@ CTL := ./lightsctl.sh
 
 .PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
-        qlc-headless list-fixtures install-fixture deploy-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
+        qlc-headless list-fixtures install-fixture test-dmx deploy-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
         reboot poweroff hdmi-disable os-version landing-setup landing-deploy
 
 help:
@@ -91,6 +91,9 @@ list-fixtures:
 # install-fixture usage: make install-fixture FIXTURE=path/to/fixture.qxf
 install-fixture:
 	$(CTL) install-fixture $(FIXTURE)
+
+test-dmx:
+	$(CTL) test-dmx
 
 # deploy usage: make deploy WS=workspaces/studio.qxw
 deploy:
