@@ -71,6 +71,7 @@ Service:
   health                        service + web UI + USB + disk + memory + CPU temp
   diagnose                      full diagnostic dump (health + logs + wifi + uptime)
   check                         ping + SSH pre-flight connectivity check
+  validate                      pre-flight validation (config, connectivity, dependencies)
 
 QLC+:
   qlc-version                   run qlcplus --version on the Pi
@@ -210,6 +211,150 @@ function command_check() {
     echo "OK"
   else
     echo "failed (check credentials / firewall)"
+    return 1
+  fi
+}
+
+function command_validate() {
+  local errors=0
+  local warnings=0
+  
+  echo "=== Pre-flight Validation ==="
+  echo ""
+  
+  # Check local environment
+  echo "--- Local Environment ---"
+  
+  printf '%-30s' ".env file:"
+  if [[ -f "$ENV_FILE" ]]; then
+    echo "✓ exists"
+  else
+    echo "✗ missing (copy from .env.example)"
+    ((errors++))
+  fi
+  
+  printf '%-30s' "Required scripts:"
+  local missing_scripts=()
+  for script in "scripts/pi_lights_setup.sh" "scripts/pi_harden.sh" "scripts/pi_landing.sh" "scripts/configure_qlc_headless.sh"; do
+    if [[ ! -f "${SCRIPT_DIR}/${script}" ]]; then
+      missing_scripts+=("$script")
+    fi
+  done
+  if [[ ${#missing_scripts[@]} -eq 0 ]]; then
+    echo "✓ all present"
+  else
+    echo "✗ missing: ${missing_scripts[*]}"
+    ((errors++))
+  fi
+  
+  printf '%-30s' "Backup storage:"
+  if [[ -d "$BACKUP_STORAGE" ]]; then
+    echo "✓ ${BACKUP_STORAGE}"
+  else
+    echo "⚠ ${BACKUP_STORAGE} (will be created)"
+    ((warnings++))
+  fi
+  
+  printf '%-30s' "SSH key:"
+  if [[ -n "$SSH_KEY" ]]; then
+    if [[ -f "$SSH_KEY" ]]; then
+      echo "✓ ${SSH_KEY}"
+    else
+      echo "✗ ${SSH_KEY} not found"
+      ((errors++))
+    fi
+  else
+    echo "⚠ not configured (using password auth)"
+    ((warnings++))
+  fi
+  
+  echo ""
+  echo "--- Network Connectivity ---"
+  
+  printf '%-30s' "Ping ${PI_HOST}:"
+  if ping -c1 -W2 "${PI_HOST}" >/dev/null 2>&1; then
+    echo "✓ reachable"
+  else
+    echo "✗ unreachable"
+    ((errors++))
+  fi
+  
+  printf '%-30s' "SSH connection:"
+  if "${REMOTE_CMD[@]}" -o ConnectTimeout=5 -o BatchMode=yes true 2>/dev/null; then
+    echo "✓ connected as ${PI_USER}@${PI_HOST}"
+  else
+    echo "✗ failed (check credentials/firewall)"
+    ((errors++))
+  fi
+  
+  # Only check Pi if we can connect
+  if "${REMOTE_CMD[@]}" -o ConnectTimeout=5 -o BatchMode=yes true 2>/dev/null; then
+    echo ""
+    echo "--- Pi System State ---"
+    
+    printf '%-30s' "QLC+ installed:"
+    if run command -v qlcplus >/dev/null 2>&1; then
+      local version
+      version=$(run qlcplus --version 2>&1 | head -1 || echo "unknown")
+      echo "✓ ${version}"
+    else
+      echo "✗ not installed"
+      ((errors++))
+    fi
+    
+    printf '%-30s' "Service status:"
+    if run systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+      echo "✓ running"
+    else
+      echo "✗ not running"
+      ((errors++))
+    fi
+    
+    printf '%-30s' "Web UI:"
+    if run curl -sf --max-time 5 "http://127.0.0.1:${QLC_PORT}" >/dev/null 2>&1; then
+      echo "✓ responding on port ${QLC_PORT}"
+    else
+      echo "✗ not responding on port ${QLC_PORT}"
+      ((errors++))
+    fi
+    
+    printf '%-30s' "ENTTEC USB:"
+    if run lsusb 2>/dev/null | grep -qi "FTDI\|0403:6001"; then
+      echo "✓ detected"
+    else
+      echo "⚠ not detected"
+      ((warnings++))
+    fi
+    
+    printf '%-30s' "Disk space:"
+    local disk_usage
+    disk_usage=$(run df -h / 2>/dev/null | awk 'NR==2{print $5}' | tr -d '%')
+    if [[ -n "$disk_usage" ]]; then
+      if [[ $disk_usage -lt 80 ]]; then
+        echo "✓ ${disk_usage}% used"
+      elif [[ $disk_usage -lt 90 ]]; then
+        echo "⚠ ${disk_usage}% used"
+        ((warnings++))
+      else
+        echo "✗ ${disk_usage}% used (critically low)"
+        ((errors++))
+      fi
+    else
+      echo "⚠ unable to check"
+      ((warnings++))
+    fi
+  fi
+  
+  echo ""
+  echo "--- Summary ---"
+  if [[ $errors -eq 0 && $warnings -eq 0 ]]; then
+    echo "✓ All checks passed! System is ready."
+    return 0
+  elif [[ $errors -eq 0 ]]; then
+    echo "⚠ ${warnings} warning(s) - system should work but review warnings above"
+    return 0
+  else
+    echo "✗ ${errors} error(s), ${warnings} warning(s) - fix errors before proceeding"
     return 1
   fi
 }
@@ -686,6 +831,7 @@ case "$1" in
   backup) command_backup ;;
   restore) shift; command_restore "$@" ;;
   check) command_check ;;
+  validate) command_validate ;;
   diagnose) command_diagnose ;;
   add-key) shift; command_add_key "$@" ;;
   disable-password-auth) command_disable_password_auth ;;

@@ -1,6 +1,6 @@
 CTL := ./lightsctl.sh
 
-.PHONY: help check status logs logs-errors tail health diagnose restart update update-qlc backup restore \
+.PHONY: help check validate status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless list-fixtures deploy-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
         reboot poweroff hdmi-disable landing-setup landing-deploy
@@ -11,6 +11,9 @@ help:
 # ── Connectivity ──────────────────────────────────────────────────────────────
 check:
 	$(CTL) check
+
+validate:
+	$(CTL) validate
 
 # ── Service management ────────────────────────────────────────────────────────
 status:
