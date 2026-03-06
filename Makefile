@@ -2,7 +2,7 @@ CTL := ./lightsctl.sh
 
 .PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
-        qlc-headless list-fixtures install-fixture deploy-workspace pull-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
+        qlc-headless list-fixtures install-fixture deploy-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
         reboot poweroff hdmi-disable os-version landing-setup landing-deploy
 
 help:
@@ -112,6 +112,9 @@ wifi:
 
 wifi-status:
 	$(CTL) wifi-status
+
+scan:
+	$(CTL) scan
 
 # ── TLS ───────────────────────────────────────────────────────────────────────
 gen-cert:

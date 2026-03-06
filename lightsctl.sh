@@ -90,6 +90,7 @@ Network / WiFi:
   wifi-reconf                   run wpa_cli -i wlan0 reconfigure
   wifi-status                   show SSID and wlan0 address
   wifi-edit                     edit the Wi-Fi config in \$EDITOR
+  scan                          scan network for Raspberry Pi devices (lights-*.local)
 
 System:
   lsusb                         show USB devices (ENTTEC should appear)
@@ -1086,6 +1087,68 @@ function command_wifi_edit() {
   command_edit
 }
 
+function command_scan() {
+  echo "=== Network Scan for Raspberry Pi Devices ==="
+  echo "Scanning for lights-*.local and raspberrypi.local..."
+  echo ""
+  
+  local found=0
+  local hostnames=("lights.local" "raspberrypi.local")
+  
+  # Add numbered variants
+  for i in {1..5}; do
+    hostnames+=("lights${i}.local" "lights-${i}.local")
+  done
+  
+  echo "Checking known hostnames..."
+  for hostname in "${hostnames[@]}"; do
+    printf '%-25s' "${hostname}:"
+    if ping -c1 -W1 "$hostname" >/dev/null 2>&1; then
+      local ip
+      ip=$(ping -c1 "$hostname" 2>/dev/null | grep -oE '\([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\)' | head -1 | tr -d '()')
+      echo "✓ found at ${ip}"
+      ((found++))
+    else
+      echo "not found"
+    fi
+  done
+  
+  echo ""
+  if command -v arp-scan >/dev/null 2>&1; then
+    echo "Running arp-scan for Raspberry Pi devices..."
+    echo "(This requires sudo and may take a moment)"
+    echo ""
+    
+    # Try to find Raspberry Pi devices by MAC address (Raspberry Pi Foundation OUI)
+    local arp_result
+    arp_result=$(sudo arp-scan --localnet 2>/dev/null | grep -iE "Raspberry Pi|b8:27:eb|dc:a6:32|e4:5f:01" || true)
+    
+    if [[ -n "$arp_result" ]]; then
+      echo "Found Raspberry Pi devices:"
+      echo "$arp_result"
+      local arp_count
+      arp_count=$(echo "$arp_result" | wc -l)
+      ((found += arp_count))
+    else
+      echo "No Raspberry Pi devices found via arp-scan"
+    fi
+  else
+    echo "arp-scan not installed (optional)"
+    echo "Install with: brew install arp-scan (macOS) or apt install arp-scan (Linux)"
+  fi
+  
+  echo ""
+  if [[ $found -eq 0 ]]; then
+    echo "No devices found. Troubleshooting tips:"
+    echo "  • Ensure Pi is powered on and connected to network"
+    echo "  • Check Pi is on same network/VLAN as this machine"
+    echo "  • Try connecting via IP address if you know it"
+    echo "  • Check router's DHCP client list for the Pi"
+  else
+    echo "Found ${found} device(s)"
+  fi
+}
+
 function command_hdmi_disable() {
   local config
   if run test -f /boot/firmware/config.txt 2>/dev/null; then
@@ -1405,6 +1468,7 @@ case "$1" in
   wifi) command_wifi ;;
   wifi-reconf) command_wifi_reconf ;;
   wifi-status) command_wifi_status ;;
+  scan) command_scan ;;
   update) command_update ;;
   update-qlc) command_update_qlc ;;
   backup) command_backup ;;
