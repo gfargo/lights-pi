@@ -76,6 +76,7 @@ QLC+:
   qlc-version                   run qlcplus --version on the Pi
   qlc-headless                  push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
   deploy-workspace <file.qxw>   upload workspace to Pi and restart service
+  list-fixtures                 show installed fixture definitions
   open-web                      open the web UI in the default browser
 
 Network / WiFi:
@@ -299,6 +300,28 @@ function command_qlc_headless() {
   "${SCP_CMD[@]}" "$script_local" "${PI_USER}@${PI_HOST}:${script_remote}"
   run sudo bash "${script_remote}"
   run rm -f "${script_remote}"
+}
+
+function command_list_fixtures() {
+  echo "=== System Fixture Definitions ==="
+  run find /usr/share/qlcplus/fixtures -name "*.qxf" -type f 2>/dev/null | run sort || echo "No system fixtures found"
+  
+  echo ""
+  echo "=== User Fixture Definitions ==="
+  local user_fixtures="/home/${PI_USER}/.qlcplus/fixtures"
+  if run test -d "$user_fixtures" 2>/dev/null; then
+    run find "$user_fixtures" -name "*.qxf" -type f 2>/dev/null | run sort || echo "No user fixtures found"
+  else
+    echo "User fixtures directory does not exist"
+  fi
+  
+  echo ""
+  echo "Total fixtures:"
+  local system_count user_count
+  system_count=$(run find /usr/share/qlcplus/fixtures -name "*.qxf" -type f 2>/dev/null | run wc -l || echo "0")
+  user_count=$(run find "/home/${PI_USER}/.qlcplus/fixtures" -name "*.qxf" -type f 2>/dev/null | run wc -l || echo "0")
+  echo "  System: ${system_count}"
+  echo "  User:   ${user_count}"
 }
 
 function command_wifi() {
@@ -654,6 +677,7 @@ case "$1" in
   lsusb) command_lsusb ;;
   qlc-version) command_qlc_version ;;
   qlc-headless) command_qlc_headless ;;
+  list-fixtures) command_list_fixtures ;;
   wifi) command_wifi ;;
   wifi-reconf) command_wifi_reconf ;;
   wifi-status) command_wifi_status ;;
