@@ -91,7 +91,7 @@ Network / WiFi:
   wifi-reconf                   run wpa_cli -i wlan0 reconfigure
   wifi-status                   show SSID and wlan0 address
   wifi-edit                     edit the Wi-Fi config in \$EDITOR
-  scan                          scan network for Raspberry Pi devices (lights-*.local)
+  scan [yes]                    scan network for Raspberry Pi devices (hostname + MAC + optional IP scan)
 
 System:
   lsusb                         show USB devices (ENTTEC should appear)
@@ -1178,11 +1178,15 @@ function command_wifi_edit() {
 }
 
 function command_scan() {
+  local scan_ips="${1:-}"
   echo "=== Network Scan for Raspberry Pi Devices ==="
-  echo "Scanning for lights-*.local and raspberrypi.local..."
   echo ""
   
   local found=0
+  local found_devices=()
+  
+  # Step 1: Check known hostnames
+  echo "--- Hostname Discovery ---"
   local hostnames=("lights.local" "raspberrypi.local")
   
   # Add numbered variants
@@ -1190,52 +1194,167 @@ function command_scan() {
     hostnames+=("lights${i}.local" "lights-${i}.local")
   done
   
-  echo "Checking known hostnames..."
   for hostname in "${hostnames[@]}"; do
     printf '%-25s' "${hostname}:"
     if ping -c1 -W1 "$hostname" >/dev/null 2>&1; then
       local ip
       ip=$(ping -c1 "$hostname" 2>/dev/null | grep -oE '\([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\)' | head -1 | tr -d '()')
       echo "✓ found at ${ip}"
+      found_devices+=("${hostname}|${ip}|hostname")
       ((found++))
     else
       echo "not found"
     fi
   done
   
+  # Step 2: arp-scan for MAC addresses
   echo ""
+  echo "--- MAC Address Scan ---"
   if command -v arp-scan >/dev/null 2>&1; then
-    echo "Running arp-scan for Raspberry Pi devices..."
-    echo "(This requires sudo and may take a moment)"
+    echo "Scanning local network for Raspberry Pi MAC addresses..."
+    echo "(This requires sudo and may take 10-20 seconds)"
     echo ""
     
-    # Try to find Raspberry Pi devices by MAC address (Raspberry Pi Foundation OUI)
+    # Raspberry Pi Foundation OUI prefixes
     local arp_result
-    arp_result=$(sudo arp-scan --localnet 2>/dev/null | grep -iE "Raspberry Pi|b8:27:eb|dc:a6:32|e4:5f:01" || true)
+    arp_result=$(sudo arp-scan --localnet 2>/dev/null | grep -iE "Raspberry Pi|b8:27:eb|dc:a6:32|e4:5f:01|28:cd:c1|2c:cf:67" || true)
     
     if [[ -n "$arp_result" ]]; then
-      echo "Found Raspberry Pi devices:"
+      echo "Found Raspberry Pi devices by MAC:"
       echo "$arp_result"
-      local arp_count
-      arp_count=$(echo "$arp_result" | wc -l)
-      ((found += arp_count))
+      
+      # Parse IPs from arp-scan results
+      while IFS= read -r line; do
+        local arp_ip
+        arp_ip=$(echo "$line" | awk '{print $1}')
+        if [[ -n "$arp_ip" && "$arp_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          # Check if not already found
+          local already_found=false
+          for device in "${found_devices[@]}"; do
+            if [[ "$device" == *"|${arp_ip}|"* ]]; then
+              already_found=true
+              break
+            fi
+          done
+          if [[ "$already_found" == false ]]; then
+            found_devices+=("unknown|${arp_ip}|mac")
+            ((found++))
+          fi
+        fi
+      done <<< "$arp_result"
     else
-      echo "No Raspberry Pi devices found via arp-scan"
+      echo "No Raspberry Pi devices found via MAC scan"
     fi
   else
-    echo "arp-scan not installed (optional)"
+    echo "arp-scan not installed (optional but recommended)"
     echo "Install with: brew install arp-scan (macOS) or apt install arp-scan (Linux)"
   fi
   
+  # Step 3: IP range scan (if requested or no devices found)
+  if [[ "$scan_ips" == "yes" ]] || [[ $found -eq 0 ]]; then
+    echo ""
+    echo "--- IP Range Scan ---"
+    
+    # Detect local network range
+    local local_ip local_subnet
+    if command -v ipconfig >/dev/null 2>&1; then
+      # macOS
+      local_ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "")
+    else
+      # Linux
+      local_ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -1)
+    fi
+    
+    if [[ -n "$local_ip" ]]; then
+      local_subnet=$(echo "$local_ip" | cut -d. -f1-3)
+      echo "Detected local network: ${local_subnet}.0/24"
+      echo "Scanning common Pi IPs in ${local_subnet}.x range..."
+      echo "(This may take 30-60 seconds)"
+      echo ""
+      
+      # Common static IPs and DHCP range
+      local test_ips=()
+      for i in {1..20} {50..60} {100..110} {200..210}; do
+        test_ips+=("${local_subnet}.${i}")
+      done
+      
+      local scan_found=0
+      for test_ip in "${test_ips[@]}"; do
+        if ping -c1 -W1 "$test_ip" >/dev/null 2>&1; then
+          # Try to identify if it's a Pi by attempting SSH
+          local is_pi=false
+          local hostname=""
+          
+          # Quick SSH banner check (non-interactive)
+          if timeout 2 bash -c "echo | nc -w1 ${test_ip} 22 2>/dev/null" | grep -qi "raspbian\|raspberry"; then
+            is_pi=true
+          fi
+          
+          # Try to get hostname via SSH (if we have keys)
+          if [[ -n "$SSH_KEY" ]] && timeout 2 ssh -i "$SSH_KEY" -o ConnectTimeout=1 -o BatchMode=yes -o StrictHostKeyChecking=no "${PI_USER}@${test_ip}" hostname 2>/dev/null | grep -qi "light\|rasp"; then
+            is_pi=true
+            hostname=$(timeout 2 ssh -i "$SSH_KEY" -o ConnectTimeout=1 -o BatchMode=yes -o StrictHostKeyChecking=no "${PI_USER}@${test_ip}" hostname 2>/dev/null || echo "")
+          fi
+          
+          if [[ "$is_pi" == true ]]; then
+            printf '%-20s' "${test_ip}:"
+            if [[ -n "$hostname" ]]; then
+              echo "✓ Raspberry Pi (${hostname})"
+            else
+              echo "✓ Likely Raspberry Pi"
+            fi
+            
+            # Check if not already found
+            local already_found=false
+            for device in "${found_devices[@]}"; do
+              if [[ "$device" == *"|${test_ip}|"* ]]; then
+                already_found=true
+                break
+              fi
+            done
+            if [[ "$already_found" == false ]]; then
+              found_devices+=("${hostname:-unknown}|${test_ip}|ipscan")
+              ((found++))
+              ((scan_found++))
+            fi
+          fi
+        fi
+      done
+      
+      if [[ $scan_found -eq 0 ]]; then
+        echo "No Raspberry Pi devices found in IP scan"
+      fi
+    else
+      echo "Could not detect local network range"
+    fi
+  fi
+  
+  # Summary
   echo ""
+  echo "=== Summary ==="
   if [[ $found -eq 0 ]]; then
     echo "No devices found. Troubleshooting tips:"
     echo "  • Ensure Pi is powered on and connected to network"
     echo "  • Check Pi is on same network/VLAN as this machine"
-    echo "  • Try connecting via IP address if you know it"
+    echo "  • Run with IP scan: ./lightsctl.sh scan yes"
     echo "  • Check router's DHCP client list for the Pi"
+    echo "  • Try connecting directly via ethernet"
   else
-    echo "Found ${found} device(s)"
+    echo "Found ${found} device(s):"
+    echo ""
+    printf '%-25s %-20s %-15s\n' "HOSTNAME" "IP ADDRESS" "FOUND VIA"
+    printf '%s\n' "----------------------------------------------------------------"
+    for device in "${found_devices[@]}"; do
+      IFS='|' read -r hostname ip method <<< "$device"
+      printf '%-25s %-20s %-15s\n' "$hostname" "$ip" "$method"
+    done
+    
+    echo ""
+    echo "To connect to a device:"
+    echo "  PI_HOST=<ip_address> ./lightsctl.sh ssh"
+    echo ""
+    echo "To set as default, update .env file:"
+    echo "  PI_HOST=<ip_address>"
   fi
 }
 
