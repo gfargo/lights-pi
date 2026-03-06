@@ -68,6 +68,8 @@ Commands:
   health          check service status, web UI reachability, and ENTTEC USB
   open-web        open the web UI in the default browser (prints URL if unavailable)
   deploy-workspace <file.qxw>  upload a QLC+ workspace to the Pi and restart the service
+  reboot          reboot the Pi
+  poweroff        shut down the Pi
   ssh             open an interactive shell on the Pi
   wifi-edit       open the Pi's Wi-Fi config in `$EDITOR`
   edit <path>     open an arbitrary file on the Pi (defaults to the Wi-Fi config)
@@ -75,8 +77,9 @@ Commands:
   hdmi-disable    append `hdmi_blanking=2` to `/boot/config.txt`
   gen-cert [days]     generate a self-signed TLS cert/key in certs/ (default: 730 days)
   ssl-proxy <cert> <key>  install SSL cert, run stunnel, redirect 443 → ${QLC_PORT}
-  setup               run scripts/pi_lights_setup.sh (first-time Pi provisioning)
-                      requires: WIFI1_SSID, WIFI1_PSK, WIFI2_SSID, WIFI2_PSK
+  setup               first-time Pi provisioning (requires: WIFI1_SSID, WIFI1_PSK, WIFI2_SSID, WIFI2_PSK)
+  harden              security hardening: firewall, unattended upgrades, watchdog, udev rule
+  setup-full          run setup then harden in sequence
 
 Set env vars to override defaults (PI_HOST, PI_USER, HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY).
 EOF
@@ -243,7 +246,12 @@ function command_wifi_edit() {
 }
 
 function command_hdmi_disable() {
-  local config="/boot/config.txt"
+  local config
+  if run test -f /boot/firmware/config.txt 2>/dev/null; then
+    config="/boot/firmware/config.txt"
+  else
+    config="/boot/config.txt"
+  fi
   if run_sudo grep -qE '^[[:space:]]*hdmi_blanking=2' "$config"; then
     echo "hdmi_blanking=2 already present in ${config}"
     return 0
@@ -253,6 +261,36 @@ function command_hdmi_disable() {
 hdmi_blanking=2
 EOF
   echo "Appended hdmi_blanking=2 to ${config}"
+}
+
+function command_harden() {
+  local script="${SCRIPT_DIR}/scripts/pi_harden.sh"
+  if [[ ! -f "$script" ]]; then
+    echo "scripts/pi_harden.sh not found at ${script}" >&2
+    return 1
+  fi
+  PI_HOST="${PI_HOST}" \
+  PI_USER="${PI_USER}" \
+  QLC_PORT="${QLC_PORT}" \
+  bash "$script"
+}
+
+function command_setup_full() {
+  command_setup
+  echo ""
+  echo "Base setup complete. Running hardening..."
+  echo ""
+  command_harden
+}
+
+function command_reboot() {
+  echo "Rebooting ${PI_HOST}..."
+  run_sudo reboot || true
+}
+
+function command_poweroff() {
+  echo "Powering off ${PI_HOST}..."
+  run_sudo poweroff || true
 }
 
 function command_setup() {
@@ -397,6 +435,10 @@ case "$1" in
   backup) command_backup ;;
   hdmi-disable) command_hdmi_disable ;;
   setup) command_setup ;;
+  harden) command_harden ;;
+  setup-full) command_setup_full ;;
+  reboot) command_reboot ;;
+  poweroff) command_poweroff ;;
   gen-cert) shift; command_gen_cert "$@" ;;
   ssl-proxy) shift; command_ssl_proxy "$@" ;;
   health) command_health ;;

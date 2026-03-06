@@ -92,20 +92,37 @@ Copy `.env.example` to `.env` and fill in your values:
 cp .env.example .env
 ```
 
-### 2. Provision the Pi
+### 2. Full provisioning
+
+For a new Pi — runs base setup then security hardening in one go:
 
 ```bash
 WIFI1_SSID="SetupNet" WIFI1_PSK="setup-pass" \
 WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
-./lightsctl.sh setup
+./lightsctl.sh setup-full
 ```
 
-This runs `scripts/pi_lights_setup.sh` on the Pi, which:
-- Sets the hostname and installs required packages
+Or run them separately if you want to review between steps:
+
+```bash
+./lightsctl.sh setup     # installs packages, QLC+, systemd service
+./lightsctl.sh harden    # firewall, watchdog, unattended upgrades, udev
+```
+
+**`setup` does:**
+- Sets hostname and installs required packages
 - Configures dual WiFi (studio network takes priority)
 - Waits for DNS to recover after WiFi reconfiguration
 - Installs QLC+ with automatic retry on network hiccups
-- Creates and enables the `qlcplus-web.service` systemd unit with headless Qt configured
+- Creates and enables `qlcplus-web.service` with headless Qt configured
+- Adds Pi user to `dialout` group for ENTTEC USB access
+- Configures persistent systemd journal logs
+
+**`harden` does:**
+- Installs `ufw` and opens only SSH (22) and the QLC+ web port
+- Configures unattended security upgrades
+- Enables the hardware watchdog via systemd (auto-reboots on kernel hang)
+- Creates a udev rule so ENTTEC always appears at `/dev/dmx0`
 
 ### 3. Open the web UI
 
@@ -120,34 +137,48 @@ From here, add your fixtures, map DMX universes, and build a Virtual Console lay
 
 ## lightsctl.sh Reference
 
-`lightsctl.sh` is the single entry point for all day-to-day Pi management.
+`lightsctl.sh` is the single entry point for all Pi management.
 
 ```
 ./lightsctl.sh [command]
 
-  setup                       first-time Pi provisioning
-                              requires: WIFI1_SSID, WIFI1_PSK, WIFI2_SSID, WIFI2_PSK
+Provisioning:
+  setup-full                  full provisioning: setup then harden
+  setup                       base install (requires: WIFI1_SSID/PSK, WIFI2_SSID/PSK)
+  harden                      security hardening (firewall, watchdog, udev, upgrades)
+
+Service management:
   status                      systemd status for qlcplus-web.service
   restart                     restart qlcplus-web.service
   logs                        last 80 lines from the service journal
   tail                        follow service logs live
   health                      check service, web UI reachability, and ENTTEC USB
-  lsusb                       show USB devices (ENTTEC should appear)
+
+QLC+:
   qlc-version                 run qlcplus --version on the Pi
-  qlc-headless                push Qt platform fix to Pi (sets QT_QPA_PLATFORM=minimal)
+  qlc-headless                push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
+  deploy-workspace <file.qxw> upload a workspace to the Pi and restart the service
+  open-web                    open the web UI in the default browser
+
+Network / WiFi:
   wifi                        dump /etc/wpa_supplicant/wpa_supplicant.conf
   wifi-reconf                 run wpa_cli -i wlan0 reconfigure
   wifi-status                 show current SSID and wlan0 address
+  wifi-edit                   edit /etc/wpa_supplicant/wpa_supplicant.conf
+
+System:
   update                      apt update && apt upgrade on the Pi
   backup                      pull QLC+ config dirs to BACKUP_STORAGE
-  deploy-workspace <file.qxw> upload a workspace to the Pi and restart the service
-  gen-cert [days]             generate a self-signed TLS cert/key in certs/ (default: 730 days)
-  ssl-proxy [cert] [key]      install stunnel on Pi, redirect 443 → QLC_PORT
-  hdmi-disable                append hdmi_blanking=2 to /boot/config.txt
-  open-web                    open the web UI in the default browser
+  lsusb                       show USB devices (ENTTEC should appear)
+  hdmi-disable                disable HDMI output to save power
+  reboot                      reboot the Pi
+  poweroff                    shut down the Pi
   ssh                         open an interactive shell on the Pi
-  wifi-edit                   edit /etc/wpa_supplicant/wpa_supplicant.conf
   edit <path>                 edit an arbitrary file on the Pi
+
+TLS:
+  gen-cert [days]             generate a self-signed cert/key in certs/ (default: 730 days)
+  ssl-proxy [cert] [key]      install stunnel on Pi, redirect 443 → QLC_PORT
 ```
 
 **Environment variables** (set in `.env` or exported):
@@ -170,23 +201,19 @@ From here, add your fixtures, map DMX universes, and build a Virtual Console lay
 Plug into the Pi, then verify detection:
 
 ```bash
-./lightsctl.sh lsusb
-# expect: FTDI DMX USB PRO
+./lightsctl.sh lsusb     # expect: FTDI DMX USB PRO
+./lightsctl.sh health    # confirms service + web UI + USB all green
 ```
 
-QLC+ detects it automatically as a DMX output universe. Configure the universe in QLC+ under **Inputs/Outputs**.
+After `harden` is run, the device also gets a stable symlink at `/dev/dmx0` via udev, so QLC+ always finds it regardless of which USB port it's in.
 
 ---
 
 ## Configuring Fixtures
 
-Fixture profiles, DMX addresses, and workspace layout are managed entirely within QLC+. Access the designer from any browser:
+Fixture profiles, DMX addresses, and workspace layout are managed entirely within QLC+. Access the designer from any browser at `http://lights.local:9999`.
 
-```
-http://lights.local:9999
-```
-
-Once your workspace is ready, commit it to this repo under `workspaces/` and use `deploy-workspace` to push updates to the Pi:
+Once your workspace is ready, save it to `workspaces/` in this repo and deploy it to the Pi:
 
 ```bash
 ./lightsctl.sh deploy-workspace workspaces/studio.qxw
@@ -207,7 +234,7 @@ static routers=192.168.1.1
 static domain_name_servers=192.168.1.1
 ```
 
-Then restart the DHCP client. On Raspberry Pi OS Lite the unit is `dhcpcd5`:
+On Raspberry Pi OS Lite the DHCP service is named `dhcpcd5`:
 
 ```bash
 sudo systemctl restart dhcpcd5
@@ -217,11 +244,11 @@ sudo ip link set wlan0 down && sudo ip link set wlan0 up
 
 ### HTTPS
 
-Generate a self-signed cert and install it on the Pi in one step:
+Generate a self-signed cert and install it on the Pi:
 
 ```bash
 ./lightsctl.sh gen-cert        # writes certs/qlc.crt + certs/qlc.key
-./lightsctl.sh ssl-proxy       # installs stunnel on Pi, proxies 443 → QLC_PORT
+./lightsctl.sh ssl-proxy       # installs stunnel, proxies 443 → QLC_PORT
 ```
 
 ### Backups
@@ -240,13 +267,17 @@ Run after any workspace change. Pulls `.config/qlcplus` and `.qlcplus` from the 
 
 ```bash
 ./lightsctl.sh lsusb
+./lightsctl.sh health
 ```
 
-Check the USB cable and that QLC+ has access to `/dev/ttyUSB*`. The Pi user may need to be in the `dialout` group:
+If `harden` has been run, the device should appear at `/dev/dmx0` — replug it to trigger the udev rule. If the Pi user can't access the device, confirm they are in the `dialout` group:
 
 ```bash
-sudo usermod -aG dialout $USER
+./lightsctl.sh ssh
+groups $USER   # should include dialout
 ```
+
+A logout/login (or reboot) is required for group changes to take effect.
 
 ### QLC+ service fails to start
 
@@ -254,7 +285,7 @@ sudo usermod -aG dialout $USER
 ./lightsctl.sh logs
 ```
 
-If logs show Qt platform errors, run `./lightsctl.sh qlc-headless` to apply the `QT_QPA_PLATFORM=minimal` drop-in.
+If logs show Qt platform errors, run `./lightsctl.sh qlc-headless` to apply the `QT_QPA_PLATFORM=minimal` drop-in. The service has a crash loop guard (`StartLimitBurst=5` in 60 s) — if it keeps restarting, check `logs` for the root cause before it stops trying.
 
 ### Lights not responding
 
@@ -265,7 +296,7 @@ If logs show Qt platform errors, run `./lightsctl.sh qlc-headless` to apply the 
 
 ### DNS fails during setup
 
-`pi_lights_setup.sh` automatically waits up to 60 s for DNS to recover after WiFi reconfiguration and injects `nameserver 1.1.1.1` if still failing. To fix manually:
+`pi_lights_setup.sh` automatically waits up to 60 s for DNS to recover after WiFi reconfiguration and injects `nameserver 1.1.1.1` if still failing. To fix manually on the Pi:
 
 ```bash
 echo 'nameserver 1.1.1.1' | sudo tee -a /etc/resolv.conf

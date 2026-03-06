@@ -21,10 +21,10 @@ fi
 ssh "${PI_USER}@${PI_HOST}" "sudo bash -s" <<EOF
 set -euo pipefail
 
-echo "[1/7] Hostname"
+echo "[1/8] Hostname"
 hostnamectl set-hostname "${HOSTNAME}"
 
-echo "[2/7] Packages"
+echo "[2/8] Packages"
 apt-get update
 apt-get -y upgrade
 apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpasupplicant iw
@@ -32,7 +32,7 @@ apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpas
 systemctl enable avahi-daemon
 systemctl start avahi-daemon
 
-echo "[3/7] Configure Wi-Fi with two networks"
+echo "[3/8] Configure Wi-Fi with two networks"
 WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
 cp -a "\${WPA_CONF}" "\${WPA_CONF}.bak.\$(date +%s)" || true
 
@@ -59,7 +59,7 @@ WPA
 chmod 600 "\${WPA_CONF}"
 systemctl restart wpa_supplicant || true
 
-echo "[4/7] Waiting for network after Wi-Fi reconfiguration"
+echo "[4/8] Waiting for network after Wi-Fi reconfiguration"
 _dns_ok=0
 for _cnt in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if getent hosts deb.debian.org >/dev/null 2>&1; then
@@ -76,7 +76,7 @@ if [[ \${_dns_ok} -eq 0 ]]; then
   apt-get update -q
 fi
 
-echo "[5/7] Install QLC+ (best effort)"
+echo "[5/8] Install QLC+ (best effort)"
 if apt-cache show qlcplus >/dev/null 2>&1; then
   apt-get install -y qlcplus || {
     echo "  Install failed; refreshing package lists and retrying..."
@@ -88,7 +88,7 @@ else
   echo "We'll still set up the service assuming /usr/bin/qlcplus exists after you install it."
 fi
 
-echo "[6/7] Create QLC+ systemd service (headless web UI)"
+echo "[6/8] Create QLC+ systemd service (headless web UI)"
 SERVICE_FILE="/etc/systemd/system/qlcplus-web.service"
 
 cat > "\${SERVICE_FILE}" <<SERVICE
@@ -96,6 +96,8 @@ cat > "\${SERVICE_FILE}" <<SERVICE
 Description=QLC+ Headless Web Interface
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -117,7 +119,21 @@ systemctl daemon-reload
 systemctl enable qlcplus-web.service
 systemctl restart qlcplus-web.service || true
 
-echo "[7/7] Done"
+echo "[7/8] System configuration"
+# Persist journal logs across reboots
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/persistent.conf <<JCONF
+[Journal]
+Storage=persistent
+JCONF
+systemctl restart systemd-journald
+echo "  Journal storage set to persistent."
+
+# ENTTEC USB access without sudo
+usermod -aG dialout ${PI_USER}
+echo "  ${PI_USER} added to dialout group (takes effect on next login)."
+
+echo "[8/8] Done"
 echo "  ENTTEC check:  lsusb"
 echo "  QLC+ web:      http://${HOSTNAME}.local:${QLC_PORT}"
 systemctl status qlcplus-web.service --no-pager || true
