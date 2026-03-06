@@ -77,6 +77,7 @@ QLC+:
   qlc-version                   run qlcplus --version on the Pi
   qlc-headless                  push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
   deploy-workspace <file.qxw>   upload workspace to Pi and restart service
+  pull-workspace [output.qxw]   download current workspace from Pi
   list-fixtures                 show installed fixture definitions
   open-web                      open the web UI in the default browser
 
@@ -585,6 +586,50 @@ function command_deploy_workspace() {
   echo "Service updated with --workspace ${remote_path} and restarted"
 }
 
+function command_pull_workspace() {
+  local output="${1:-}"
+  local service_file="/etc/systemd/system/qlcplus-web.service"
+  
+  # Get the current workspace path from the service file
+  local remote_workspace
+  remote_workspace=$(run_sudo grep "ExecStart=" "$service_file" | sed -n 's/.*--workspace \([^ ]*\).*/\1/p')
+  
+  if [[ -z "$remote_workspace" ]]; then
+    echo "No workspace configured in service file" >&2
+    echo "Service is running without a specific workspace" >&2
+    return 1
+  fi
+  
+  # Check if the workspace file exists on the Pi
+  if ! run test -f "$remote_workspace" 2>/dev/null; then
+    echo "Workspace file not found on Pi: ${remote_workspace}" >&2
+    return 1
+  fi
+  
+  # Determine output filename
+  if [[ -z "$output" ]]; then
+    local filename
+    filename="$(basename "$remote_workspace")"
+    output="${SCRIPT_DIR}/workspaces/${filename}"
+  fi
+  
+  # Create workspaces directory if it doesn't exist
+  mkdir -p "$(dirname "$output")"
+  
+  # Download the workspace
+  echo "Downloading ${remote_workspace} from Pi..."
+  "${SCP_CMD[@]}" "${PI_USER}@${PI_HOST}:${remote_workspace}" "$output"
+  
+  echo "Workspace saved to: ${output}"
+  
+  # Show file info
+  if [[ -f "$output" ]]; then
+    local size
+    size=$(ls -lh "$output" | awk '{print $5}')
+    echo "Size: ${size}"
+  fi
+}
+
 function command_open_web() {
   local url="http://${PI_HOSTNAME}.local:${QLC_PORT}"
   echo "Headless UI: ${url}"
@@ -846,6 +891,7 @@ case "$1" in
   ssl-proxy) shift; command_ssl_proxy "$@" ;;
   health) command_health ;;
   deploy-workspace) shift; command_deploy_workspace "$@" ;;
+  pull-workspace) shift; command_pull_workspace "$@" ;;
   open-web) command_open_web ;;
   landing-setup) command_landing_setup ;;
   landing-deploy) command_landing_deploy ;;

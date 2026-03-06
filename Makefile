@@ -2,7 +2,7 @@ CTL := ./lightsctl.sh
 
 .PHONY: help check validate status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
-        qlc-headless list-fixtures deploy-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
+        qlc-headless list-fixtures deploy-workspace pull-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
         reboot poweroff hdmi-disable landing-setup landing-deploy
 
 help:
@@ -81,6 +81,10 @@ list-fixtures:
 # deploy usage: make deploy WS=workspaces/studio.qxw
 deploy:
 	$(CTL) deploy-workspace $(WS)
+
+# pull usage: make pull [OUTPUT=custom-name.qxw]
+pull:
+	$(CTL) pull-workspace $(OUTPUT)
 
 open:
 	$(CTL) open-web
