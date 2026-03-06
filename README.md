@@ -2,14 +2,12 @@
 
 ## Overview
 
-Headless Raspberry Pi lighting controller for a studio environment using:
+Headless Raspberry Pi lighting controller for a studio environment. Anyone on the network can control lights from a phone or browser via the QLC+ web UI hosted on the Pi.
 
+**Core stack:**
 - **QLC+** — open source lighting control software
 - **ENTTEC DMX USB Pro** — USB → DMX interface
-- **Chauvet D-Fi Hub 2** — wireless DMX transmitter
-- **Chauvet SlimPAR fixtures** — wireless DMX receivers
-
-Anyone in the studio can control lighting from a phone or browser via the QLC+ web UI hosted on the Pi.
+- **Wireless or wired DMX** — connect any QLC+-compatible fixtures
 
 ---
 
@@ -29,29 +27,25 @@ Phones / Tablets / Laptops
             │
             │ DMX
             ▼
-      D-Fi Hub 2 (Transmit)
+  DMX Interface / Transmitter
+   (wired or wireless)
             │
-        Wireless DMX
             ▼
-    SlimPAR Pro (Receiver)
-            │
-         DMX OUT
-            ▼
-      SlimPAR 56
+      DMX Fixtures
 ```
 
 ---
 
 ## Hardware
 
-| Device                          | Purpose                  |
-| ------------------------------- | ------------------------ |
-| Raspberry Pi 4                  | Lighting controller host |
-| MicroSD Card (16–32 GB)         | OS and configuration     |
-| ENTTEC DMX USB Pro              | USB → DMX interface      |
-| Chauvet D-Fi Hub 2              | Wireless DMX transmitter |
-| Chauvet D-Fi USB receivers      | Wireless DMX receivers   |
-| DMX cables (110 Ω)              | Daisy-chaining fixtures  |
+| Device                          | Purpose                          |
+| ------------------------------- | -------------------------------- |
+| Raspberry Pi (3B+ or newer)     | Lighting controller host         |
+| MicroSD Card (16–32 GB)         | OS and configuration             |
+| ENTTEC DMX USB Pro              | USB → DMX interface              |
+| DMX fixtures                    | Any QLC+-compatible fixture      |
+| Wireless DMX system (optional)  | Cable-free fixture control       |
+| DMX cables (110 Ω)              | Daisy-chaining wired fixtures    |
 
 ---
 
@@ -92,14 +86,10 @@ Phones / Tablets / Laptops
 
 ### 1. Configure `.env`
 
-Create `.env` next to `lightsctl.sh`:
+Copy `.env.example` to `.env` and fill in your values:
 
 ```bash
-PI_HOST=lights.local
-PI_USER=pi
-QLC_PORT=9999
-SSH_KEY=~/.ssh/your_key
-BACKUP_STORAGE=./backups
+cp .env.example .env
 ```
 
 ### 2. Provision the Pi
@@ -111,27 +101,20 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ```
 
 This runs `scripts/pi_lights_setup.sh` on the Pi, which:
-- Sets the hostname
-- Installs packages (avahi, tmux, htop, git, curl, usbutils, wpasupplicant)
+- Sets the hostname and installs required packages
 - Configures dual WiFi (studio network takes priority)
 - Waits for DNS to recover after WiFi reconfiguration
-- Installs QLC+ (with automatic retry if the network hiccups)
-- Creates and enables the `qlcplus-web.service` systemd unit
+- Installs QLC+ with automatic retry on network hiccups
+- Creates and enables the `qlcplus-web.service` systemd unit with headless Qt configured
 
-### 3. Fix headless Qt (first time only)
-
-```bash
-./lightsctl.sh qlc-headless
-```
-
-Sets `QT_QPA_PLATFORM=minimal` via a systemd drop-in so QLC+ runs without X11.
-
-### 4. Open the web UI
+### 3. Open the web UI
 
 ```bash
 ./lightsctl.sh open-web
-# → http://lights.local:9999
+# → opens http://lights.local:9999 in your browser
 ```
+
+From here, add your fixtures, map DMX universes, and build a Virtual Console layout for studio use.
 
 ---
 
@@ -142,26 +125,29 @@ Sets `QT_QPA_PLATFORM=minimal` via a systemd drop-in so QLC+ runs without X11.
 ```
 ./lightsctl.sh [command]
 
-Commands:
-  setup               provision the Pi via scripts/pi_lights_setup.sh
-  status              systemd status for qlcplus-web.service
-  restart             restart qlcplus-web.service
-  logs                last 80 lines from the service journal
-  tail                follow service logs live
-  lsusb               show USB devices (ENTTEC should appear)
-  qlc-version         run qlcplus --version on the Pi
-  qlc-headless        push configure_qlc_headless.sh and run it (sets QT_QPA_PLATFORM=minimal)
-  wifi                dump /etc/wpa_supplicant/wpa_supplicant.conf
-  wifi-reconf         run wpa_cli -i wlan0 reconfigure
-  wifi-status         show current SSID and wlan0 address
-  update              apt update && apt upgrade on the Pi
-  backup              pull QLC+ config dirs to BACKUP_STORAGE
-  hdmi-disable        append hdmi_blanking=2 to /boot/config.txt
-  ssl-proxy <crt> <key>  install stunnel, redirect 443 → QLC_PORT
-  open-web            print the web UI URLs
-  ssh                 open an interactive shell on the Pi
-  wifi-edit           edit /etc/wpa_supplicant/wpa_supplicant.conf
-  edit <path>         edit an arbitrary file on the Pi
+  setup                       first-time Pi provisioning
+                              requires: WIFI1_SSID, WIFI1_PSK, WIFI2_SSID, WIFI2_PSK
+  status                      systemd status for qlcplus-web.service
+  restart                     restart qlcplus-web.service
+  logs                        last 80 lines from the service journal
+  tail                        follow service logs live
+  health                      check service, web UI reachability, and ENTTEC USB
+  lsusb                       show USB devices (ENTTEC should appear)
+  qlc-version                 run qlcplus --version on the Pi
+  qlc-headless                push Qt platform fix to Pi (sets QT_QPA_PLATFORM=minimal)
+  wifi                        dump /etc/wpa_supplicant/wpa_supplicant.conf
+  wifi-reconf                 run wpa_cli -i wlan0 reconfigure
+  wifi-status                 show current SSID and wlan0 address
+  update                      apt update && apt upgrade on the Pi
+  backup                      pull QLC+ config dirs to BACKUP_STORAGE
+  deploy-workspace <file.qxw> upload a workspace to the Pi and restart the service
+  gen-cert [days]             generate a self-signed TLS cert/key in certs/ (default: 730 days)
+  ssl-proxy [cert] [key]      install stunnel on Pi, redirect 443 → QLC_PORT
+  hdmi-disable                append hdmi_blanking=2 to /boot/config.txt
+  open-web                    open the web UI in the default browser
+  ssh                         open an interactive shell on the Pi
+  wifi-edit                   edit /etc/wpa_supplicant/wpa_supplicant.conf
+  edit <path>                 edit an arbitrary file on the Pi
 ```
 
 **Environment variables** (set in `.env` or exported):
@@ -188,37 +174,23 @@ Plug into the Pi, then verify detection:
 # expect: FTDI DMX USB PRO
 ```
 
-QLC+ detects it automatically as a DMX output universe.
+QLC+ detects it automatically as a DMX output universe. Configure the universe in QLC+ under **Inputs/Outputs**.
 
 ---
 
-## Fixture Addressing
+## Configuring Fixtures
 
-| Fixture     | Mode | DMX Address |
-| ----------- | ---- | ----------- |
-| SlimPAR Pro | 7CH  | d001        |
-| SlimPAR 56  | 3CH  | d008        |
-
-| Channel | Function         |
-| ------- | ---------------- |
-| 1–7     | SlimPAR Pro      |
-| 8       | SlimPAR 56 Red   |
-| 9       | SlimPAR 56 Green |
-| 10      | SlimPAR 56 Blue  |
-
----
-
-## QLC+ Virtual Console
-
-Create large buttons in the Virtual Console for studio use:
+Fixture profiles, DMX addresses, and workspace layout are managed entirely within QLC+. Access the designer from any browser:
 
 ```
-Warm White  |  Cool White  |  Blue Wash
-Red Wash    |  Bright      |  Soft
-            |   All Off    |
+http://lights.local:9999
 ```
 
-Access from any device on the network: `http://lights.local:9999`
+Once your workspace is ready, commit it to this repo under `workspaces/` and use `deploy-workspace` to push updates to the Pi:
+
+```bash
+./lightsctl.sh deploy-workspace workspaces/studio.qxw
+```
 
 ---
 
@@ -235,7 +207,7 @@ static routers=192.168.1.1
 static domain_name_servers=192.168.1.1
 ```
 
-Then restart the DHCP client. Note: on Raspberry Pi OS Lite the service name is `dhcpcd5`, not `dhcpcd`:
+Then restart the DHCP client. On Raspberry Pi OS Lite the unit is `dhcpcd5`:
 
 ```bash
 sudo systemctl restart dhcpcd5
@@ -245,11 +217,12 @@ sudo ip link set wlan0 down && sudo ip link set wlan0 up
 
 ### HTTPS
 
-```bash
-./lightsctl.sh ssl-proxy certs/qlc.crt certs/qlc.key
-```
+Generate a self-signed cert and install it on the Pi in one step:
 
-Installs `stunnel4`, proxies 443 → `QLC_PORT`, and saves iptables rules.
+```bash
+./lightsctl.sh gen-cert        # writes certs/qlc.crt + certs/qlc.key
+./lightsctl.sh ssl-proxy       # installs stunnel on Pi, proxies 443 → QLC_PORT
+```
 
 ### Backups
 
@@ -269,7 +242,11 @@ Run after any workspace change. Pulls `.config/qlcplus` and `.qlcplus` from the 
 ./lightsctl.sh lsusb
 ```
 
-Check USB cable and permissions. QLC+ must have access to the `/dev/ttyUSB*` device.
+Check the USB cable and that QLC+ has access to `/dev/ttyUSB*`. The Pi user may need to be in the `dialout` group:
+
+```bash
+sudo usermod -aG dialout $USER
+```
 
 ### QLC+ service fails to start
 
@@ -277,19 +254,18 @@ Check USB cable and permissions. QLC+ must have access to the `/dev/ttyUSB*` dev
 ./lightsctl.sh logs
 ```
 
-If the log shows Qt platform errors, run `./lightsctl.sh qlc-headless` to apply the `QT_QPA_PLATFORM=minimal` fix.
+If logs show Qt platform errors, run `./lightsctl.sh qlc-headless` to apply the `QT_QPA_PLATFORM=minimal` drop-in.
 
 ### Lights not responding
 
-- Confirm universe output is enabled in QLC+
-- Confirm ENTTEC is selected as the output plugin
-- Verify DMX addresses match fixture DIP switch settings
-- Confirm D-Fi Hub 2 is in **Transmit** mode
-- Confirm wireless channel on Hub 2 matches receivers
+- Confirm universe output is enabled in QLC+ under **Inputs/Outputs**
+- Confirm ENTTEC is selected as the output plugin for the correct universe
+- Verify fixture DMX addresses match their DIP switch or menu settings
+- If using wireless DMX, confirm the transmitter is in **Transmit** mode and channels match
 
 ### DNS fails during setup
 
-`pi_lights_setup.sh` automatically waits up to 60 s for DNS to recover after WiFi reconfiguration and injects `nameserver 1.1.1.1` if resolution is still failing. If you need to fix it manually:
+`pi_lights_setup.sh` automatically waits up to 60 s for DNS to recover after WiFi reconfiguration and injects `nameserver 1.1.1.1` if still failing. To fix manually:
 
 ```bash
 echo 'nameserver 1.1.1.1' | sudo tee -a /etc/resolv.conf
@@ -309,10 +285,9 @@ sudo systemctl restart dhcpcd5
 
 ## Future Enhancements
 
-- ArtNet support
+- ArtNet / sACN output support
 - MIDI controller integration
-- StreamDeck lighting control
-- Motion-triggered scenes
-- Scheduled scenes
-- Custom React/Node lighting UI
-- Dedicated WiFi VLAN for lights
+- StreamDeck scene control
+- Motion-triggered or scheduled scenes
+- Custom web UI (React/Node)
+- Dedicated WiFi VLAN for lighting traffic
