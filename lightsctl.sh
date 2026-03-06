@@ -74,6 +74,7 @@ Service:
   validate                      pre-flight validation (config, connectivity, dependencies)
   doctor                        comprehensive system health check with recommendations
   perf [seconds]                monitor CPU, memory, network usage over time (default: 10s)
+  benchmark                     test system performance (web UI latency, network speed)
 
 QLC+:
   qlc-version                   run qlcplus --version on the Pi
@@ -458,6 +459,134 @@ function command_perf() {
   
   echo ""
   echo "Monitoring complete."
+}
+
+function command_benchmark() {
+  echo "=== System Benchmark ==="
+  echo "Testing system performance..."
+  echo ""
+  
+  # Test 1: Network latency (ping)
+  echo "--- Network Latency ---"
+  printf '%-30s' "Ping test (10 packets):"
+  local ping_result
+  ping_result=$(ping -c10 -W2 "${PI_HOST}" 2>/dev/null | tail -1)
+  if [[ -n "$ping_result" ]]; then
+    local avg_latency
+    avg_latency=$(echo "$ping_result" | awk -F'/' '{print $5}')
+    echo "${avg_latency} ms avg"
+  else
+    echo "failed"
+  fi
+  
+  # Test 2: SSH connection time
+  printf '%-30s' "SSH connection time:"
+  local ssh_start ssh_end ssh_time
+  ssh_start=$(date +%s%N)
+  if "${REMOTE_CMD[@]}" -o ConnectTimeout=5 true 2>/dev/null; then
+    ssh_end=$(date +%s%N)
+    ssh_time=$(( (ssh_end - ssh_start) / 1000000 ))
+    echo "${ssh_time} ms"
+  else
+    echo "failed"
+  fi
+  
+  # Test 3: Web UI response time
+  echo ""
+  echo "--- Web UI Performance ---"
+  printf '%-30s' "Web UI response time:"
+  local web_times=()
+  for i in {1..5}; do
+    local web_start web_end web_time
+    web_start=$(date +%s%N)
+    if run curl -sf --max-time 5 "http://127.0.0.1:${QLC_PORT}" >/dev/null 2>&1; then
+      web_end=$(date +%s%N)
+      web_time=$(( (web_end - web_start) / 1000000 ))
+      web_times+=("$web_time")
+    fi
+  done
+  
+  if [[ ${#web_times[@]} -gt 0 ]]; then
+    local sum=0
+    for t in "${web_times[@]}"; do
+      ((sum += t))
+    done
+    local avg=$((sum / ${#web_times[@]}))
+    echo "${avg} ms avg (${#web_times[@]} samples)"
+  else
+    echo "failed"
+  fi
+  
+  # Test 4: File transfer speed (small file)
+  echo ""
+  echo "--- File Transfer Speed ---"
+  printf '%-30s' "Upload test (1KB):"
+  local test_file
+  test_file=$(mktemp)
+  dd if=/dev/zero of="$test_file" bs=1024 count=1 2>/dev/null
+  
+  local upload_start upload_end upload_time
+  upload_start=$(date +%s%N)
+  if "${SCP_CMD[@]}" "$test_file" "${PI_USER}@${PI_HOST}:/tmp/benchmark-test" 2>/dev/null; then
+    upload_end=$(date +%s%N)
+    upload_time=$(( (upload_end - upload_start) / 1000000 ))
+    echo "${upload_time} ms"
+  else
+    echo "failed"
+  fi
+  
+  printf '%-30s' "Download test (1KB):"
+  local download_start download_end download_time
+  download_start=$(date +%s%N)
+  if "${SCP_CMD[@]}" "${PI_USER}@${PI_HOST}:/tmp/benchmark-test" "${test_file}.download" 2>/dev/null; then
+    download_end=$(date +%s%N)
+    download_time=$(( (download_end - download_start) / 1000000 ))
+    echo "${download_time} ms"
+  else
+    echo "failed"
+  fi
+  
+  # Cleanup
+  rm -f "$test_file" "${test_file}.download"
+  run rm -f /tmp/benchmark-test 2>/dev/null || true
+  
+  # Test 5: System performance on Pi
+  echo ""
+  echo "--- Pi System Performance ---"
+  printf '%-30s' "CPU speed:"
+  local cpu_freq
+  cpu_freq=$(run cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo "0")
+  if [[ $cpu_freq -gt 0 ]]; then
+    local cpu_mhz=$((cpu_freq / 1000))
+    echo "${cpu_mhz} MHz"
+  else
+    echo "n/a"
+  fi
+  
+  printf '%-30s' "Memory speed test:"
+  local mem_start mem_end mem_time
+  mem_start=$(date +%s%N)
+  run dd if=/dev/zero of=/dev/null bs=1M count=100 2>/dev/null || true
+  mem_end=$(date +%s%N)
+  mem_time=$(( (mem_end - mem_start) / 1000000 ))
+  echo "${mem_time} ms (100MB)"
+  
+  printf '%-30s' "Disk write speed:"
+  local disk_start disk_end disk_time
+  disk_start=$(date +%s%N)
+  run dd if=/dev/zero of=/tmp/benchmark-disk bs=1M count=10 conv=fsync 2>/dev/null || true
+  disk_end=$(date +%s%N)
+  disk_time=$(( (disk_end - disk_start) / 1000000 ))
+  if [[ $disk_time -gt 0 ]]; then
+    local disk_speed=$((10000 / disk_time))
+    echo "${disk_speed} MB/s"
+  else
+    echo "n/a"
+  fi
+  run rm -f /tmp/benchmark-disk 2>/dev/null || true
+  
+  echo ""
+  echo "Benchmark complete."
 }
 
 function command_check() {
@@ -1183,6 +1312,7 @@ case "$1" in
   diagnose) command_diagnose ;;
   doctor) command_doctor ;;
   perf) shift; command_perf "$@" ;;
+  benchmark) command_benchmark ;;
   add-key) shift; command_add_key "$@" ;;
   disable-password-auth) command_disable_password_auth ;;
   static-ip) shift; command_static_ip "$@" ;;
