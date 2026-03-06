@@ -95,6 +95,7 @@ System:
   lsusb                         show USB devices (ENTTEC should appear)
   backup                        pull QLC+ config dirs to ${BACKUP_STORAGE}
   restore <backup.tar.gz>       restore QLC+ config from backup and restart service
+  os-version                    show Raspberry Pi OS and kernel version
   hdmi-disable                  disable HDMI to save power
   reboot                        reboot the Pi
   poweroff                      shut down the Pi
@@ -1103,6 +1104,107 @@ EOF
   echo "Appended hdmi_blanking=2 to ${config}"
 }
 
+function command_os_version() {
+  echo "=== Raspberry Pi OS Information ==="
+  echo ""
+  
+  printf '%-20s' "OS Release:"
+  if run test -f /etc/os-release 2>/dev/null; then
+    local os_name os_version
+    os_name=$(run grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d'"' -f2)
+    echo "${os_name}"
+  else
+    echo "unknown"
+  fi
+  
+  printf '%-20s' "Kernel:"
+  local kernel
+  kernel=$(run uname -r 2>/dev/null || echo "unknown")
+  echo "${kernel}"
+  
+  printf '%-20s' "Architecture:"
+  local arch
+  arch=$(run uname -m 2>/dev/null || echo "unknown")
+  echo "${arch}"
+  
+  printf '%-20s' "Hostname:"
+  local hostname
+  hostname=$(run hostname 2>/dev/null || echo "unknown")
+  echo "${hostname}"
+  
+  echo ""
+  echo "--- Hardware ---"
+  
+  printf '%-20s' "Model:"
+  if run test -f /proc/device-tree/model 2>/dev/null; then
+    local model
+    model=$(run cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
+    echo "${model}"
+  else
+    echo "unknown"
+  fi
+  
+  printf '%-20s' "Serial:"
+  if run test -f /proc/cpuinfo 2>/dev/null; then
+    local serial
+    serial=$(run grep '^Serial' /proc/cpuinfo 2>/dev/null | awk '{print $3}')
+    if [[ -n "$serial" ]]; then
+      echo "${serial}"
+    else
+      echo "unknown"
+    fi
+  else
+    echo "unknown"
+  fi
+  
+  printf '%-20s' "Revision:"
+  if run test -f /proc/cpuinfo 2>/dev/null; then
+    local revision
+    revision=$(run grep '^Revision' /proc/cpuinfo 2>/dev/null | awk '{print $3}')
+    if [[ -n "$revision" ]]; then
+      echo "${revision}"
+    else
+      echo "unknown"
+    fi
+  else
+    echo "unknown"
+  fi
+  
+  echo ""
+  echo "--- Software Versions ---"
+  
+  printf '%-20s' "QLC+:"
+  if run command -v qlcplus >/dev/null 2>&1; then
+    local qlc_version
+    qlc_version=$(run qlcplus --version 2>&1 | head -1 || echo "unknown")
+    echo "${qlc_version}"
+  else
+    echo "not installed"
+  fi
+  
+  printf '%-20s' "Python:"
+  if run command -v python3 >/dev/null 2>&1; then
+    local python_version
+    python_version=$(run python3 --version 2>&1 | awk '{print $2}')
+    echo "${python_version}"
+  else
+    echo "not installed"
+  fi
+  
+  printf '%-20s' "Firmware:"
+  if run command -v vcgencmd >/dev/null 2>&1; then
+    local firmware
+    firmware=$(run vcgencmd version 2>/dev/null | head -1)
+    echo "${firmware}"
+  else
+    echo "vcgencmd not available"
+  fi
+  
+  echo ""
+  echo "--- System Uptime ---"
+  run uptime
+}
+
 function command_harden() {
   local script="${SCRIPT_DIR}/scripts/pi_harden.sh"
   if [[ ! -f "$script" ]]; then
@@ -1317,6 +1419,7 @@ case "$1" in
   disable-password-auth) command_disable_password_auth ;;
   static-ip) shift; command_static_ip "$@" ;;
   hdmi-disable) command_hdmi_disable ;;
+  os-version) command_os_version ;;
   setup) command_setup ;;
   harden) command_harden ;;
   setup-full) command_setup_full ;;

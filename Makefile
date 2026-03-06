@@ -3,7 +3,7 @@ CTL := ./lightsctl.sh
 .PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless list-fixtures install-fixture deploy-workspace pull-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
-        reboot poweroff hdmi-disable landing-setup landing-deploy
+        reboot poweroff hdmi-disable os-version landing-setup landing-deploy
 
 help:
 	@$(CTL) help
@@ -129,6 +129,9 @@ poweroff:
 
 hdmi-disable:
 	$(CTL) hdmi-disable
+
+os-version:
+	$(CTL) os-version
 
 # ── Landing page ───────────────────────────────────────────────────────────────
 landing-setup:
