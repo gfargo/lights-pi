@@ -73,6 +73,7 @@ Service:
   check                         ping + SSH pre-flight connectivity check
   validate                      pre-flight validation (config, connectivity, dependencies)
   doctor                        comprehensive system health check with recommendations
+  perf [seconds]                monitor CPU, memory, network usage over time (default: 10s)
 
 QLC+:
   qlc-version                   run qlcplus --version on the Pi
@@ -388,6 +389,75 @@ function command_doctor() {
   fi
   
   return $issues
+}
+
+function command_perf() {
+  local duration="${1:-10}"
+  local interval=1
+  
+  echo "=== Performance Monitor ==="
+  echo "Monitoring for ${duration} seconds (Ctrl+C to stop early)..."
+  echo ""
+  
+  # Print header
+  printf "%-8s %-10s %-10s %-10s %-10s %-12s %-12s\n" \
+    "Time" "CPU%" "Mem%" "Temp°C" "Load" "RX KB/s" "TX KB/s"
+  printf "%s\n" "--------------------------------------------------------------------------------"
+  
+  # Get initial network stats
+  local rx_start tx_start
+  rx_start=$(run cat /sys/class/net/wlan0/statistics/rx_bytes 2>/dev/null || echo "0")
+  tx_start=$(run cat /sys/class/net/wlan0/statistics/tx_bytes 2>/dev/null || echo "0")
+  
+  local count=0
+  while [[ $count -lt $duration ]]; do
+    # Get current time
+    local timestamp
+    timestamp=$(date +%H:%M:%S)
+    
+    # CPU usage (100 - idle%)
+    local cpu_usage
+    cpu_usage=$(run top -bn1 2>/dev/null | grep "Cpu(s)" | awk '{print 100-$8}' || echo "0")
+    
+    # Memory usage
+    local mem_usage
+    mem_usage=$(run free 2>/dev/null | awk '/^Mem:/{printf "%.1f", $3/$2*100}' || echo "0")
+    
+    # Temperature
+    local temp
+    temp=$(run cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
+    local temp_c=$((temp / 1000))
+    
+    # Load average (1 min)
+    local load
+    load=$(run uptime 2>/dev/null | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',' || echo "0")
+    
+    # Network throughput
+    local rx_current tx_current rx_rate tx_rate
+    rx_current=$(run cat /sys/class/net/wlan0/statistics/rx_bytes 2>/dev/null || echo "0")
+    tx_current=$(run cat /sys/class/net/wlan0/statistics/tx_bytes 2>/dev/null || echo "0")
+    
+    if [[ $count -gt 0 ]]; then
+      rx_rate=$(( (rx_current - rx_start) / 1024 / interval ))
+      tx_rate=$(( (tx_current - tx_start) / 1024 / interval ))
+    else
+      rx_rate=0
+      tx_rate=0
+    fi
+    
+    rx_start=$rx_current
+    tx_start=$tx_current
+    
+    # Print stats
+    printf "%-8s %-10s %-10s %-10s %-10s %-12s %-12s\n" \
+      "$timestamp" "$cpu_usage" "$mem_usage" "$temp_c" "$load" "$rx_rate" "$tx_rate"
+    
+    ((count++))
+    [[ $count -lt $duration ]] && sleep $interval
+  done
+  
+  echo ""
+  echo "Monitoring complete."
 }
 
 function command_check() {
@@ -1112,6 +1182,7 @@ case "$1" in
   validate) command_validate ;;
   diagnose) command_diagnose ;;
   doctor) command_doctor ;;
+  perf) shift; command_perf "$@" ;;
   add-key) shift; command_add_key "$@" ;;
   disable-password-auth) command_disable_password_auth ;;
   static-ip) shift; command_static_ip "$@" ;;

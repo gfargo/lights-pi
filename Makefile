@@ -1,6 +1,6 @@
 CTL := ./lightsctl.sh
 
-.PHONY: help check validate doctor status logs logs-errors tail health diagnose restart update update-qlc backup restore \
+.PHONY: help check validate doctor perf status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless list-fixtures install-fixture deploy-workspace pull-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
         reboot poweroff hdmi-disable landing-setup landing-deploy
@@ -17,6 +17,10 @@ validate:
 
 doctor:
 	$(CTL) doctor
+
+# perf usage: make perf [DURATION=30]
+perf:
+	$(CTL) perf $(DURATION)
 
 # ── Service management ────────────────────────────────────────────────────────
 status:
