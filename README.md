@@ -51,13 +51,14 @@ Phones / Tablets / Laptops
 
 ## Software Stack
 
-| Software             | Purpose                 |
-| -------------------- | ----------------------- |
-| Raspberry Pi OS Lite | Lightweight OS          |
-| QLC+                 | Lighting control engine |
-| Avahi                | mDNS (`lights.local`)   |
-| systemd              | Autostart services      |
-| wpa_supplicant       | WiFi management         |
+| Software             | Purpose                          |
+| -------------------- | -------------------------------- |
+| Raspberry Pi OS Lite | Lightweight OS                   |
+| QLC+                 | Lighting control engine          |
+| Avahi                | mDNS (`lights.local`)            |
+| nginx                | Landing page (port 80)           |
+| systemd              | Autostart services               |
+| wpa_supplicant       | WiFi management                  |
 
 ---
 
@@ -79,6 +80,8 @@ Phones / Tablets / Laptops
 
 4. Write to SD card, insert into Pi, power on.
 5. Confirm SSH works: `ssh pi@lights.local`
+
+> **Important:** the hostname set in Raspberry Pi Imager must match `PI_HOSTNAME` in your `.env` (default: `lights`). A mismatch means `lights.local` won't resolve via mDNS even though SSH may still work via IP.
 
 ---
 
@@ -259,22 +262,14 @@ Once your workspace is ready, save it to `workspaces/` in this repo and deploy i
 
 ### Static IP
 
-Edit `/etc/dhcpcd.conf` on the Pi:
-
-```
-interface wlan0
-static ip_address=192.168.1.50/24
-static routers=192.168.1.1
-static domain_name_servers=192.168.1.1
-```
-
-On Raspberry Pi OS Lite the DHCP service is named `dhcpcd5`:
+Use the built-in command:
 
 ```bash
-sudo systemctl restart dhcpcd5
-# or bounce the interface:
-sudo ip link set wlan0 down && sudo ip link set wlan0 up
+./lightsctl.sh static-ip 192.168.1.50/24 192.168.1.1
+# or: make static-ip IP=192.168.1.50/24 GW=192.168.1.1
 ```
+
+This writes the static config to `/etc/dhcpcd.conf` and restarts the DHCP service automatically.
 
 ### HTTPS
 
@@ -320,6 +315,16 @@ A logout/login (or reboot) is required for group changes to take effect.
 ```
 
 If logs show Qt platform errors, run `./lightsctl.sh qlc-headless` to apply the `QT_QPA_PLATFORM=minimal` drop-in. The service has a crash loop guard (`StartLimitBurst=5` in 60 s) — if it keeps restarting, check `logs` for the root cause before it stops trying.
+
+### QLC+ web UI connects but browser hangs
+
+If the port is open (TCP connects) but the browser never loads a page, the QLC+ web server thread has stalled — this can happen after a network disruption (e.g. during a `apt-get` run on the Pi):
+
+```bash
+./lightsctl.sh restart
+```
+
+The service recovers cleanly on restart. If it keeps stalling, check `./lightsctl.sh logs` for errors.
 
 ### Lights not responding
 
