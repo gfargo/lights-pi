@@ -79,6 +79,7 @@ QLC+:
   deploy-workspace <file.qxw>   upload workspace to Pi and restart service
   pull-workspace [output.qxw]   download current workspace from Pi
   list-fixtures                 show installed fixture definitions
+  install-fixture <file.qxf>    upload and install custom fixture definition
   open-web                      open the web UI in the default browser
 
 Network / WiFi:
@@ -468,6 +469,46 @@ function command_list_fixtures() {
   user_count=$(run find "/home/${PI_USER}/.qlcplus/fixtures" -name "*.qxf" -type f 2>/dev/null | run wc -l || echo "0")
   echo "  System: ${system_count}"
   echo "  User:   ${user_count}"
+}
+
+function command_install_fixture() {
+  local fixture_file="${1:-}"
+  if [[ -z "$fixture_file" ]]; then
+    echo "Usage: install-fixture <path/to/fixture.qxf>" >&2
+    return 1
+  fi
+  if [[ ! -f "$fixture_file" ]]; then
+    echo "Fixture file not found: ${fixture_file}" >&2
+    return 1
+  fi
+  
+  # Validate it's a .qxf file
+  if [[ ! "$fixture_file" =~ \.qxf$ ]]; then
+    echo "Error: File must have .qxf extension" >&2
+    return 1
+  fi
+  
+  local filename remote_dir remote_path
+  filename="$(basename "$fixture_file")"
+  remote_dir="/home/${PI_USER}/.qlcplus/fixtures"
+  remote_path="${remote_dir}/${filename}"
+  
+  echo "Installing fixture: ${filename}"
+  
+  # Create fixtures directory if it doesn't exist
+  run mkdir -p "$remote_dir"
+  
+  # Upload the fixture file
+  "${SCP_CMD[@]}" "$fixture_file" "${PI_USER}@${PI_HOST}:${remote_path}"
+  
+  # Fix ownership
+  run chown "${PI_USER}:${PI_USER}" "$remote_path"
+  run chmod 644 "$remote_path"
+  
+  echo "Fixture installed to: ${remote_path}"
+  echo ""
+  echo "Note: Restart QLC+ or reload the workspace to use the new fixture"
+  echo "Run: ./lightsctl.sh restart"
 }
 
 function command_wifi() {
@@ -868,6 +909,7 @@ case "$1" in
   qlc-version) command_qlc_version ;;
   qlc-headless) command_qlc_headless ;;
   list-fixtures) command_list_fixtures ;;
+  install-fixture) shift; command_install_fixture "$@" ;;
   wifi) command_wifi ;;
   wifi-reconf) command_wifi_reconf ;;
   wifi-status) command_wifi_status ;;
