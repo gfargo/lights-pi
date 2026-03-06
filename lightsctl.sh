@@ -72,6 +72,7 @@ Service:
   diagnose                      full diagnostic dump (health + logs + wifi + uptime)
   check                         ping + SSH pre-flight connectivity check
   validate                      pre-flight validation (config, connectivity, dependencies)
+  doctor                        comprehensive system health check with recommendations
 
 QLC+:
   qlc-version                   run qlcplus --version on the Pi
@@ -197,6 +198,196 @@ function command_diagnose() {
   echo ""
   echo "--- Uptime / load ---"
   run uptime
+}
+
+function command_doctor() {
+  local issues=0
+  local recommendations=()
+  
+  echo "=== System Doctor ==="
+  echo "Running comprehensive health check..."
+  echo ""
+  
+  # Run validate first
+  echo "--- Configuration & Connectivity ---"
+  if command_validate >/dev/null 2>&1; then
+    echo "✓ Validation passed"
+  else
+    echo "✗ Validation found issues (run 'validate' for details)"
+    ((issues++))
+  fi
+  
+  echo ""
+  echo "--- Service Health ---"
+  
+  # Check service restart count
+  local restart_count
+  restart_count=$(run_sudo systemctl show "${SERVICE}" -p NRestarts --value 2>/dev/null || echo "0")
+  printf '%-30s' "Service restarts:"
+  if [[ $restart_count -eq 0 ]]; then
+    echo "✓ ${restart_count} (stable)"
+  elif [[ $restart_count -lt 5 ]]; then
+    echo "⚠ ${restart_count} (monitor for issues)"
+    recommendations+=("Service has restarted ${restart_count} times - check logs for errors")
+  else
+    echo "✗ ${restart_count} (unstable)"
+    ((issues++))
+    recommendations+=("Service is unstable (${restart_count} restarts) - check logs and consider reinstalling")
+  fi
+  
+  # Check service uptime
+  local uptime_sec
+  uptime_sec=$(run_sudo systemctl show "${SERVICE}" -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo "0")
+  if [[ $uptime_sec -gt 0 ]]; then
+    local current_sec
+    current_sec=$(run cat /proc/uptime 2>/dev/null | awk '{print int($1)}' || echo "0")
+    local service_uptime=$((current_sec - uptime_sec / 1000000))
+    local uptime_hours=$((service_uptime / 3600))
+    printf '%-30s' "Service uptime:"
+    if [[ $uptime_hours -lt 1 ]]; then
+      echo "⚠ ${uptime_hours}h (recently started)"
+    else
+      echo "✓ ${uptime_hours}h"
+    fi
+  fi
+  
+  # Check for errors in recent logs
+  printf '%-30s' "Recent errors:"
+  local error_count
+  error_count=$(run_sudo journalctl -u "${SERVICE}" -n 100 --no-pager 2>/dev/null | grep -icE "error|fail|critical" || echo "0")
+  if [[ $error_count -eq 0 ]]; then
+    echo "✓ none in last 100 lines"
+  elif [[ $error_count -lt 5 ]]; then
+    echo "⚠ ${error_count} in last 100 lines"
+    recommendations+=("Found ${error_count} errors in logs - run 'logs-errors' to review")
+  else
+    echo "✗ ${error_count} in last 100 lines"
+    ((issues++))
+    recommendations+=("High error count (${error_count}) - run 'logs-errors' and 'diagnose' for details")
+  fi
+  
+  echo ""
+  echo "--- System Resources ---"
+  
+  # Memory usage
+  local mem_percent
+  mem_percent=$(run free 2>/dev/null | awk '/^Mem:/{printf "%.0f", $3/$2*100}' || echo "0")
+  printf '%-30s' "Memory usage:"
+  if [[ $mem_percent -lt 80 ]]; then
+    echo "✓ ${mem_percent}%"
+  elif [[ $mem_percent -lt 90 ]]; then
+    echo "⚠ ${mem_percent}%"
+    recommendations+=("Memory usage is high (${mem_percent}%) - consider reboot if performance degrades")
+  else
+    echo "✗ ${mem_percent}%"
+    ((issues++))
+    recommendations+=("Memory critically high (${mem_percent}%) - reboot recommended")
+  fi
+  
+  # CPU temperature
+  local temp
+  temp=$(run cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
+  if [[ $temp -gt 0 ]]; then
+    local temp_c=$((temp / 1000))
+    printf '%-30s' "CPU temperature:"
+    if [[ $temp_c -lt 70 ]]; then
+      echo "✓ ${temp_c}°C"
+    elif [[ $temp_c -lt 80 ]]; then
+      echo "⚠ ${temp_c}°C (warm)"
+      recommendations+=("CPU temperature is ${temp_c}°C - ensure adequate ventilation")
+    else
+      echo "✗ ${temp_c}°C (hot)"
+      ((issues++))
+      recommendations+=("CPU temperature is ${temp_c}°C - check cooling, may throttle performance")
+    fi
+  fi
+  
+  # Check for available updates
+  printf '%-30s' "System updates:"
+  local update_count
+  update_count=$(run_sudo apt-get update -qq 2>/dev/null && run apt list --upgradable 2>/dev/null | grep -c upgradable || echo "0")
+  if [[ $update_count -eq 0 ]]; then
+    echo "✓ system up to date"
+  else
+    echo "⚠ ${update_count} packages can be upgraded"
+    recommendations+=("${update_count} packages can be upgraded - run 'update' to apply")
+  fi
+  
+  echo ""
+  echo "--- Network ---"
+  
+  # Check WiFi signal strength
+  if run command -v iwconfig >/dev/null 2>&1; then
+    local signal
+    signal=$(run iwconfig wlan0 2>/dev/null | grep -oP 'Signal level=\K-?\d+' || echo "-100")
+    if [[ $signal -ne -100 ]]; then
+      printf '%-30s' "WiFi signal:"
+      if [[ $signal -gt -50 ]]; then
+        echo "✓ ${signal} dBm (excellent)"
+      elif [[ $signal -gt -70 ]]; then
+        echo "✓ ${signal} dBm (good)"
+      elif [[ $signal -gt -80 ]]; then
+        echo "⚠ ${signal} dBm (fair)"
+        recommendations+=("WiFi signal is weak (${signal} dBm) - consider moving Pi closer to router")
+      else
+        echo "✗ ${signal} dBm (poor)"
+        ((issues++))
+        recommendations+=("WiFi signal is poor (${signal} dBm) - connection may be unstable")
+      fi
+    fi
+  fi
+  
+  echo ""
+  echo "--- Backup Status ---"
+  
+  # Check when last backup was made
+  if [[ -d "$BACKUP_STORAGE" ]]; then
+    local latest_backup
+    latest_backup=$(ls -t "${BACKUP_STORAGE}"/*.tar.gz 2>/dev/null | head -1)
+    if [[ -n "$latest_backup" ]]; then
+      local backup_age_days
+      backup_age_days=$(( ($(date +%s) - $(stat -f %m "$latest_backup" 2>/dev/null || stat -c %Y "$latest_backup" 2>/dev/null || echo "0")) / 86400 ))
+      printf '%-30s' "Last backup:"
+      if [[ $backup_age_days -eq 0 ]]; then
+        echo "✓ today"
+      elif [[ $backup_age_days -lt 7 ]]; then
+        echo "✓ ${backup_age_days} days ago"
+      elif [[ $backup_age_days -lt 30 ]]; then
+        echo "⚠ ${backup_age_days} days ago"
+        recommendations+=("Last backup was ${backup_age_days} days ago - run 'backup' to create fresh backup")
+      else
+        echo "✗ ${backup_age_days} days ago"
+        ((issues++))
+        recommendations+=("Last backup was ${backup_age_days} days ago - backup immediately!")
+      fi
+    else
+      echo "✗ No backups found"
+      ((issues++))
+      recommendations+=("No backups found - run 'backup' to create your first backup")
+    fi
+  else
+    echo "⚠ Backup directory not found"
+    recommendations+=("Backup directory doesn't exist - will be created on first backup")
+  fi
+  
+  echo ""
+  echo "=== Summary ==="
+  if [[ $issues -eq 0 && ${#recommendations[@]} -eq 0 ]]; then
+    echo "✓ System is healthy! No issues or recommendations."
+  else
+    if [[ $issues -gt 0 ]]; then
+      echo "Found ${issues} issue(s) requiring attention"
+    fi
+    if [[ ${#recommendations[@]} -gt 0 ]]; then
+      echo ""
+      echo "Recommendations:"
+      for rec in "${recommendations[@]}"; do
+        echo "  • ${rec}"
+      done
+    fi
+  fi
+  
+  return $issues
 }
 
 function command_check() {
@@ -920,6 +1111,7 @@ case "$1" in
   check) command_check ;;
   validate) command_validate ;;
   diagnose) command_diagnose ;;
+  doctor) command_doctor ;;
   add-key) shift; command_add_key "$@" ;;
   disable-password-auth) command_disable_password_auth ;;
   static-ip) shift; command_static_ip "$@" ;;
