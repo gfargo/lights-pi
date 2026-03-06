@@ -91,7 +91,7 @@ Network / WiFi:
   wifi-reconf                   run wpa_cli -i wlan0 reconfigure
   wifi-status                   show SSID and wlan0 address
   wifi-edit                     edit the Wi-Fi config in \$EDITOR
-  scan [yes]                    scan network for Raspberry Pi devices (hostname + MAC + optional IP scan)
+  scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
 System:
   lsusb                         show USB devices (ENTTEC should appear)
@@ -1178,7 +1178,11 @@ function command_wifi_edit() {
 }
 
 function command_scan() {
-  local scan_ips="${1:-}"
+  local deep_scan=false
+  if [[ "$1" == "--deep" ]]; then
+    deep_scan=true
+  fi
+  
   echo "=== Network Scan for Raspberry Pi Devices ==="
   echo ""
   
@@ -1250,8 +1254,8 @@ function command_scan() {
     echo "Install with: brew install arp-scan (macOS) or apt install arp-scan (Linux)"
   fi
   
-  # Step 3: IP range scan (if requested or no devices found)
-  if [[ "$scan_ips" == "yes" ]] || [[ $found -eq 0 ]]; then
+  # Step 3: IP range scan (if --deep flag or no devices found)
+  if [[ "$deep_scan" == true ]] || [[ $found -eq 0 ]]; then
     echo ""
     echo "--- IP Range Scan ---"
     
@@ -1336,7 +1340,7 @@ function command_scan() {
     echo "No devices found. Troubleshooting tips:"
     echo "  • Ensure Pi is powered on and connected to network"
     echo "  • Check Pi is on same network/VLAN as this machine"
-    echo "  • Run with IP scan: ./lightsctl.sh scan yes"
+    echo "  • Run with deep scan: ./lightsctl.sh scan --deep"
     echo "  • Check router's DHCP client list for the Pi"
     echo "  • Try connecting directly via ethernet"
   else
