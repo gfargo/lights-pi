@@ -52,36 +52,55 @@ function usage() {
   cat <<EOF
 lightsctl.sh [command]
 
-Commands:
-  help            Show this summary
-  status          systemd status for ${SERVICE}
-  restart         restart ${SERVICE}
-  logs            last 80 lines from ${SERVICE}
-  tail            follow ${SERVICE} logs
-  lsusb           show connected USB devices (ENTTEC should appear)
-  qlc-version     run qlcplus --version on the Pi
-  qlc-headless    push configure_qlc_headless.sh to the Pi and run it (sets QT_QPA_PLATFORM=minimal)
-  wifi            dump /etc/wpa_supplicant/wpa_supplicant.conf
-  wifi-reconf     run sudo wpa_cli -i wlan0 reconfigure
-  wifi-status     run wpa_cli status and ip a show wlan0
-  update          sudo apt update && sudo apt -y upgrade
-  health          check service status, web UI reachability, and ENTTEC USB
-  open-web        open the web UI in the default browser (prints URL if unavailable)
-  deploy-workspace <file.qxw>  upload a QLC+ workspace to the Pi and restart the service
-  reboot          reboot the Pi
-  poweroff        shut down the Pi
-  ssh             open an interactive shell on the Pi
-  wifi-edit       open the Pi's Wi-Fi config in `$EDITOR`
-  edit <path>     open an arbitrary file on the Pi (defaults to the Wi-Fi config)
-  backup          pull .config/qlcplus and .qlcplus from ${PI_USER} home to ${BACKUP_STORAGE}
-  hdmi-disable    append `hdmi_blanking=2` to `/boot/config.txt`
-  gen-cert [days]     generate a self-signed TLS cert/key in certs/ (default: 730 days)
-  ssl-proxy <cert> <key>  install SSL cert, run stunnel, redirect 443 → ${QLC_PORT}
-  setup               first-time Pi provisioning (requires: WIFI1_SSID, WIFI1_PSK, WIFI2_SSID, WIFI2_PSK)
-  harden              security hardening: firewall, unattended upgrades, watchdog, udev rule
-  setup-full          run setup then harden in sequence
+Provisioning:
+  setup-full                    full provision: setup then harden (recommended for new Pi)
+  setup                         base install (requires: WIFI1_SSID/PSK + WIFI2_SSID/PSK)
+  harden                        firewall, watchdog, unattended upgrades, udev rule
+  add-key [pubkey]              install local SSH public key on the Pi
+  disable-password-auth         disable SSH password login (run add-key first)
+  static-ip <ip/prefix> <gw>   write static IP to /etc/dhcpcd.conf and restart
+  update                        apt update && apt upgrade on the Pi
+  update-qlc                    upgrade only the qlcplus package and restart service
 
-Set env vars to override defaults (PI_HOST, PI_USER, HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY).
+Service:
+  status                        systemd status for ${SERVICE}
+  restart                       restart ${SERVICE}
+  logs                          last 80 lines from service journal
+  tail                          follow service logs live
+  health                        service + web UI + USB + disk + memory + CPU temp
+  diagnose                      full diagnostic dump (health + logs + wifi + uptime)
+  check                         ping + SSH pre-flight connectivity check
+
+QLC+:
+  qlc-version                   run qlcplus --version on the Pi
+  qlc-headless                  push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
+  deploy-workspace <file.qxw>   upload workspace to Pi and restart service
+  open-web                      open the web UI in the default browser
+
+Network / WiFi:
+  wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
+  wifi-reconf                   run wpa_cli -i wlan0 reconfigure
+  wifi-status                   show SSID and wlan0 address
+  wifi-edit                     edit the Wi-Fi config in \$EDITOR
+
+System:
+  lsusb                         show USB devices (ENTTEC should appear)
+  backup                        pull QLC+ config dirs to ${BACKUP_STORAGE}
+  hdmi-disable                  disable HDMI to save power
+  reboot                        reboot the Pi
+  poweroff                      shut down the Pi
+  ssh                           open an interactive shell on the Pi
+  edit <path>                   edit an arbitrary file on the Pi
+
+TLS:
+  gen-cert [days]               generate self-signed cert/key in certs/ (default: 730 days)
+  ssl-proxy [cert] [key]        install stunnel, redirect 443 → ${QLC_PORT}
+
+Landing page (http://lights.local):
+  landing-setup                 install nginx and deploy the landing page (first time)
+  landing-deploy                push updated landing/index.html (no nginx reinstall)
+
+Set env vars to override defaults: PI_HOST, PI_USER, HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
 EOF
 }
 
@@ -135,6 +154,124 @@ function command_health() {
   else
     echo "not found"
   fi
+
+  printf '%-20s' "Disk (/):"
+  run df -h / 2>/dev/null | awk 'NR==2{print $5" used ("$3"/"$2")"}'
+
+  printf '%-20s' "Memory:"
+  run free -h 2>/dev/null | awk '/^Mem:/{print $3"/"$2}'
+
+  printf '%-20s' "CPU temp:"
+  local temp
+  temp=$(run cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) || true
+  if [[ -n "$temp" ]]; then
+    awk "BEGIN{printf \"%.1f°C\n\", ${temp}/1000}"
+  else
+    echo "n/a"
+  fi
+}
+
+function command_diagnose() {
+  echo "=== Diagnostic report: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
+  echo "    Host: ${PI_HOST}  User: ${PI_USER}  Port: ${QLC_PORT}"
+  echo ""
+  echo "--- Health ---"
+  command_health
+  echo ""
+  echo "--- Last 20 log lines ---"
+  run_sudo journalctl -u "${SERVICE}" -n 20 --no-pager
+  echo ""
+  echo "--- WiFi ---"
+  command_wifi_status
+  echo ""
+  echo "--- Uptime / load ---"
+  run uptime
+}
+
+function command_check() {
+  printf '%-20s' "Ping ${PI_HOST}:"
+  if ping -c1 -W2 "${PI_HOST}" >/dev/null 2>&1; then
+    echo "reachable"
+  else
+    echo "unreachable"
+    return 1
+  fi
+
+  printf '%-20s' "SSH:"
+  if "${REMOTE_CMD[@]}" -o ConnectTimeout=5 -o BatchMode=yes true 2>/dev/null; then
+    echo "OK"
+  else
+    echo "failed (check credentials / firewall)"
+    return 1
+  fi
+}
+
+function command_add_key() {
+  local pubkey="${1:-}"
+  if [[ -z "$pubkey" ]]; then
+    for k in ${SSH_KEY:+"${SSH_KEY}.pub"} \
+              ~/.ssh/id_ed25519.pub \
+              ~/.ssh/id_rsa.pub \
+              ~/.ssh/id_ecdsa.pub; do
+      [[ -f "$k" ]] && { pubkey="$k"; break; }
+    done
+  fi
+  if [[ -z "$pubkey" || ! -f "$pubkey" ]]; then
+    echo "No public key found. Pass one explicitly: add-key <path/to/key.pub>" >&2
+    return 1
+  fi
+  echo "Installing ${pubkey} → ${PI_USER}@${PI_HOST}:~/.ssh/authorized_keys"
+  cat "$pubkey" | "${REMOTE_CMD[@]}" \
+    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && cat >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys"
+  echo "Key installed. Test with: ./lightsctl.sh ssh"
+}
+
+function command_disable_password_auth() {
+  local sshd_config="/etc/ssh/sshd_config"
+  if ! run test -s ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "No authorized keys found on ${PI_HOST}. Run add-key first." >&2
+    return 1
+  fi
+  run_sudo sed -i '/^#*PasswordAuthentication/d' "$sshd_config"
+  run_sudo sed -i '/^#*KbdInteractiveAuthentication/d' "$sshd_config"
+  run_sudo sed -i '/^#*ChallengeResponseAuthentication/d' "$sshd_config"
+  echo 'PasswordAuthentication no' | run_sudo tee -a "$sshd_config" >/dev/null
+  echo 'KbdInteractiveAuthentication no' | run_sudo tee -a "$sshd_config" >/dev/null
+  run_sudo systemctl restart ssh
+  echo "Password authentication disabled on ${PI_HOST}."
+  echo "Verify your key works: ./lightsctl.sh ssh"
+}
+
+function command_update_qlc() {
+  run_sudo apt-get update -q
+  run_sudo apt-get install -y --only-upgrade qlcplus
+  command_restart
+}
+
+function command_static_ip() {
+  local ip="${1:-}"
+  local gateway="${2:-}"
+  local dns="${3:-}"
+  if [[ -z "$ip" || -z "$gateway" ]]; then
+    echo "Usage: static-ip <ip/prefix> <gateway> [dns]" >&2
+    echo "Example: ./lightsctl.sh static-ip 192.168.1.50/24 192.168.1.1" >&2
+    return 1
+  fi
+  dns="${dns:-${gateway}}"
+  local dhcpcd_conf="/etc/dhcpcd.conf"
+  run_sudo sed -i '/^# lightsctl static IP/,/^[[:space:]]*$/d' "$dhcpcd_conf" || true
+  run_sudo tee -a "$dhcpcd_conf" >/dev/null <<DHCP
+
+# lightsctl static IP
+interface wlan0
+static ip_address=${ip}
+static routers=${gateway}
+static domain_name_servers=${dns}
+DHCP
+  echo "Static IP configured: ${ip} (gateway: ${gateway}, DNS: ${dns})"
+  echo "Restarting network..."
+  run_sudo systemctl restart dhcpcd5 || run_sudo systemctl restart dhcpcd || true
+  echo "Done. Pi should now be reachable at ${ip%/*}"
 }
 
 function command_qlc_version() {
@@ -306,6 +443,35 @@ function command_setup() {
   bash "$script"
 }
 
+function command_landing_setup() {
+  local script="${SCRIPT_DIR}/scripts/pi_landing.sh"
+  if [[ ! -f "$script" ]]; then
+    echo "scripts/pi_landing.sh not found at ${script}" >&2
+    return 1
+  fi
+  PI_HOST="${PI_HOST}" \
+  PI_USER="${PI_USER}" \
+  QLC_PORT="${QLC_PORT}" \
+  LANDING_SRC="${SCRIPT_DIR}/landing/index.html" \
+  bash "$script"
+}
+
+function command_landing_deploy() {
+  local landing_src="${SCRIPT_DIR}/landing/index.html"
+  if [[ ! -f "$landing_src" ]]; then
+    echo "landing/index.html not found at ${landing_src}" >&2
+    return 1
+  fi
+  local rendered
+  rendered="$(mktemp /tmp/qlc-landing-XXXXXX.html)"
+  trap "rm -f '$rendered'" RETURN
+  sed "s|__QLC_URL__|http://${PI_HOST}:${QLC_PORT}|g" "$landing_src" > "$rendered"
+  "${SCP_CMD[@]}" "$rendered" "${PI_USER}@${PI_HOST}:/tmp/qlc-landing.html"
+  run_sudo mv /tmp/qlc-landing.html /var/www/html/index.html
+  run_sudo chmod 644 /var/www/html/index.html
+  echo "Landing page updated at http://${PI_HOST}"
+}
+
 function command_gen_cert() {
   local days="${1:-730}"
   local cert_dir="${SCRIPT_DIR}/certs"
@@ -420,7 +586,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-  help) usage ;;
+  help|-h|--help) usage ;;
   status) command_status ;;
   restart) command_restart ;;
   logs) command_logs ;;
@@ -432,7 +598,13 @@ case "$1" in
   wifi-reconf) command_wifi_reconf ;;
   wifi-status) command_wifi_status ;;
   update) command_update ;;
+  update-qlc) command_update_qlc ;;
   backup) command_backup ;;
+  check) command_check ;;
+  diagnose) command_diagnose ;;
+  add-key) shift; command_add_key "$@" ;;
+  disable-password-auth) command_disable_password_auth ;;
+  static-ip) shift; command_static_ip "$@" ;;
   hdmi-disable) command_hdmi_disable ;;
   setup) command_setup ;;
   harden) command_harden ;;
@@ -444,6 +616,8 @@ case "$1" in
   health) command_health ;;
   deploy-workspace) shift; command_deploy_workspace "$@" ;;
   open-web) command_open_web ;;
+  landing-setup) command_landing_setup ;;
+  landing-deploy) command_landing_deploy ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
   edit)

@@ -133,6 +133,20 @@ Or run them separately if you want to review between steps:
 
 From here, add your fixtures, map DMX universes, and build a Virtual Console layout for studio use.
 
+### 4. Set up the landing page (optional)
+
+Serves a simple branded page at `http://lights.local` (port 80) with a button linking to the QLC+ web UI:
+
+```bash
+./lightsctl.sh landing-setup
+```
+
+After editing `landing/index.html`, push updates without reinstalling nginx:
+
+```bash
+./lightsctl.sh landing-deploy
+```
+
 ---
 
 ## lightsctl.sh Reference
@@ -143,42 +157,52 @@ From here, add your fixtures, map DMX universes, and build a Virtual Console lay
 ./lightsctl.sh [command]
 
 Provisioning:
-  setup-full                  full provisioning: setup then harden
-  setup                       base install (requires: WIFI1_SSID/PSK, WIFI2_SSID/PSK)
-  harden                      security hardening (firewall, watchdog, udev, upgrades)
+  setup-full                    full provisioning: setup then harden (recommended for new Pi)
+  setup                         base install (requires: WIFI1_SSID/PSK, WIFI2_SSID/PSK)
+  harden                        firewall, watchdog, unattended upgrades, udev rule
+  add-key [pubkey]              install local SSH public key on the Pi
+  disable-password-auth         disable SSH password login (run add-key first)
+  static-ip <ip/prefix> <gw>   write static IP to /etc/dhcpcd.conf and restart
+  update                        apt update && apt upgrade on the Pi
+  update-qlc                    upgrade only the qlcplus package and restart service
 
 Service management:
-  status                      systemd status for qlcplus-web.service
-  restart                     restart qlcplus-web.service
-  logs                        last 80 lines from the service journal
-  tail                        follow service logs live
-  health                      check service, web UI reachability, and ENTTEC USB
+  status                        systemd status for qlcplus-web.service
+  restart                       restart qlcplus-web.service
+  logs                          last 80 lines from the service journal
+  tail                          follow service logs live
+  health                        service + web UI + USB + disk + memory + CPU temp
+  diagnose                      full diagnostic dump (health + logs + wifi + uptime)
+  check                         ping + SSH pre-flight connectivity check
 
 QLC+:
-  qlc-version                 run qlcplus --version on the Pi
-  qlc-headless                push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
-  deploy-workspace <file.qxw> upload a workspace to the Pi and restart the service
-  open-web                    open the web UI in the default browser
+  qlc-version                   run qlcplus --version on the Pi
+  qlc-headless                  push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
+  deploy-workspace <file.qxw>   upload a workspace to the Pi and restart the service
+  open-web                      open the web UI in the default browser
 
 Network / WiFi:
-  wifi                        dump /etc/wpa_supplicant/wpa_supplicant.conf
-  wifi-reconf                 run wpa_cli -i wlan0 reconfigure
-  wifi-status                 show current SSID and wlan0 address
-  wifi-edit                   edit /etc/wpa_supplicant/wpa_supplicant.conf
+  wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
+  wifi-reconf                   run wpa_cli -i wlan0 reconfigure
+  wifi-status                   show current SSID and wlan0 address
+  wifi-edit                     edit /etc/wpa_supplicant/wpa_supplicant.conf
 
 System:
-  update                      apt update && apt upgrade on the Pi
-  backup                      pull QLC+ config dirs to BACKUP_STORAGE
-  lsusb                       show USB devices (ENTTEC should appear)
-  hdmi-disable                disable HDMI output to save power
-  reboot                      reboot the Pi
-  poweroff                    shut down the Pi
-  ssh                         open an interactive shell on the Pi
-  edit <path>                 edit an arbitrary file on the Pi
+  backup                        pull QLC+ config dirs to BACKUP_STORAGE
+  lsusb                         show USB devices (ENTTEC should appear)
+  hdmi-disable                  disable HDMI output to save power
+  reboot                        reboot the Pi
+  poweroff                      shut down the Pi
+  ssh                           open an interactive shell on the Pi
+  edit <path>                   edit an arbitrary file on the Pi
 
 TLS:
-  gen-cert [days]             generate a self-signed cert/key in certs/ (default: 730 days)
-  ssl-proxy [cert] [key]      install stunnel on Pi, redirect 443 → QLC_PORT
+  gen-cert [days]               generate a self-signed cert/key in certs/ (default: 730 days)
+  ssl-proxy [cert] [key]        install stunnel on Pi, redirect 443 → QLC_PORT
+
+Landing page (http://lights.local):
+  landing-setup                 install nginx and deploy the landing page (first time)
+  landing-deploy                push updated landing/index.html (no nginx reinstall)
 ```
 
 **Environment variables** (set in `.env` or exported):
@@ -193,6 +217,16 @@ TLS:
 | `BACKUP_STORAGE` | `./backups`          | Local backup destination        |
 | `SSL_CERT`       | `certs/qlc.crt`      | TLS certificate for ssl-proxy   |
 | `SSL_KEY`        | `certs/qlc.key`      | TLS private key for ssl-proxy   |
+
+You can also use the `Makefile` as a shorthand for all commands:
+
+```bash
+make setup             # ./lightsctl.sh setup
+make landing-setup     # ./lightsctl.sh landing-setup
+make landing-deploy    # ./lightsctl.sh landing-deploy
+make deploy WS=workspaces/studio.qxw
+make static-ip IP=192.168.1.50/24 GW=192.168.1.1
+```
 
 ---
 
