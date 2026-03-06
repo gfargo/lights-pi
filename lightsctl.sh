@@ -66,6 +66,7 @@ Service:
   status                        systemd status for ${SERVICE}
   restart                       restart ${SERVICE}
   logs                          last 80 lines from service journal
+  logs-errors                   show only ERROR and WARN lines from logs
   tail                          follow service logs live
   health                        service + web UI + USB + disk + memory + CPU temp
   diagnose                      full diagnostic dump (health + logs + wifi + uptime)
@@ -124,6 +125,10 @@ function command_restart() {
 
 function command_logs() {
   run_sudo journalctl -u "${SERVICE}" -n 80 --no-pager
+}
+
+function command_logs_errors() {
+  run_sudo journalctl -u "${SERVICE}" -n 200 --no-pager | grep -iE "error|warn|fail|critical"
 }
 
 function command_tail() {
@@ -591,6 +596,7 @@ case "$1" in
   status) command_status ;;
   restart) command_restart ;;
   logs) command_logs ;;
+  logs-errors) command_logs_errors ;;
   tail) command_tail ;;
   lsusb) command_lsusb ;;
   qlc-version) command_qlc_version ;;

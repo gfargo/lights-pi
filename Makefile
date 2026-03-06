@@ -1,6 +1,6 @@
 CTL := ./lightsctl.sh
 
-.PHONY: help check status logs tail health diagnose restart update update-qlc backup \
+.PHONY: help check status logs logs-errors tail health diagnose restart update update-qlc backup \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless deploy-workspace open ssh wifi wifi-status gen-cert ssl-proxy \
         reboot poweroff hdmi-disable landing-setup landing-deploy
@@ -18,6 +18,9 @@ status:
 
 logs:
 	$(CTL) logs
+
+logs-errors:
+	$(CTL) logs-errors
 
 tail:
 	$(CTL) tail
