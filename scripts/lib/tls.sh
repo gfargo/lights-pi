@@ -166,7 +166,19 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-    return 301 https://\$host\$request_uri;
+
+    root /var/www/html;
+    index index.html;
+
+    # Landing page
+    location = / {
+        try_files /index.html =404;
+    }
+
+    # Serve static files for landing page
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
 }
 
 server {
@@ -222,8 +234,12 @@ EOF
   echo "✓ SSL configured with nginx"
   echo ""
   echo "Access points:"
-  echo "  https://lights.local/      → Landing page"
+  echo "  http://lights.local/       → Landing page (HTTP)"
+  echo "  https://lights.local/      → Landing page (HTTPS)"
   echo "  https://lights.local/qlc/  → QLC+ web interface"
+  echo ""
+  echo "Note: HTTP and HTTPS both work. No forced redirect."
+  echo "      Users without the certificate installed can use HTTP."
 }
 
 # Install SSL proxy on Pi (stunnel - simpler but less flexible)
