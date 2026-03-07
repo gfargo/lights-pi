@@ -29,13 +29,15 @@ Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/) and config
 
 | Setting       | Value              |
 | ------------- | ------------------ |
-| OS            | Raspberry Pi OS Lite (64-bit) |
+| OS            | Raspberry Pi OS Lite (64-bit for Pi 4, 32-bit for Pi 3) |
 | Hostname      | `lights`           |
 | Enable SSH    | Yes                |
 | Username      | `pi`               |
 | WiFi          | Your network       |
 
-> ⚠️ **Important:** Hostname must match `PI_HOSTNAME` in `.env` for mDNS to work.
+> ⚠️ **Important:** 
+> - Hostname must match `PI_HOSTNAME` in `.env` for mDNS to work
+> - Use 64-bit OS for Pi 4, 32-bit OS for Pi 3 (better performance on older hardware)
 
 ### 2. Configure Environment
 
@@ -48,7 +50,13 @@ cp .env.example .env
 
 ```bash
 # Full setup (recommended for new Pi)
+# The script will prompt for Pi model (3 or 4) and apply appropriate optimizations
 WIFI1_SSID="SetupNet" WIFI1_PSK="setup-pass" \
+WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
+./lightsctl.sh setup-full
+
+# Or specify Pi model explicitly to skip prompt
+PI_MODEL=3 WIFI1_SSID="SetupNet" WIFI1_PSK="setup-pass" \
 WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ./lightsctl.sh setup-full
 
@@ -109,12 +117,14 @@ Phones / Tablets / Laptops
 
 | Device                          | Purpose                          |
 | ------------------------------- | -------------------------------- |
-| Raspberry Pi (3B+ or newer)     | Lighting controller host         |
+| Raspberry Pi 3B+ or 4           | Lighting controller host         |
 | MicroSD Card (16–32 GB)         | OS and configuration             |
 | ENTTEC DMX USB Pro              | USB → DMX interface              |
 | DMX fixtures                    | Any QLC+-compatible fixture      |
 | Wireless DMX system (optional)  | Cable-free fixture control       |
 | DMX cables (110 Ω)              | Daisy-chaining wired fixtures    |
+
+> **Note:** Pi 3 is supported with automatic performance optimizations. Pi 4 is recommended for larger setups with many fixtures.
 
 ---
 
@@ -146,12 +156,26 @@ update-qlc                    # Upgrade only the qlcplus package and restart ser
 ```
 
 **What `setup` does:**
+- Detects or prompts for Pi model (3 or 4)
 - Sets hostname and installs required packages
 - Configures dual WiFi (studio network takes priority)
 - Installs QLC+ with automatic retry on network hiccups
 - Creates and enables `qlcplus-web.service` with headless Qt
 - Adds Pi user to `dialout` group for ENTTEC USB access
 - Configures persistent systemd journal logs
+- **Pi 3 only:** Applies performance optimizations (see below)
+
+**Pi 3 Performance Optimizations:**
+When Pi 3 is detected or selected, the following optimizations are automatically applied:
+- Reduces GPU memory to 16MB (more RAM for QLC+)
+- Disables Bluetooth (saves CPU and memory)
+- Disables HDMI output (saves power)
+- Increases swap to 512MB (better for low memory)
+- Limits journal size to 50MB (reduces SD card wear)
+- Sets CPU governor to performance mode (better for real-time lighting)
+- Disables unnecessary services
+
+> **Note:** A reboot is recommended after setup to apply all Pi 3 optimizations.
 
 **What `harden` does:**
 - Installs `ufw` and opens only SSH (22) and QLC+ web port
