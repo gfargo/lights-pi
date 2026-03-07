@@ -65,11 +65,22 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ./lightsctl.sh test-dmx
 ```
 
-### 4. Access Web UI
+### 4. Set Up HTTPS (Optional but Recommended)
+
+```bash
+# One-command SSL setup with locally-trusted certificates
+./lightsctl.sh setup-ssl
+
+# Access via HTTPS with no browser warnings
+# https://lights.local/      → Landing page
+# https://lights.local/qlc/  → QLC+ interface
+```
+
+### 5. Access Web UI
 
 ```bash
 ./lightsctl.sh open-web
-# Opens http://lights.local:9999
+# Opens http://lights.local:9999 (or https://lights.local/qlc/ if SSL configured)
 ```
 
 ---
@@ -79,10 +90,10 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ```
 Phones / Tablets / Laptops
             │
-            │  WiFi
+            │  WiFi / HTTPS
             ▼
      Raspberry Pi
-     (QLC+ Web Server)
+     (nginx + QLC+ Web Server)
             │
             │ USB
             ▼
@@ -105,7 +116,9 @@ Phones / Tablets / Laptops
 | Raspberry Pi OS Lite | Lightweight OS                   |
 | QLC+                 | Lighting control engine          |
 | Avahi                | mDNS (`lights.local`)            |
-| nginx                | Landing page (port 80)           |
+| nginx                | Landing page + SSL reverse proxy |
+| stunnel (optional)   | SSL/TLS termination              |
+| mkcert (optional)    | Locally-trusted certificates     |
 | systemd              | Autostart services               |
 | wpa_supplicant       | WiFi management                  |
 
@@ -252,12 +265,45 @@ edit <path>                   # Edit an arbitrary file on the Pi
 </details>
 
 <details>
-<summary><b>🔒 TLS Commands</b></summary>
+<summary><b>🔒 TLS/SSL Commands</b></summary>
 
 ```bash
+setup-ssl                     # Complete SSL setup: mkcert cert + nginx config (recommended!)
 gen-cert [days]               # Generate self-signed cert/key in certs/ (default: 730 days)
-ssl-proxy [cert] [key]        # Install stunnel on Pi, redirect 443 → QLC_PORT
+gen-cert-mkcert               # Generate locally-trusted cert using mkcert (no browser warnings)
+ssl-nginx [cert] [key]        # Configure nginx with SSL + reverse proxy to QLC+
+ssl-proxy [cert] [key]        # Install stunnel, redirect 443 → QLC_PORT (simpler alternative)
 ```
+
+**SSL Setup Options:**
+
+1. **Recommended: One-command setup with mkcert**
+   ```bash
+   ./lightsctl.sh setup-ssl
+   ```
+   - Installs mkcert (via Homebrew) if needed
+   - Generates locally-trusted certificate
+   - Configures nginx with SSL + reverse proxy
+   - No browser warnings!
+   - Access: `https://lights.local/` and `https://lights.local/qlc/`
+
+2. **Manual: Self-signed certificate**
+   ```bash
+   ./lightsctl.sh gen-cert 365
+   ./lightsctl.sh ssl-nginx
+   ```
+   - Creates self-signed certificate
+   - Browser will show security warning (expected)
+   - Still encrypted, just not trusted by default
+
+3. **Alternative: stunnel (simpler)**
+   ```bash
+   ./lightsctl.sh gen-cert
+   ./lightsctl.sh ssl-proxy
+   ```
+   - Uses stunnel instead of nginx
+   - Less flexible but easier setup
+   - Landing page only (QLC+ stays on port 9999)
 
 </details>
 
@@ -269,7 +315,16 @@ landing-setup                 # Install nginx and deploy the landing page (first
 landing-deploy                # Push updated landing/index.html (no nginx reinstall)
 ```
 
-Serves a simple branded page at `http://lights.local` (port 80) with a button linking to the QLC+ web UI.
+Serves a simple branded page at `http://lights.local` (or `https://lights.local` if SSL configured) with a button linking to the QLC+ web UI.
+
+**Customization:**
+Set these variables in `.env` to customize the landing page:
+- `LANDING_TITLE` - Browser title
+- `LANDING_STUDIO_NAME` - Studio name displayed
+- `LANDING_SUBTITLE` - Subtitle text
+- `LANDING_BUTTON_TEXT` - Button text
+- `LANDING_FOOTER_TEXT` - Footer text
+- `QLC_URL` - Button destination (e.g., `https://lights.local/qlc/` or `http://lights.local:9999/`)
 
 </details>
 
@@ -339,7 +394,13 @@ WIFI1_SSID="SetupNet" WIFI1_PSK="setup-pass" \
 WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ./lightsctl.sh setup-full
 
-# 3. Verify everything is working
+# 3. Set up HTTPS (recommended)
+./lightsctl.sh setup-ssl
+
+# 4. Deploy landing page
+./lightsctl.sh landing-setup
+
+# 5. Verify everything is working
 ./lightsctl.sh doctor
 ./lightsctl.sh test-dmx
 ```
@@ -405,6 +466,7 @@ cp .env.example .env
 | `BACKUP_STORAGE`        | `./backups`              | Local backup destination             |
 | `SSL_CERT`              | `certs/qlc.crt`          | TLS certificate for ssl-proxy        |
 | `SSL_KEY`               | `certs/qlc.key`          | TLS private key for ssl-proxy        |
+| `QLC_URL`               | `http://lights.local:9999/` | Landing page button destination   |
 | `LANDING_TITLE`         | `Lighting Controller`    | Landing page browser title           |
 | `LANDING_STUDIO_NAME`   | `Your Studio`            | Studio name displayed on landing page|
 | `LANDING_SUBTITLE`      | `Lighting Controller`    | Subtitle text on landing page        |
@@ -422,9 +484,51 @@ cp .env.example .env
 
 ### HTTPS Setup
 
+**Recommended: One-command setup with mkcert**
+```bash
+./lightsctl.sh setup-ssl
+```
+
+This will:
+1. Install mkcert (via Homebrew) if not already installed
+2. Install the mkcert local CA (makes your system trust the certs)
+3. Generate a locally-trusted certificate for `lights.local`
+4. Upload the certificate to your Pi
+5. Configure nginx with SSL and reverse proxy to QLC+
+
+After setup, access your lighting controller securely:
+- `https://lights.local/` → Landing page
+- `https://lights.local/qlc/` → QLC+ web interface
+
+No browser warnings - the certificate is fully trusted!
+
+**Alternative: Self-signed certificate**
 ```bash
 ./lightsctl.sh gen-cert        # Generate self-signed certificate
-./lightsctl.sh ssl-proxy       # Install stunnel, redirect 443 → QLC_PORT
+./lightsctl.sh ssl-nginx       # Configure nginx with SSL
+```
+
+**Simple option: stunnel**
+```bash
+./lightsctl.sh gen-cert        # Generate certificate
+./lightsctl.sh ssl-proxy       # Install stunnel
+```
+
+### Landing Page Button URL
+
+Control where the landing page button links by setting `QLC_URL` in `.env`:
+
+```bash
+# For SSL reverse proxy (after running setup-ssl)
+QLC_URL=https://lights.local/qlc/
+
+# For direct port access
+QLC_URL=http://lights.local:9999/
+```
+
+Then redeploy the landing page:
+```bash
+./lightsctl.sh landing-deploy
 ```
 
 ---
@@ -586,6 +690,77 @@ Monitor system performance:
 ```bash
 ./lightsctl.sh perf 30     # Real-time monitoring for 30 seconds
 ./lightsctl.sh benchmark   # Run performance tests
+```
+
+</details>
+
+<details>
+<summary><b>QLC+ web interface hangs or doesn't respond</b></summary>
+
+If the web interface connects but never loads (spinning wheel), the service may have the `--operate` flag enabled which causes it to hang:
+
+```bash
+./lightsctl.sh ssh
+sudo sed -i 's/--operate//' /etc/systemd/system/qlcplus-web.service
+sudo systemctl daemon-reload
+sudo systemctl restart qlcplus-web
+```
+
+The `--operate` flag puts QLC+ into operate mode immediately, which can make the web interface unresponsive. Remove it to allow normal web UI access.
+
+</details>
+
+<details>
+<summary><b>HTTPS not working or certificate warnings</b></summary>
+
+**If using mkcert:**
+```bash
+# Reinstall the local CA
+mkcert -install
+
+# Regenerate certificates
+rm certs/qlc.crt certs/qlc.key
+./lightsctl.sh gen-cert-mkcert
+./lightsctl.sh ssl-nginx
+```
+
+**If using self-signed certificates:**
+Browser warnings are expected. Click "Advanced" and "Proceed to lights.local" to accept the certificate.
+
+**Check nginx configuration:**
+```bash
+./lightsctl.sh ssh
+sudo nginx -t                          # Test config syntax
+sudo systemctl status nginx            # Check if nginx is running
+sudo tail -f /var/log/nginx/error.log  # View error logs
+```
+
+**Verify certificate files:**
+```bash
+./lightsctl.sh ssh
+ls -la /etc/ssl/qlc/
+openssl x509 -in /etc/ssl/qlc/qlc.crt -text -noout  # View cert details
+```
+
+</details>
+
+<details>
+<summary><b>Reverse proxy /qlc/ path not working</b></summary>
+
+Check nginx configuration and logs:
+```bash
+./lightsctl.sh ssh
+cat /etc/nginx/sites-available/lights   # View config
+sudo nginx -t                            # Test config
+sudo systemctl reload nginx              # Reload config
+sudo tail -f /var/log/nginx/error.log   # Watch for errors
+```
+
+Verify QLC+ is running and accessible locally:
+```bash
+./lightsctl.sh ssh
+curl -I http://127.0.0.1:9999/          # Should connect
+sudo systemctl status qlcplus-web       # Check service status
 ```
 
 </details>
