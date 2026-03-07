@@ -16,6 +16,7 @@
 - [Command Reference](#-command-reference)
 - [Workflow Examples](#-workflow-examples)
 - [Configuration](#-configuration)
+- [Project Structure](#-project-structure)
 - [Troubleshooting](#-troubleshooting)
 
 ---
@@ -453,6 +454,57 @@ ls -lh backups/
 ```
 
 Backups include `.config/qlcplus` and `.qlcplus` directories from the Pi.
+
+---
+
+## 📁 Project Structure
+
+The project uses a modular architecture for maintainability and clear separation of concerns:
+
+```
+lights-pi/
+├── lightsctl.sh              # Main CLI interface
+├── scripts/
+│   ├── lib/                  # Utility libraries (sourced by lightsctl.sh)
+│   │   ├── backup.sh         # Backup/restore and system updates
+│   │   ├── network.sh        # Network scanning and Pi discovery
+│   │   ├── qlc.sh            # QLC+ operations (workspace, fixtures, DMX)
+│   │   ├── system.sh         # System monitoring and diagnostics
+│   │   ├── tls.sh            # Certificate generation and SSL proxy
+│   │   └── wifi.sh           # WiFi configuration management
+│   ├── provisioning/         # One-time setup scripts
+│   │   ├── setup.sh          # Base installation (formerly pi_lights_setup.sh)
+│   │   ├── harden.sh         # Security hardening (formerly pi_harden.sh)
+│   │   └── configure_qlc_headless.sh  # Qt platform configuration
+│   └── services/             # Service-specific deployment
+│       └── landing.sh        # Landing page setup (formerly pi_landing.sh)
+├── landing/                  # Landing page HTML
+├── workspaces/               # QLC+ workspace files (.qxw)
+├── backups/                  # QLC+ configuration backups
+└── .env                      # Environment configuration
+```
+
+### Script Organization
+
+**Utility Libraries (`scripts/lib/`):**
+- Contain reusable functions sourced by `lightsctl.sh`
+- Each module focuses on a single domain (networking, QLC+, system, etc.)
+- Functions are exported for cross-module use
+
+**Provisioning Scripts (`scripts/provisioning/`):**
+- Large, standalone scripts for initial Pi setup
+- Run once during initial provisioning or updates
+- Called by `lightsctl.sh` provisioning commands
+
+**Service Scripts (`scripts/services/`):**
+- Service-specific deployment and configuration
+- Currently contains landing page setup
+
+This modular structure makes it easy to:
+- Locate and modify specific functionality
+- Add new features without touching unrelated code
+- Test individual components independently
+- Understand the codebase quickly
 
 ---
 
