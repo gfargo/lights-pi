@@ -21,7 +21,10 @@ function wifi_show_status() {
 # Edit WiFi configuration
 function wifi_edit_config() {
   local target="${1:-/etc/wpa_supplicant/wpa_supplicant.conf}"
-  run_sudo "${EDITOR}" "$target"
+  local editor="${EDITOR:-nano}"
+  
+  # Use ssh -t to allocate a pseudo-terminal for interactive editing
+  ssh -t "${SSH_OPTIONS[@]}" "${PI_USER}@${PI_HOST}" sudo "$editor" "$target"
 }
 
 # Export functions

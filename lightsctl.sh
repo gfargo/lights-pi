@@ -94,7 +94,7 @@ Network / WiFi:
   wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
   wifi-reconf                   run wpa_cli -i wlan0 reconfigure
   wifi-status                   show SSID and wlan0 address
-  wifi-edit                     edit the Wi-Fi config in \$EDITOR
+  wifi-edit                     edit the Wi-Fi config in \$EDITOR (defaults to nano)
   scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
 System:
@@ -106,7 +106,7 @@ System:
   reboot                        reboot the Pi
   poweroff                      shut down the Pi
   ssh                           open an interactive shell on the Pi
-  edit <path>                   edit an arbitrary file on the Pi
+  edit <path>                   edit an arbitrary file on the Pi (uses nano by default)
 
 TLS:
   gen-cert [days]               generate self-signed cert/key in certs/ (default: 730 days)
@@ -291,7 +291,10 @@ function command_ssh() {
 
 function command_edit() {
   local target="${1:-/etc/wpa_supplicant/wpa_supplicant.conf}"
-  run_sudo "${EDITOR}" "$target"
+  local editor="${EDITOR:-nano}"
+  
+  # Use ssh -t to allocate a pseudo-terminal for interactive editing
+  ssh -t "${SSH_OPTIONS[@]}" "${PI_USER}@${PI_HOST}" sudo "$editor" "$target"
 }
 
 function command_hdmi_disable() {
