@@ -197,7 +197,7 @@ function qlc_deploy_workspace() {
   "${SCP_CMD[@]}" "$workspace" "${PI_USER}@${PI_HOST}:${remote_path}"
   echo "Uploaded ${filename} → ${remote_path}"
 
-  run_sudo sed -i "s|ExecStart=.*qlcplus.*|ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --operate --workspace ${remote_path}|" "$service_file"
+  run_sudo sed -i "s|ExecStart=.*qlcplus.*|ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --workspace ${remote_path}|" "$service_file"
   run_sudo systemctl daemon-reload
   run_sudo systemctl restart "${SERVICE}"
   echo "Service updated with --workspace ${remote_path} and restarted"

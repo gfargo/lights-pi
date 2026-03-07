@@ -115,8 +115,11 @@ System:
   edit <path>                   edit an arbitrary file on the Pi (uses nano by default)
 
 TLS:
+  setup-ssl                     complete SSL setup: mkcert cert + nginx config (recommended!)
   gen-cert [days]               generate self-signed cert/key in certs/ (default: 730 days)
-  ssl-proxy [cert] [key]        install stunnel, redirect 443 → ${QLC_PORT}
+  gen-cert-mkcert               generate locally-trusted cert using mkcert (no browser warnings)
+  ssl-nginx [cert] [key]        configure nginx with SSL + reverse proxy to QLC+
+  ssl-proxy [cert] [key]        install stunnel, redirect 443 → ${QLC_PORT} (simpler alternative)
 
 Landing page (http://lights.local):
   landing-setup                 install nginx and deploy the landing page (first time)
@@ -489,6 +492,7 @@ function command_landing_deploy() {
   fi
   
   # Set defaults for landing page variables
+  local qlc_url="${QLC_URL:-http://${PI_HOST}:${QLC_PORT}}"
   local landing_title="${LANDING_TITLE:-Lighting Controller}"
   local landing_studio_name="${LANDING_STUDIO_NAME:-Your Studio}"
   local landing_subtitle="${LANDING_SUBTITLE:-Lighting Controller}"
@@ -500,7 +504,7 @@ function command_landing_deploy() {
   trap "rm -f '$rendered'" RETURN
   
   # Substitute all placeholders
-  sed -e "s|__QLC_URL__|http://${PI_HOST}:${QLC_PORT}|g" \
+  sed -e "s|__QLC_URL__|${qlc_url}|g" \
       -e "s|__LANDING_TITLE__|${landing_title}|g" \
       -e "s|__LANDING_STUDIO_NAME__|${landing_studio_name}|g" \
       -e "s|__LANDING_SUBTITLE__|${landing_subtitle}|g" \
@@ -518,12 +522,28 @@ function command_landing_deploy() {
   echo "  Studio: ${landing_studio_name}"
   echo "  Subtitle: ${landing_subtitle}"
   echo "  Button: ${landing_button_text}"
+  echo "  Button URL: ${qlc_url}"
   echo "  Footer: ${landing_footer_text}"
 }
 
 function command_gen_cert() {
   source "${SCRIPT_DIR}/scripts/lib/tls.sh"
   tls_gen_cert "$@"
+}
+
+function command_gen_cert_mkcert() {
+  source "${SCRIPT_DIR}/scripts/lib/tls.sh"
+  tls_gen_cert_mkcert
+}
+
+function command_setup_ssl() {
+  source "${SCRIPT_DIR}/scripts/lib/tls.sh"
+  tls_setup_ssl
+}
+
+function command_ssl_nginx() {
+  source "${SCRIPT_DIR}/scripts/lib/tls.sh"
+  tls_ssl_nginx "$@"
 }
 
 function command_ssl_proxy() {
@@ -580,7 +600,10 @@ case "$1" in
   setup-full) command_setup_full ;;
   reboot) command_reboot ;;
   poweroff) command_poweroff ;;
+  setup-ssl) command_setup_ssl ;;
   gen-cert) shift; command_gen_cert "$@" ;;
+  gen-cert-mkcert) command_gen_cert_mkcert ;;
+  ssl-nginx) shift; command_ssl_nginx "$@" ;;
   ssl-proxy) shift; command_ssl_proxy "$@" ;;
   health) command_health ;;
   deploy-workspace) shift; command_deploy_workspace "$@" ;;
