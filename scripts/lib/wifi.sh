@@ -9,7 +9,19 @@ function wifi_show_config() {
 
 # Reconfigure WiFi
 function wifi_reconfigure() {
+  echo "Reconfiguring WiFi..."
+  echo ""
+  
+  echo "1. Reloading wpa_supplicant configuration..."
   run_sudo wpa_cli -i wlan0 reconfigure
+  sleep 2
+  
+  echo "2. Checking loaded networks..."
+  run_sudo wpa_cli -i wlan0 list_networks
+  
+  echo ""
+  echo "If networks are not showing up, try:"
+  echo "  ./lightsctl.sh wifi-restart"
 }
 
 # Show WiFi status
@@ -96,6 +108,37 @@ function wifi_reconnect() {
   echo "  ./lightsctl.sh wifi-diagnose"
 }
 
+# Restart wpa_supplicant service (reloads config from file)
+function wifi_restart() {
+  echo "Restarting wpa_supplicant service..."
+  echo ""
+  
+  echo "This will:"
+  echo "  • Reload /etc/wpa_supplicant/wpa_supplicant.conf"
+  echo "  • Disconnect from current network"
+  echo "  • Reconnect to highest priority available network"
+  echo ""
+  
+  read -p "Continue? [y/N] " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Cancelled."
+    return 0
+  fi
+  
+  echo "Restarting wpa_supplicant..."
+  run_sudo systemctl restart wpa_supplicant
+  sleep 3
+  
+  echo ""
+  echo "Checking status..."
+  run_sudo wpa_cli -i wlan0 status
+  
+  echo ""
+  echo "Loaded networks:"
+  run_sudo wpa_cli -i wlan0 list_networks
+}
+
 # Edit WiFi configuration
 function wifi_edit_config() {
   local target="${1:-/etc/wpa_supplicant/wpa_supplicant.conf}"
@@ -111,4 +154,5 @@ export -f wifi_reconfigure
 export -f wifi_show_status
 export -f wifi_diagnose
 export -f wifi_reconnect
+export -f wifi_restart
 export -f wifi_edit_config

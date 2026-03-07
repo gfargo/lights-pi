@@ -92,7 +92,8 @@ QLC+:
 
 Network / WiFi:
   wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
-  wifi-reconf                   run wpa_cli -i wlan0 reconfigure
+  wifi-reconf                   reload wpa_supplicant configuration
+  wifi-restart                  restart wpa_supplicant service (reloads config file)
   wifi-reconnect                force disconnect and reconnect to best available network
   wifi-status                   show SSID and wlan0 address
   wifi-diagnose                 comprehensive WiFi diagnostics and troubleshooting
@@ -267,6 +268,11 @@ function command_wifi_diagnose() {
 function command_wifi_reconnect() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_reconnect
+}
+
+function command_wifi_restart() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_restart
 }
 
 function command_wifi_edit() {
@@ -499,6 +505,7 @@ case "$1" in
   test-dmx) command_test_dmx ;;
   wifi) command_wifi ;;
   wifi-reconf) command_wifi_reconf ;;
+  wifi-restart) command_wifi_restart ;;
   wifi-reconnect) command_wifi_reconnect ;;
   wifi-status) command_wifi_status ;;
   wifi-diagnose) command_wifi_diagnose ;;
