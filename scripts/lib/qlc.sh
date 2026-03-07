@@ -13,7 +13,7 @@ function qlc_show_version() {
 
 # Configure QLC+ for headless operation
 function qlc_configure_headless() {
-  local script_local="${SCRIPT_DIR}/scripts/configure_qlc_headless.sh"
+  local script_local="${SCRIPT_DIR}/scripts/provisioning/configure_qlc_headless.sh"
   local script_remote="/tmp/configure_qlc_headless.sh"
   if [[ ! -f "$script_local" ]]; then
     echo "configure_qlc_headless.sh not found at ${script_local}" >&2

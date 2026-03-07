@@ -159,193 +159,129 @@ function command_lsusb() {
   run lsusb
 }
 
-# System commands (using system_utils.sh)
+# System commands (using lib/system.sh)
 function command_health() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_health
 }
 
 function command_diagnose() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_diagnose
 }
 
 function command_doctor() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_doctor
 }
 
 function command_perf() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_perf "$@"
 }
 
 function command_benchmark() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_benchmark
 }
 
 function command_check() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_check
 }
 
 function command_validate() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_validate
 }
 
 function command_os_version() {
-  source "${SCRIPT_DIR}/scripts/system_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_os_version
 }
 
-# QLC+ commands (using qlc_utils.sh)
+# QLC+ commands (using lib/qlc.sh)
 function command_qlc_version() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_show_version
 }
 
 function command_qlc_headless() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_configure_headless
 }
 
 function command_list_fixtures() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_list_fixtures
 }
 
 function command_install_fixture() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_install_fixture "$@"
 }
 
 function command_test_dmx() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_test_dmx
 }
 
 function command_deploy_workspace() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_deploy_workspace "$@"
 }
 
 function command_pull_workspace() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_pull_workspace "$@"
 }
 
 function command_open_web() {
-  source "${SCRIPT_DIR}/scripts/qlc_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_open_web
 }
 
-# WiFi commands (using wifi_utils.sh)
+# WiFi commands (using lib/wifi.sh)
 function command_wifi() {
-  source "${SCRIPT_DIR}/scripts/wifi_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_show_config
 }
 
 function command_wifi_reconf() {
-  source "${SCRIPT_DIR}/scripts/wifi_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_reconfigure
 }
 
 function command_wifi_status() {
-  source "${SCRIPT_DIR}/scripts/wifi_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_show_status
 }
 
 function command_wifi_edit() {
-  source "${SCRIPT_DIR}/scripts/wifi_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_edit_config "$@"
 }
 
-# Network commands (using network_utils.sh)
+# Network commands (using lib/network.sh)
 function command_scan() {
-  source "${SCRIPT_DIR}/scripts/network_utils.sh"
+  source "${SCRIPT_DIR}/scripts/lib/network.sh"
   scan_network "$@"
 }
 
 # Backup/Restore commands
 function command_update() {
-  run_sudo apt update
-  run_sudo apt -y upgrade
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  system_update
 }
 
 function command_backup() {
-  local stamp remote_tmp local_target dirs
-  stamp="$(date -u +"%Y%m%dT%H%M%SZ")"
-  remote_tmp="/tmp/qlcplus-backup-${stamp}.tar.gz"
-  local_target="${BACKUP_STORAGE}/qlcplus-backup-${stamp}.tar.gz"
-  dirs=()
-  for entry in ".config/qlcplus" ".qlcplus"; do
-    if run_sudo test -e "/home/${PI_USER}/${entry}"; then
-      dirs+=("${entry}")
-    fi
-  done
-  if [[ ${#dirs[@]} -eq 0 ]]; then
-    echo "No QLC+ configuration found under /home/${PI_USER} on ${PI_HOST}."
-    return 0
-  fi
-  mkdir -p "${BACKUP_STORAGE}"
-  run_sudo tar -czf "${remote_tmp}" -C "/home/${PI_USER}" "${dirs[@]}"
-  "${SCP_CMD[@]}" "${PI_USER}@${PI_HOST}:${remote_tmp}" "${local_target}"
-  run_sudo rm -f "${remote_tmp}"
-  echo "Backup saved to ${local_target}"
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  backup_create
 }
 
 function command_restore() {
-  local backup_file="${1:-}"
-  if [[ -z "$backup_file" ]]; then
-    echo "Usage: restore <path/to/backup.tar.gz>" >&2
-    echo "" >&2
-    echo "Available backups in ${BACKUP_STORAGE}:" >&2
-    if [[ -d "$BACKUP_STORAGE" ]]; then
-      ls -1t "${BACKUP_STORAGE}"/*.tar.gz 2>/dev/null | head -5 || echo "  (none found)"
-    else
-      echo "  (backup directory does not exist)"
-    fi
-    return 1
-  fi
-  if [[ ! -f "$backup_file" ]]; then
-    echo "Backup file not found: ${backup_file}" >&2
-    return 1
-  fi
-
-  local remote_tmp="/tmp/qlcplus-restore-$$.tar.gz"
-  
-  echo "Stopping ${SERVICE}..."
-  run_sudo systemctl stop "${SERVICE}"
-  
-  echo "Uploading backup to Pi..."
-  "${SCP_CMD[@]}" "$backup_file" "${PI_USER}@${PI_HOST}:${remote_tmp}"
-  
-  echo "Backing up current config (just in case)..."
-  run_sudo tar -czf "/tmp/qlcplus-pre-restore-backup.tar.gz" -C "/home/${PI_USER}" \
-    ".config/qlcplus" ".qlcplus" 2>/dev/null || true
-  
-  echo "Removing existing QLC+ config..."
-  run_sudo rm -rf "/home/${PI_USER}/.config/qlcplus" "/home/${PI_USER}/.qlcplus"
-  
-  echo "Extracting backup..."
-  run_sudo tar -xzf "${remote_tmp}" -C "/home/${PI_USER}"
-  
-  echo "Fixing ownership..."
-  run_sudo chown -R "${PI_USER}:${PI_USER}" "/home/${PI_USER}/.config/qlcplus" "/home/${PI_USER}/.qlcplus" 2>/dev/null || true
-  
-  echo "Cleaning up..."
-  run_sudo rm -f "${remote_tmp}"
-  
-  echo "Restarting ${SERVICE}..."
-  run_sudo systemctl start "${SERVICE}"
-  
-  echo ""
-  echo "Restore complete! Pre-restore backup saved on Pi at:"
-  echo "  /tmp/qlcplus-pre-restore-backup.tar.gz"
-  echo ""
-  command_status
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  backup_restore "$@"
 }
 
 # SSH/System commands
@@ -456,9 +392,9 @@ DHCP
 }
 
 function command_harden() {
-  local script="${SCRIPT_DIR}/scripts/pi_harden.sh"
+  local script="${SCRIPT_DIR}/scripts/provisioning/harden.sh"
   if [[ ! -f "$script" ]]; then
-    echo "scripts/pi_harden.sh not found at ${script}" >&2
+    echo "scripts/provisioning/harden.sh not found at ${script}" >&2
     return 1
   fi
   PI_HOST="${PI_HOST}" \
@@ -476,9 +412,9 @@ function command_setup_full() {
 }
 
 function command_setup() {
-  local script="${SCRIPT_DIR}/scripts/pi_lights_setup.sh"
+  local script="${SCRIPT_DIR}/scripts/provisioning/setup.sh"
   if [[ ! -f "$script" ]]; then
-    echo "scripts/pi_lights_setup.sh not found at ${script}" >&2
+    echo "scripts/provisioning/setup.sh not found at ${script}" >&2
     return 1
   fi
   PI_HOST="${PI_HOST}" \
@@ -489,9 +425,9 @@ function command_setup() {
 }
 
 function command_landing_setup() {
-  local script="${SCRIPT_DIR}/scripts/pi_landing.sh"
+  local script="${SCRIPT_DIR}/scripts/services/landing.sh"
   if [[ ! -f "$script" ]]; then
-    echo "scripts/pi_landing.sh not found at ${script}" >&2
+    echo "scripts/services/landing.sh not found at ${script}" >&2
     return 1
   fi
   PI_HOST="${PI_HOST}" \
@@ -518,111 +454,13 @@ function command_landing_deploy() {
 }
 
 function command_gen_cert() {
-  local days="${1:-730}"
-  local cert_dir="${SCRIPT_DIR}/certs"
-  local cert="${cert_dir}/qlc.crt"
-  local key="${cert_dir}/qlc.key"
-
-  if ! command -v openssl >/dev/null 2>&1; then
-    echo "openssl not found. Install it with: brew install openssl" >&2
-    return 1
-  fi
-  if [[ -f "$cert" || -f "$key" ]]; then
-    echo "Certs already exist in ${cert_dir}/. Delete them first to regenerate." >&2
-    return 1
-  fi
-
-  # Build SANs: always include hostname.local; add IP or extra DNS if PI_HOST is set
-  local san="DNS:${PI_HOSTNAME}.local,DNS:localhost"
-  if [[ -n "$PI_HOST" && "$PI_HOST" != "${PI_HOSTNAME}.local" ]]; then
-    if [[ "$PI_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      san="${san},IP:${PI_HOST}"
-    else
-      san="${san},DNS:${PI_HOST}"
-    fi
-  fi
-
-  local tmpconf
-  tmpconf="$(mktemp /tmp/qlc-openssl-XXXXXX.cnf)"
-  # shellcheck disable=SC2064
-  trap "rm -f '$tmpconf'" RETURN
-
-  cat > "$tmpconf" <<CONF
-[req]
-distinguished_name = dn
-x509_extensions    = san
-prompt             = no
-
-[dn]
-CN = ${PI_HOSTNAME}.local
-
-[san]
-subjectAltName = ${san}
-CONF
-
-  mkdir -p "$cert_dir"
-  openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout "$key" -out "$cert" \
-    -days "$days" \
-    -config "$tmpconf" 2>/dev/null
-  chmod 600 "$key"
-
-  echo "Certificate: ${cert}"
-  echo "Private key: ${key}"
-  echo "Valid for:   ${days} days"
-  echo "SANs:        ${san}"
-  echo ""
-  echo "Run: ./lightsctl.sh ssl-proxy  to install on the Pi."
+  source "${SCRIPT_DIR}/scripts/lib/tls.sh"
+  tls_gen_cert "$@"
 }
 
 function command_ssl_proxy() {
-  local cert_local="${1:-${SSL_CERT}}"
-  local key_local="${2:-${SSL_KEY}}"
-  if [[ ! -f "$cert_local" ]]; then
-    echo "Certificate not found at ${cert_local}"
-    return 1
-  fi
-  if [[ ! -f "$key_local" ]]; then
-    echo "Private key not found at ${key_local}"
-    return 1
-  fi
-
-  run_sudo apt-get update
-  run_sudo apt-get install -y stunnel4 iptables-persistent
-
-  local remote_dir="/etc/ssl/qlc"
-  local remote_cert="${remote_dir}/qlc.crt"
-  local remote_key="${remote_dir}/qlc.key"
-
-  "${SCP_CMD[@]}" "$cert_local" "${PI_USER}@${PI_HOST}:/tmp/qlc.crt"
-  "${SCP_CMD[@]}" "$key_local" "${PI_USER}@${PI_HOST}:/tmp/qlc.key"
-  run_sudo mkdir -p "${remote_dir}"
-  run_sudo mv /tmp/qlc.crt "${remote_cert}"
-  run_sudo mv /tmp/qlc.key "${remote_key}"
-  run_sudo chmod 644 "${remote_cert}"
-  run_sudo chmod 600 "${remote_key}"
-
-  run_sudo tee /etc/stunnel/qlc.conf >/dev/null <<EOF
-[global]
-cert = ${remote_cert}
-key = ${remote_key}
-pid = /var/run/stunnel4-qlc.pid
-socket = l:TCP_NODELAY=1
-socket = r:TCP_NODELAY=1
-
-[qlc]
-accept = 443
-connect = 127.0.0.1:${QLC_PORT}
-EOF
-
-  run_sudo sed -i 's/^ENABLED=0/ENABLED=1/' /etc/default/stunnel4 || true
-  run_sudo systemctl enable --now stunnel4
-
-  if ! run_sudo iptables -t nat -C PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports "${QLC_PORT}" >/dev/null 2>&1; then
-    run_sudo iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports "${QLC_PORT}"
-  fi
-  run_sudo netfilter-persistent save >/dev/null 2>&1 || true
-  echo "SSL proxy configured on 443 → ${QLC_PORT} using ${remote_cert}"
+  source "${SCRIPT_DIR}/scripts/lib/tls.sh"
+  tls_ssl_proxy "$@"
 }
 
 # Main command dispatcher
