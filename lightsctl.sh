@@ -473,6 +473,11 @@ function command_landing_setup() {
   PI_USER="${PI_USER}" \
   QLC_PORT="${QLC_PORT}" \
   LANDING_SRC="${SCRIPT_DIR}/landing/index.html" \
+  LANDING_TITLE="${LANDING_TITLE:-Lighting Controller}" \
+  LANDING_STUDIO_NAME="${LANDING_STUDIO_NAME:-Your Studio}" \
+  LANDING_SUBTITLE="${LANDING_SUBTITLE:-Lighting Controller}" \
+  LANDING_BUTTON_TEXT="${LANDING_BUTTON_TEXT:-Lighting Control}" \
+  LANDING_FOOTER_TEXT="${LANDING_FOOTER_TEXT:-lights.local}" \
   bash "$script"
 }
 
@@ -482,14 +487,38 @@ function command_landing_deploy() {
     echo "landing/index.html not found at ${landing_src}" >&2
     return 1
   fi
+  
+  # Set defaults for landing page variables
+  local landing_title="${LANDING_TITLE:-Lighting Controller}"
+  local landing_studio_name="${LANDING_STUDIO_NAME:-Your Studio}"
+  local landing_subtitle="${LANDING_SUBTITLE:-Lighting Controller}"
+  local landing_button_text="${LANDING_BUTTON_TEXT:-Lighting Control}"
+  local landing_footer_text="${LANDING_FOOTER_TEXT:-lights.local}"
+  
   local rendered
   rendered="$(mktemp /tmp/qlc-landing-XXXXXX.html)"
   trap "rm -f '$rendered'" RETURN
-  sed "s|__QLC_URL__|http://${PI_HOST}:${QLC_PORT}|g" "$landing_src" > "$rendered"
+  
+  # Substitute all placeholders
+  sed -e "s|__QLC_URL__|http://${PI_HOST}:${QLC_PORT}|g" \
+      -e "s|__LANDING_TITLE__|${landing_title}|g" \
+      -e "s|__LANDING_STUDIO_NAME__|${landing_studio_name}|g" \
+      -e "s|__LANDING_SUBTITLE__|${landing_subtitle}|g" \
+      -e "s|__LANDING_BUTTON_TEXT__|${landing_button_text}|g" \
+      -e "s|__LANDING_FOOTER_TEXT__|${landing_footer_text}|g" \
+      "$landing_src" > "$rendered"
+  
   "${SCP_CMD[@]}" "$rendered" "${PI_USER}@${PI_HOST}:/tmp/qlc-landing.html"
   run_sudo mv /tmp/qlc-landing.html /var/www/html/index.html
   run_sudo chmod 644 /var/www/html/index.html
   echo "Landing page updated at http://${PI_HOST}"
+  echo ""
+  echo "Branding:"
+  echo "  Title: ${landing_title}"
+  echo "  Studio: ${landing_studio_name}"
+  echo "  Subtitle: ${landing_subtitle}"
+  echo "  Button: ${landing_button_text}"
+  echo "  Footer: ${landing_footer_text}"
 }
 
 function command_gen_cert() {

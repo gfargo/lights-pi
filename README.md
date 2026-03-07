@@ -395,16 +395,21 @@ cp .env.example .env
 <details>
 <summary><b>View Configuration Options</b></summary>
 
-| Variable         | Default              | Description                     |
-| ---------------- | -------------------- | ------------------------------- |
-| `PI_HOST`        | `lights.local`       | Pi hostname or IP               |
-| `PI_USER`        | `pi`                 | SSH username                    |
-| `PI_HOSTNAME`    | `lights`             | mDNS hostname set on the Pi     |
-| `QLC_PORT`       | `9999`               | QLC+ web UI port                |
-| `SSH_KEY`        | _(none)_             | Path to SSH private key         |
-| `BACKUP_STORAGE` | `./backups`          | Local backup destination        |
-| `SSL_CERT`       | `certs/qlc.crt`      | TLS certificate for ssl-proxy   |
-| `SSL_KEY`        | `certs/qlc.key`      | TLS private key for ssl-proxy   |
+| Variable                | Default                  | Description                          |
+| ----------------------- | ------------------------ | ------------------------------------ |
+| `PI_HOST`               | `lights.local`           | Pi hostname or IP                    |
+| `PI_USER`               | `pi`                     | SSH username                         |
+| `PI_HOSTNAME`           | `lights`                 | mDNS hostname set on the Pi          |
+| `QLC_PORT`              | `9999`                   | QLC+ web UI port                     |
+| `SSH_KEY`               | _(none)_                 | Path to SSH private key              |
+| `BACKUP_STORAGE`        | `./backups`              | Local backup destination             |
+| `SSL_CERT`              | `certs/qlc.crt`          | TLS certificate for ssl-proxy        |
+| `SSL_KEY`               | `certs/qlc.key`          | TLS private key for ssl-proxy        |
+| `LANDING_TITLE`         | `Lighting Controller`    | Landing page browser title           |
+| `LANDING_STUDIO_NAME`   | `Your Studio`            | Studio name displayed on landing page|
+| `LANDING_SUBTITLE`      | `Lighting Controller`    | Subtitle text on landing page        |
+| `LANDING_BUTTON_TEXT`   | `Lighting Control`       | Button text on landing page          |
+| `LANDING_FOOTER_TEXT`   | `lights.local`           | Footer text on landing page          |
 
 </details>
 

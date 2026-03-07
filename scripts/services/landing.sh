@@ -9,6 +9,13 @@ PI_USER="${PI_USER:-pi}"
 QLC_PORT="${QLC_PORT:-9999}"
 LANDING_SRC="${LANDING_SRC:-}"   # set by lightsctl.sh to SCRIPT_DIR/landing/index.html
 
+# Landing page branding variables with defaults
+LANDING_TITLE="${LANDING_TITLE:-Lighting Controller}"
+LANDING_STUDIO_NAME="${LANDING_STUDIO_NAME:-Your Studio}"
+LANDING_SUBTITLE="${LANDING_SUBTITLE:-Lighting Controller}"
+LANDING_BUTTON_TEXT="${LANDING_BUTTON_TEXT:-Lighting Control}"
+LANDING_FOOTER_TEXT="${LANDING_FOOTER_TEXT:-lights.local}"
+
 if [[ -z "$PI_HOST" ]]; then
   echo "Set PI_HOST to the Pi's IP or hostname."
   exit 1
@@ -22,10 +29,16 @@ fi
 REMOTE_HTML="/var/www/html/index.html"
 NGINX_SITE="/etc/nginx/sites-available/lights"
 
-# Inject the real QLC+ URL into the HTML before uploading
+# Inject all variables into the HTML before uploading
 RENDERED="$(mktemp /tmp/qlc-landing-XXXXXX.html)"
 trap "rm -f '$RENDERED'" EXIT
-sed "s|__QLC_URL__|http://${PI_HOST}:${QLC_PORT}|g" "$LANDING_SRC" > "$RENDERED"
+sed -e "s|__QLC_URL__|http://${PI_HOST}:${QLC_PORT}|g" \
+    -e "s|__LANDING_TITLE__|${LANDING_TITLE}|g" \
+    -e "s|__LANDING_STUDIO_NAME__|${LANDING_STUDIO_NAME}|g" \
+    -e "s|__LANDING_SUBTITLE__|${LANDING_SUBTITLE}|g" \
+    -e "s|__LANDING_BUTTON_TEXT__|${LANDING_BUTTON_TEXT}|g" \
+    -e "s|__LANDING_FOOTER_TEXT__|${LANDING_FOOTER_TEXT}|g" \
+    "$LANDING_SRC" > "$RENDERED"
 
 # Install nginx if not already present
 ssh "${PI_USER}@${PI_HOST}" "sudo bash -s" <<EOF
@@ -71,3 +84,10 @@ EOF
 
 echo "Landing page live at http://${PI_HOST}"
 echo "Button links to:   http://${PI_HOST}:${QLC_PORT}"
+echo ""
+echo "Branding:"
+echo "  Title: ${LANDING_TITLE}"
+echo "  Studio: ${LANDING_STUDIO_NAME}"
+echo "  Subtitle: ${LANDING_SUBTITLE}"
+echo "  Button: ${LANDING_BUTTON_TEXT}"
+echo "  Footer: ${LANDING_FOOTER_TEXT}"
