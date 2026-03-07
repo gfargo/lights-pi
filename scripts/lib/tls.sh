@@ -90,7 +90,7 @@ function tls_ssl_proxy() {
   run_sudo chmod 600 "${remote_key}"
 
   run_sudo tee /etc/stunnel/qlc.conf >/dev/null <<EOF
-[global]
+; Global options
 cert = ${remote_cert}
 key = ${remote_key}
 pid = /var/run/stunnel4-qlc.pid
