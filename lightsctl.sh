@@ -92,6 +92,9 @@ QLC+:
 
 Network / WiFi:
   wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
+  wifi-list                     list all configured and available WiFi networks
+  wifi-add-network <ssid> <pass> [priority]  add a new WiFi network (NetworkManager)
+  wifi-connect <ssid>           connect to a specific WiFi network
   wifi-reconf                   reload wpa_supplicant configuration
   wifi-restart                  restart wpa_supplicant service (reloads config file)
   wifi-reconnect                force disconnect and reconnect to best available network
@@ -273,6 +276,21 @@ function command_wifi_reconnect() {
 function command_wifi_restart() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_restart
+}
+
+function command_wifi_add_network() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_add_network "$@"
+}
+
+function command_wifi_list() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_list
+}
+
+function command_wifi_connect() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_connect "$@"
 }
 
 function command_wifi_edit() {
@@ -504,6 +522,9 @@ case "$1" in
   install-fixture) shift; command_install_fixture "$@" ;;
   test-dmx) command_test_dmx ;;
   wifi) command_wifi ;;
+  wifi-list) command_wifi_list ;;
+  wifi-add-network) shift; command_wifi_add_network "$@" ;;
+  wifi-connect) shift; command_wifi_connect "$@" ;;
   wifi-reconf) command_wifi_reconf ;;
   wifi-restart) command_wifi_restart ;;
   wifi-reconnect) command_wifi_reconnect ;;

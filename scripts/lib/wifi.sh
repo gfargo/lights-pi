@@ -144,8 +144,95 @@ function wifi_edit_config() {
   local target="${1:-/etc/wpa_supplicant/wpa_supplicant.conf}"
   local editor="${EDITOR:-nano}"
   
+  echo "⚠️  Warning: This system uses NetworkManager, not wpa_supplicant directly."
+  echo ""
+  echo "Editing wpa_supplicant.conf won't affect NetworkManager."
+  echo "Use 'wifi-add-network' to add networks properly."
+  echo ""
+  read -p "Continue editing wpa_supplicant.conf anyway? [y/N] " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Cancelled. Use: ./lightsctl.sh wifi-add-network"
+    return 0
+  fi
+  
   # Use ssh -t to allocate a pseudo-terminal for interactive editing
   ssh -t "${SSH_OPTIONS[@]}" "${PI_USER}@${PI_HOST}" sudo "$editor" "$target"
+}
+
+# Add a WiFi network using NetworkManager
+function wifi_add_network() {
+  local ssid="${1:-}"
+  local password="${2:-}"
+  local priority="${3:-0}"
+  
+  if [[ -z "$ssid" ]]; then
+    echo "Usage: wifi-add-network <SSID> <password> [priority]"
+    echo ""
+    echo "Example:"
+    echo "  ./lightsctl.sh wifi-add-network \"CBCI-F2B8\" \"eagle4691buckle\" 30"
+    echo ""
+    echo "Priority: Higher number = higher priority (default: 0)"
+    return 1
+  fi
+  
+  if [[ -z "$password" ]]; then
+    echo "Error: Password is required"
+    return 1
+  fi
+  
+  echo "Adding WiFi network: ${ssid}"
+  echo "Priority: ${priority}"
+  echo ""
+  
+  # Add the network using nmcli
+  run_sudo nmcli connection add \
+    type wifi \
+    con-name "netplan-wlan0-${ssid}" \
+    ifname wlan0 \
+    ssid "${ssid}" \
+    wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.psk "${password}" \
+    connection.autoconnect-priority "${priority}"
+  
+  echo ""
+  echo "Network added successfully!"
+  echo ""
+  echo "To connect now:"
+  echo "  ./lightsctl.sh wifi-connect \"${ssid}\""
+  echo ""
+  echo "To see all networks:"
+  echo "  ./lightsctl.sh wifi-list"
+}
+
+# List all configured WiFi networks
+function wifi_list() {
+  echo "=== Configured WiFi Networks ==="
+  run_sudo nmcli connection show | grep wifi
+  
+  echo ""
+  echo "=== Available WiFi Networks ==="
+  run_sudo nmcli device wifi list
+}
+
+# Connect to a specific WiFi network
+function wifi_connect() {
+  local ssid="${1:-}"
+  
+  if [[ -z "$ssid" ]]; then
+    echo "Usage: wifi-connect <SSID>"
+    echo ""
+    echo "Available networks:"
+    run_sudo nmcli connection show | grep wifi
+    return 1
+  fi
+  
+  echo "Connecting to: ${ssid}"
+  run_sudo nmcli connection up "netplan-wlan0-${ssid}"
+  
+  echo ""
+  echo "Current status:"
+  run_sudo nmcli device status
 }
 
 # Export functions
@@ -156,3 +243,6 @@ export -f wifi_diagnose
 export -f wifi_reconnect
 export -f wifi_restart
 export -f wifi_edit_config
+export -f wifi_add_network
+export -f wifi_list
+export -f wifi_connect
