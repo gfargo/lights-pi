@@ -93,7 +93,9 @@ QLC+:
 Network / WiFi:
   wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
   wifi-reconf                   run wpa_cli -i wlan0 reconfigure
+  wifi-reconnect                force disconnect and reconnect to best available network
   wifi-status                   show SSID and wlan0 address
+  wifi-diagnose                 comprehensive WiFi diagnostics and troubleshooting
   wifi-edit                     edit the Wi-Fi config in \$EDITOR (defaults to nano)
   scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
@@ -255,6 +257,16 @@ function command_wifi_reconf() {
 function command_wifi_status() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_show_status
+}
+
+function command_wifi_diagnose() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_diagnose
+}
+
+function command_wifi_reconnect() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_reconnect
 }
 
 function command_wifi_edit() {
@@ -487,7 +499,9 @@ case "$1" in
   test-dmx) command_test_dmx ;;
   wifi) command_wifi ;;
   wifi-reconf) command_wifi_reconf ;;
+  wifi-reconnect) command_wifi_reconnect ;;
   wifi-status) command_wifi_status ;;
+  wifi-diagnose) command_wifi_diagnose ;;
   scan) shift; command_scan "$@" ;;
   update) command_update ;;
   update-qlc) command_update_qlc ;;

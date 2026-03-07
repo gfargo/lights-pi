@@ -18,6 +18,84 @@ function wifi_show_status() {
   run ip -br a show wlan0
 }
 
+# Comprehensive WiFi diagnostics
+function wifi_diagnose() {
+  echo "=== WiFi Diagnostics ==="
+  echo ""
+  
+  echo "--- Current Connection ---"
+  run_sudo wpa_cli -i wlan0 status
+  
+  echo ""
+  echo "--- Network Interface ---"
+  run ip addr show wlan0
+  
+  echo ""
+  echo "--- Available Networks (scan) ---"
+  run_sudo wpa_cli -i wlan0 scan
+  sleep 2
+  run_sudo wpa_cli -i wlan0 scan_results | head -20
+  
+  echo ""
+  echo "--- Configured Networks ---"
+  run_sudo wpa_cli -i wlan0 list_networks
+  
+  echo ""
+  echo "--- Recent WiFi Logs ---"
+  run_sudo journalctl -u wpa_supplicant -n 30 --no-pager
+  
+  echo ""
+  echo "--- Network Manager Status ---"
+  run systemctl status wpa_supplicant --no-pager || true
+  
+  echo ""
+  echo "--- DNS Resolution ---"
+  run cat /etc/resolv.conf
+  
+  echo ""
+  echo "--- Routing Table ---"
+  run ip route
+  
+  echo ""
+  echo "=== Troubleshooting Tips ==="
+  echo "If not connected:"
+  echo "  1. Check if SSID is in range: look for it in 'Available Networks' above"
+  echo "  2. Verify password is correct in wpa_supplicant.conf"
+  echo "  3. Check if network is 2.4GHz (Pi 3 doesn't support 5GHz on some models)"
+  echo "  4. Try: ./lightsctl.sh wifi-reconf"
+  echo "  5. Check logs for authentication failures"
+}
+
+# Force WiFi to reconnect and select best network
+function wifi_reconnect() {
+  echo "Forcing WiFi reconnection..."
+  echo ""
+  
+  echo "1. Disconnecting from current network..."
+  run_sudo wpa_cli -i wlan0 disconnect
+  sleep 2
+  
+  echo "2. Scanning for available networks..."
+  run_sudo wpa_cli -i wlan0 scan
+  sleep 3
+  
+  echo "3. Reconnecting (will select highest priority available network)..."
+  run_sudo wpa_cli -i wlan0 reconnect
+  sleep 3
+  
+  echo "4. Reconfiguring..."
+  run_sudo wpa_cli -i wlan0 reconfigure
+  sleep 2
+  
+  echo ""
+  echo "Current status:"
+  run_sudo wpa_cli -i wlan0 status
+  
+  echo ""
+  echo "If still not connected, try:"
+  echo "  ./lightsctl.sh wifi-diagnose"
+}
+
 # Edit WiFi configuration
 function wifi_edit_config() {
   local target="${1:-/etc/wpa_supplicant/wpa_supplicant.conf}"
@@ -31,4 +109,6 @@ function wifi_edit_config() {
 export -f wifi_show_config
 export -f wifi_reconfigure
 export -f wifi_show_status
+export -f wifi_diagnose
+export -f wifi_reconnect
 export -f wifi_edit_config
