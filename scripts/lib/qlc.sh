@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Show QLC+ version
 function qlc_show_version() {
-  if run qlcplus --version; then
+  if run env QT_QPA_PLATFORM=minimal qlcplus --version 2>&1; then
     :
   else
     echo "qlcplus not installed on ${PI_HOST}, install it manually or rerun the setup script."

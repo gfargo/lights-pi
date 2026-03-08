@@ -136,6 +136,7 @@ Environment=HOME=/home/${PI_USER}
 Environment=QT_QPA_PLATFORM=minimal
 Environment=XDG_RUNTIME_DIR=/run/qlcplus
 RuntimeDirectory=qlcplus
+RuntimeDirectoryMode=0700
 WorkingDirectory=/home/${PI_USER}
 ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT}
 Restart=always
