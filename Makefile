@@ -2,7 +2,7 @@ CTL := ./lightsctl.sh
 
 .PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
-        qlc-headless list-fixtures install-fixture test-dmx deploy-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
+        qlc-headless list-fixtures install-fixture test-dmx deploy-workspace set-default-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
         reboot poweroff hdmi-disable os-version landing-setup landing-deploy
 
 help:
@@ -98,6 +98,10 @@ test-dmx:
 # deploy usage: make deploy WS=workspaces/studio.qxw
 deploy:
 	$(CTL) deploy-workspace $(WS)
+
+# set-default usage: make set-default WS=workspaces/studio.qxw
+set-default:
+	$(CTL) set-default-workspace $(WS)
 
 # pull usage: make pull [OUTPUT=custom-name.qxw]
 pull:
