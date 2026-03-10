@@ -84,6 +84,7 @@ QLC+:
   qlc-version                   run qlcplus --version on the Pi
   qlc-headless                  push Qt platform fix (sets QT_QPA_PLATFORM=minimal)
   deploy-workspace <file.qxw>   upload workspace to Pi and restart service
+  set-default-workspace <file.qxw>  set workspace to auto-load on boot (all users see same board)
   pull-workspace [output.qxw]   download current workspace from Pi
   list-fixtures                 show installed fixture definitions
   install-fixture <file.qxf>    upload and install custom fixture definition
@@ -238,6 +239,11 @@ function command_test_dmx() {
 function command_deploy_workspace() {
   source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
   qlc_deploy_workspace "$@"
+}
+
+function command_set_default_workspace() {
+  source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+  qlc_set_default_workspace "$@"
 }
 
 function command_pull_workspace() {
@@ -607,6 +613,7 @@ case "$1" in
   ssl-proxy) shift; command_ssl_proxy "$@" ;;
   health) command_health ;;
   deploy-workspace) shift; command_deploy_workspace "$@" ;;
+  set-default-workspace) shift; command_set_default_workspace "$@" ;;
   pull-workspace) shift; command_pull_workspace "$@" ;;
   open-web) command_open_web ;;
   landing-setup) command_landing_setup ;;
