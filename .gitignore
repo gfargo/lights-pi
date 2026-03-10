@@ -3,3 +3,5 @@ backups/
 certs/
 scratch*
 .vscode/
+docs/
+MARKETING_SITE_OUTLINE.md
