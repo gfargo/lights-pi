@@ -357,6 +357,7 @@ make benchmark
 
 # QLC+
 make deploy WS=workspaces/studio.qxw
+make set-default WS=workspaces/studio.qxw
 make pull OUTPUT=custom.qxw
 make list-fixtures
 make install-fixture FIXTURE=path/to/fixture.qxf
@@ -828,12 +829,22 @@ sudo systemctl restart dhcpcd5
 
 ## 🚀 Future Enhancements
 
-- ArtNet / sACN output support
-- MIDI controller integration
-- StreamDeck scene control
-- Motion-triggered or scheduled scenes
-- Custom web UI (React/Node)
-- Dedicated WiFi VLAN for lighting traffic
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
+
+**Immediate priorities:**
+- ✅ Auto-load default workspace (v1.1)
+- Marketing website with interactive demo (v1.2)
+- AI scene generation with modular/complete styles (v1.2)
+- Scene library and marketplace (v1.3)
+
+**Planned features:**
+- Multi-device fleet management
+- Studio ecosystem integration (camera, video, audio)
+- Advanced AI features (scene evolution, video analysis)
+- Professional show management tools
+- Plugin system and API access
+
+For detailed information on AI scene generation, see [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md).
 
 ---
 
