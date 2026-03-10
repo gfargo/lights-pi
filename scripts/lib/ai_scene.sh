@@ -478,6 +478,57 @@ function ai_generate_scene() {
   echo "$scene_xml"
 }
 
+# Generate multiple scene variations
+function ai_generate_variations() {
+  local description="$1"
+  local style="$2"
+  local fixtures_json="$3"
+  local count="${4:-3}"
+  local use_mock="${5:-false}"
+  
+  local variations=()
+  
+  for i in $(seq 1 "$count"); do
+    echo "Generating variation $i of $count..." >&2
+    
+    # Add variation hint to description
+    local varied_description="$description"
+    case $i in
+      1) varied_description="$description (variation: more intense)" ;;
+      2) varied_description="$description (variation: softer, more subtle)" ;;
+      3) varied_description="$description (variation: different color balance)" ;;
+    esac
+    
+    local scene_xml
+    if [[ "$use_mock" == true ]]; then
+      scene_xml=$(ai_generate_mock_scene "$varied_description" "$style" "$fixtures_json")
+    else
+      # For real AI, we'll modify the prompt slightly
+      local temp_workspace=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+      echo "$fixtures_json" > "$temp_workspace"
+      scene_xml=$(ai_generate_scene "$varied_description" "$style" "$temp_workspace")
+      rm -f "$temp_workspace"
+    fi
+    
+    variations+=("$scene_xml")
+  done
+  
+  # Return variations as JSON array
+  local json_output='{"variations":['
+  local first=true
+  for var in "${variations[@]}"; do
+    if [[ "$first" == true ]]; then
+      first=false
+    else
+      json_output+=","
+    fi
+    json_output+=$(echo "$var" | jq -Rs .)
+  done
+  json_output+=']}'
+  
+  echo "$json_output"
+}
+
 # Export functions
 export -f ai_validate_config
 export -f ai_extract_fixtures
@@ -491,3 +542,4 @@ export -f ai_call_openai
 export -f ai_call_ollama
 export -f ai_validate_xml
 export -f ai_generate_scene
+export -f ai_generate_variations

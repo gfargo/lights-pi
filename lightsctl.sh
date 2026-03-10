@@ -661,15 +661,84 @@ function command_generate_scene() {
   echo "Style: ${style}" >&2
   
   local scene_xml
-  if [[ "$use_mock" == true ]]; then
-    echo "Using mock generation" >&2
-    scene_xml=$(ai_generate_mock_scene "$description" "$style" "$fixtures_json")
-  elif [[ -z "$AI_API_KEY" ]] && [[ "$AI_PROVIDER" != "ollama" ]]; then
-    echo "Note: AI_API_KEY not set, using mock generation" >&2
-    scene_xml=$(ai_generate_mock_scene "$description" "$style" "$fixtures_json")
+  
+  # Check if variations requested
+  if [[ "$variations" -gt 1 ]]; then
+    echo "Generating $variations variations..." >&2
+    
+    local use_mock_flag=false
+    if [[ "$use_mock" == true ]] || { [[ -z "$AI_API_KEY" ]] && [[ "$AI_PROVIDER" != "ollama" ]]; }; then
+      use_mock_flag=true
+    fi
+    
+    local variations_json
+    variations_json=$(ai_generate_variations "$description" "$style" "$fixtures_json" "$variations" "$use_mock_flag")
+    
+    # Display variations and let user choose
+    echo "" >&2
+    echo "Generated $variations variations:" >&2
+    echo "=================================" >&2
+    
+    local variation_files=()
+    for i in $(seq 1 "$variations"); do
+      local var_xml
+      var_xml=$(echo "$variations_json" | jq -r ".variations[$((i-1))]")
+      
+      # Save to temp file (mktemp on macOS requires suffix after XXXXXX)
+      local temp_file
+      temp_file=$(mktemp /tmp/qlc-variation-XXXXXX)
+      mv "$temp_file" "${temp_file}.xml"
+      temp_file="${temp_file}.xml"
+      echo "$var_xml" > "$temp_file"
+      variation_files+=("$temp_file")
+      
+      echo "" >&2
+      echo "Variation $i:" >&2
+      echo "$var_xml" | head -n 10 >&2
+      echo "..." >&2
+    done
+    
+    echo "" >&2
+    echo "=================================" >&2
+    
+    # Interactive selection
+    if command -v fzf >/dev/null 2>&1; then
+      echo "Select a variation (use arrow keys, Enter to select):" >&2
+      local selected
+      selected=$(printf "Variation %d\n" $(seq 1 "$variations") | fzf --height=10 --prompt="Choose variation: ")
+      local selected_num=$(echo "$selected" | grep -o '[0-9]\+')
+      scene_xml=$(cat "${variation_files[$((selected_num-1))]}")
+      echo "Selected: Variation $selected_num" >&2
+    else
+      # Fallback to simple prompt
+      echo -n "Select variation (1-$variations): " >&2
+      read -r selected_num
+      if [[ "$selected_num" -ge 1 ]] && [[ "$selected_num" -le "$variations" ]]; then
+        scene_xml=$(cat "${variation_files[$((selected_num-1))]}")
+        echo "Selected: Variation $selected_num" >&2
+      else
+        echo "Invalid selection, using variation 1" >&2
+        scene_xml=$(cat "${variation_files[0]}")
+      fi
+    fi
+    
+    # Clean up temp files
+    for f in "${variation_files[@]}"; do
+      rm -f "$f"
+    done
+    
   else
-    echo "Using AI provider: $AI_PROVIDER" >&2
-    scene_xml=$(ai_generate_scene "$description" "$style" "$workspace_file")
+    # Single scene generation
+    if [[ "$use_mock" == true ]]; then
+      echo "Using mock generation" >&2
+      scene_xml=$(ai_generate_mock_scene "$description" "$style" "$fixtures_json")
+    elif [[ -z "$AI_API_KEY" ]] && [[ "$AI_PROVIDER" != "ollama" ]]; then
+      echo "Note: AI_API_KEY not set, using mock generation" >&2
+      scene_xml=$(ai_generate_mock_scene "$description" "$style" "$fixtures_json")
+    else
+      echo "Using AI provider: $AI_PROVIDER" >&2
+      scene_xml=$(ai_generate_scene "$description" "$style" "$workspace_file")
+    fi
   fi
   
   if [[ $? -ne 0 ]]; then

@@ -859,6 +859,9 @@ Generate QLC+ scenes from natural language descriptions using AI. The system und
 # Generate with specific style
 ./lightsctl.sh generate-scene "party mode" --style modular --add-to-workspace
 
+# Generate multiple variations and choose the best one
+./lightsctl.sh generate-scene "dramatic spotlight" --variations 3 --preview
+
 # Save to file
 ./lightsctl.sh generate-scene "dramatic spotlight" --output scenes/dramatic.xml
 ```
@@ -869,13 +872,24 @@ Generate QLC+ scenes from natural language descriptions using AI. The system und
 - **Timeline:** Time-based sequences with keyframes
 - **Reactive:** Audio/sensor-responsive scenes
 
+**Scene Variations:**
+Generate multiple variations of a scene and interactively select the best one:
+```bash
+# Generate 3 variations with interactive selection
+./lightsctl.sh generate-scene "warm sunset" --variations 3
+
+# Works with all options
+./lightsctl.sh generate-scene "party lights" --variations 5 --style modular --add-to-workspace
+```
+
 **Configuration:**
 Add to your `.env` file:
 ```bash
 AI_PROVIDER=anthropic          # anthropic, openai, or ollama
-AI_API_KEY=sk-ant-...          # Your API key
+AI_API_KEY=sk-ant-...          # Your API key (not needed for ollama)
 AI_MODEL=claude-3-5-sonnet-20241022
 AI_SCENE_STYLE=complete        # Default style
+AI_SCENE_VARIATIONS=1          # Default number of variations
 ```
 
 See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete documentation.
