@@ -203,6 +203,49 @@ function qlc_deploy_workspace() {
   echo "Service updated with --workspace ${remote_path} and restarted"
 }
 
+# Set default workspace (auto-loads on boot)
+function qlc_set_default_workspace() {
+  local workspace="${1:-}"
+  if [[ -z "$workspace" ]]; then
+    echo "Usage: set-default-workspace <path/to/file.qxw>" >&2
+    return 1
+  fi
+  if [[ ! -f "$workspace" ]]; then
+    echo "Workspace file not found: ${workspace}" >&2
+    return 1
+  fi
+  
+  local filename remote_path service_file
+  filename="$(basename "$workspace")"
+  remote_path="/home/${PI_USER}/.qlcplus/default.qxw"
+  service_file="/etc/systemd/system/qlcplus-web.service"
+  
+  echo "Setting default workspace: ${filename}"
+  
+  # Create .qlcplus directory if it doesn't exist
+  run mkdir -p "/home/${PI_USER}/.qlcplus"
+  
+  # Upload workspace to default location
+  "${SCP_CMD[@]}" "$workspace" "${PI_USER}@${PI_HOST}:${remote_path}"
+  echo "Uploaded ${filename} → ${remote_path}"
+  
+  # Fix ownership
+  run chown "${PI_USER}:${PI_USER}" "$remote_path"
+  run chmod 644 "$remote_path"
+  
+  # Update service to auto-load workspace on startup
+  run_sudo sed -i "s|ExecStart=.*qlcplus.*|ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --open ${remote_path}|" "$service_file"
+  run_sudo systemctl daemon-reload
+  run_sudo systemctl restart "${SERVICE}"
+  
+  echo ""
+  echo "✓ Default workspace configured"
+  echo "  Location: ${remote_path}"
+  echo "  Auto-loads: Yes (on every boot)"
+  echo ""
+  echo "All users accessing http://${PI_HOST}:${QLC_PORT} will see this workspace"
+}
+
 # Pull workspace from Pi
 function qlc_pull_workspace() {
   local output="${1:-}"
@@ -267,5 +310,6 @@ export -f qlc_list_fixtures
 export -f qlc_install_fixture
 export -f qlc_test_dmx
 export -f qlc_deploy_workspace
+export -f qlc_set_default_workspace
 export -f qlc_pull_workspace
 export -f qlc_open_web
