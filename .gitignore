@@ -5,3 +5,7 @@ scratch*
 .vscode/
 docs/
 MARKETING_SITE_OUTLINE.md
+*.qxw
+scenes/*.xml
+!scenes/examples/
+!scenes/README.md

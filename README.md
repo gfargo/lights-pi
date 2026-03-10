@@ -848,6 +848,40 @@ For detailed information on AI scene generation, see [docs/AI_SCENE_GENERATION.m
 
 ---
 
+## 🤖 AI Scene Generation (Beta)
+
+Generate QLC+ scenes from natural language descriptions using AI. The system understands your fixture inventory and creates appropriate DMX values to match your desired mood or effect.
+
+```bash
+# Generate a scene
+./lightsctl.sh generate-scene "warm sunset ambiance" --preview
+
+# Generate with specific style
+./lightsctl.sh generate-scene "party mode" --style modular --add-to-workspace
+
+# Save to file
+./lightsctl.sh generate-scene "dramatic spotlight" --output scenes/dramatic.xml
+```
+
+**Supported Styles:**
+- **Complete:** Self-contained, ready-to-use scenes
+- **Modular:** Composable layers (color, intensity, position)
+- **Timeline:** Time-based sequences with keyframes
+- **Reactive:** Audio/sensor-responsive scenes
+
+**Configuration:**
+Add to your `.env` file:
+```bash
+AI_PROVIDER=anthropic          # anthropic, openai, or ollama
+AI_API_KEY=sk-ant-...          # Your API key
+AI_MODEL=claude-3-5-sonnet-20241022
+AI_SCENE_STYLE=complete        # Default style
+```
+
+See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete documentation.
+
+---
+
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details

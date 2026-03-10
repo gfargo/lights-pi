@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scene>
+  <Name>Warm Sunset Ambiance</Name>
+  <Description>Warm orange and red tones with medium intensity for a relaxing sunset feel</Description>
+  
+  <!-- Stage Left Par -->
+  <Fixture ID="1">
+    <Channel Number="1">255</Channel>  <!-- Red: Full -->
+    <Channel Number="2">140</Channel>  <!-- Green: Medium-high -->
+    <Channel Number="3">0</Channel>    <!-- Blue: Off -->
+    <Channel Number="4">180</Channel>  <!-- Dimmer: 70% -->
+  </Fixture>
+  
+  <!-- Stage Right Par -->
+  <Fixture ID="2">
+    <Channel Number="1">255</Channel>  <!-- Red: Full -->
+    <Channel Number="2">100</Channel>  <!-- Green: Medium-low -->
+    <Channel Number="3">20</Channel>   <!-- Blue: Slight warmth -->
+    <Channel Number="4">200</Channel>  <!-- Dimmer: 78% -->
+  </Fixture>
+</Scene>

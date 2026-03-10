@@ -126,7 +126,18 @@ Landing page (http://lights.local):
   landing-setup                 install nginx and deploy the landing page (first time)
   landing-deploy                push updated landing/index.html (no nginx reinstall)
 
+AI Scene Generation:
+  generate-scene <description> [options]  generate QLC+ scene from natural language
+    --style <complete|modular|timeline|reactive>  scene style (default: complete)
+    --preview                   show generated XML without deploying
+    --add-to-workspace          add to current workspace and deploy
+    --output <file>             save scene XML to file
+    --variations <n>            generate N variations (default: 1)
+    --mock                      use mock generation (no API key needed)
+    --workspace <file>          use specific workspace file
+
 Set env vars to override defaults: PI_HOST, PI_USER, PI_HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
+AI config: AI_PROVIDER, AI_API_KEY, AI_MODEL, AI_SCENE_STYLE
 (Note: use PI_HOSTNAME not HOSTNAME — HOSTNAME is a macOS shell built-in)
 EOF
 }
@@ -557,6 +568,151 @@ function command_ssl_proxy() {
   tls_ssl_proxy "$@"
 }
 
+# AI Scene Generation commands
+function command_generate_scene() {
+  source "${SCRIPT_DIR}/scripts/lib/ai_scene.sh"
+  source "${SCRIPT_DIR}/scripts/lib/ai_scene_mock.sh"
+  source "${SCRIPT_DIR}/scripts/lib/workspace.sh"
+  
+  local description=""
+  local style="$AI_SCENE_STYLE"
+  local preview=false
+  local add_to_workspace=false
+  local output_file=""
+  local variations="${AI_SCENE_VARIATIONS}"
+  local use_mock=false
+  local workspace_file=""
+  
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --style)
+        style="$2"
+        shift 2
+        ;;
+      --preview)
+        preview=true
+        shift
+        ;;
+      --add-to-workspace)
+        add_to_workspace=true
+        shift
+        ;;
+      --output)
+        output_file="$2"
+        shift 2
+        ;;
+      --variations)
+        variations="$2"
+        shift 2
+        ;;
+      --mock)
+        use_mock=true
+        shift
+        ;;
+      --workspace)
+        workspace_file="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$description" ]]; then
+          description="$1"
+        else
+          echo "Error: Unknown option: $1" >&2
+          return 1
+        fi
+        shift
+        ;;
+    esac
+  done
+  
+  if [[ -z "$description" ]]; then
+    echo "Error: Scene description required" >&2
+    echo "Usage: generate-scene <description> [options]" >&2
+    return 1
+  fi
+  
+  # Determine workspace file
+  if [[ -z "$workspace_file" ]]; then
+    if [[ "$add_to_workspace" == true ]]; then
+      # Pull from Pi
+      workspace_file=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+      echo "Pulling current workspace from Pi..." >&2
+      source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+      qlc_pull_workspace "$workspace_file" >/dev/null
+    else
+      # Look for local workspace
+      if [[ -f "RiversWayStudio.qxw" ]]; then
+        workspace_file="RiversWayStudio.qxw"
+      else
+        echo "Error: No workspace file found. Use --workspace <file> or --add-to-workspace" >&2
+        return 1
+      fi
+    fi
+  fi
+  
+  # Extract fixtures
+  echo "Analyzing fixtures..." >&2
+  local fixtures_json
+  fixtures_json=$(ai_extract_fixtures "$workspace_file")
+  
+  # Generate scene
+  echo "Generating scene: ${description}" >&2
+  echo "Style: ${style}" >&2
+  
+  local scene_xml
+  if [[ "$use_mock" == true ]]; then
+    echo "Using mock generation" >&2
+    scene_xml=$(ai_generate_mock_scene "$description" "$style" "$fixtures_json")
+  elif [[ -z "$AI_API_KEY" ]] && [[ "$AI_PROVIDER" != "ollama" ]]; then
+    echo "Note: AI_API_KEY not set, using mock generation" >&2
+    scene_xml=$(ai_generate_mock_scene "$description" "$style" "$fixtures_json")
+  else
+    echo "Using AI provider: $AI_PROVIDER" >&2
+    scene_xml=$(ai_generate_scene "$description" "$style" "$workspace_file")
+  fi
+  
+  if [[ $? -ne 0 ]]; then
+    echo "Error: Scene generation failed" >&2
+    return 1
+  fi
+  
+  # Handle output
+  if [[ "$preview" == true ]]; then
+    echo ""
+    echo "Generated Scene XML:"
+    echo "===================="
+    echo "$scene_xml"
+    echo "===================="
+  fi
+  
+  if [[ -n "$output_file" ]]; then
+    echo "$scene_xml" > "$output_file"
+    echo "Scene saved to: $output_file"
+  fi
+  
+  if [[ "$add_to_workspace" == true ]]; then
+    echo "Adding scene to workspace..."
+    local modified_workspace
+    modified_workspace=$(mktemp /tmp/qlc-workspace-modified-XXXXXX.qxw)
+    
+    if workspace_inject_scene "$workspace_file" "$scene_xml" "$modified_workspace"; then
+      echo "Deploying to Pi..."
+      source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+      qlc_deploy_workspace "$modified_workspace"
+      rm -f "$modified_workspace"
+    else
+      echo "Error: Failed to inject scene into workspace" >&2
+      rm -f "$modified_workspace"
+      return 1
+    fi
+  fi
+  
+  if [[ "$preview" == false && -z "$output_file" && "$add_to_workspace" == false ]]; then
+    echo "$scene_xml"
+  fi
+}
+
 # Main command dispatcher
 if [[ $# -eq 0 ]]; then
   usage
@@ -618,6 +774,7 @@ case "$1" in
   open-web) command_open_web ;;
   landing-setup) command_landing_setup ;;
   landing-deploy) command_landing_deploy ;;
+  generate-scene) shift; command_generate_scene "$@" ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
   edit)
