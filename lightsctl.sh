@@ -135,6 +135,13 @@ AI Scene Generation:
     --variations <n>            generate N variations (default: 1)
     --mock                      use mock generation (no API key needed)
     --workspace <file>          use specific workspace file
+  
+  list-templates              list all available scene templates
+  generate-from-template <name> [options]  generate scene from pre-defined template
+    --preview                   show generated XML without deploying
+    --add-to-workspace          add to current workspace and deploy
+    --output <file>             save scene XML to file
+    --workspace <file>          use specific workspace file
 
 Set env vars to override defaults: PI_HOST, PI_USER, PI_HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
 AI config: AI_PROVIDER, AI_API_KEY, AI_MODEL, AI_SCENE_STYLE
@@ -782,6 +789,128 @@ function command_generate_scene() {
   fi
 }
 
+function command_list_templates() {
+  source "${SCRIPT_DIR}/scripts/lib/scene_templates.sh"
+  template_list
+}
+
+function command_generate_from_template() {
+  source "${SCRIPT_DIR}/scripts/lib/scene_templates.sh"
+  source "${SCRIPT_DIR}/scripts/lib/ai_scene.sh"
+  source "${SCRIPT_DIR}/scripts/lib/workspace.sh"
+  
+  local template_name=""
+  local preview=false
+  local add_to_workspace=false
+  local output_file=""
+  local workspace_file=""
+  
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --preview)
+        preview=true
+        shift
+        ;;
+      --add-to-workspace)
+        add_to_workspace=true
+        shift
+        ;;
+      --output)
+        output_file="$2"
+        shift 2
+        ;;
+      --workspace)
+        workspace_file="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$template_name" ]]; then
+          template_name="$1"
+        else
+          echo "Error: Unknown option: $1" >&2
+          return 1
+        fi
+        shift
+        ;;
+    esac
+  done
+  
+  if [[ -z "$template_name" ]]; then
+    echo "Error: Template name required" >&2
+    echo "Usage: generate-from-template <template-name> [options]" >&2
+    echo "" >&2
+    template_list
+    return 1
+  fi
+  
+  # Determine workspace file
+  if [[ -z "$workspace_file" ]]; then
+    if [[ "$add_to_workspace" == true ]]; then
+      # Pull from Pi
+      workspace_file=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+      echo "Pulling current workspace from Pi..." >&2
+      source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+      qlc_pull_workspace "$workspace_file" >/dev/null
+    else
+      # Look for local workspace
+      if [[ -f "RiversWayStudio.qxw" ]]; then
+        workspace_file="RiversWayStudio.qxw"
+      else
+        echo "Error: No workspace file found. Use --workspace <file> or --add-to-workspace" >&2
+        return 1
+      fi
+    fi
+  fi
+  
+  # Extract fixtures
+  echo "Analyzing fixtures..." >&2
+  local fixtures_json
+  fixtures_json=$(ai_extract_fixtures "$workspace_file")
+  
+  # Generate scene from template
+  echo "Generating scene from template: ${template_name}" >&2
+  local scene_xml
+  if ! scene_xml=$(template_generate "$template_name" "$fixtures_json"); then
+    return 1
+  fi
+  
+  # Handle output
+  if [[ "$preview" == true ]]; then
+    echo ""
+    echo "Generated Scene XML:"
+    echo "===================="
+    echo "$scene_xml"
+    echo "===================="
+  fi
+  
+  if [[ -n "$output_file" ]]; then
+    echo "$scene_xml" > "$output_file"
+    echo "Scene saved to: $output_file"
+  fi
+  
+  if [[ "$add_to_workspace" == true ]]; then
+    echo "Adding scene to workspace..."
+    local modified_workspace
+    modified_workspace=$(mktemp /tmp/qlc-workspace-modified-XXXXXX.qxw)
+    
+    if workspace_inject_scene "$workspace_file" "$scene_xml" "$modified_workspace"; then
+      echo "Deploying to Pi..."
+      source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+      qlc_deploy_workspace "$modified_workspace"
+      rm -f "$modified_workspace"
+    else
+      echo "Error: Failed to inject scene into workspace" >&2
+      rm -f "$modified_workspace"
+      return 1
+    fi
+  fi
+  
+  if [[ "$preview" == false && -z "$output_file" && "$add_to_workspace" == false ]]; then
+    echo "$scene_xml"
+  fi
+}
+
 # Main command dispatcher
 if [[ $# -eq 0 ]]; then
   usage
@@ -844,6 +973,8 @@ case "$1" in
   landing-setup) command_landing_setup ;;
   landing-deploy) command_landing_deploy ;;
   generate-scene) shift; command_generate_scene "$@" ;;
+  list-templates) command_list_templates ;;
+  generate-from-template) shift; command_generate_from_template "$@" ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
   edit)

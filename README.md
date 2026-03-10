@@ -882,6 +882,27 @@ Generate multiple variations of a scene and interactively select the best one:
 ./lightsctl.sh generate-scene "party lights" --variations 5 --style modular --add-to-workspace
 ```
 
+**Scene Templates:**
+Fast, predictable scenes from pre-defined templates (no AI required):
+```bash
+# List available templates
+./lightsctl.sh list-templates
+
+# Generate from template
+./lightsctl.sh generate-from-template youtube-studio --preview
+./lightsctl.sh generate-from-template party --add-to-workspace
+./lightsctl.sh generate-from-template warm-white --output scenes/warm.xml
+```
+
+Available templates:
+- `youtube-studio` - Bright neutral white for video recording
+- `party` - Vibrant alternating colors with fast transitions
+- `ambient` - Soft warm glow at low intensity
+- `spotlight` - Single fixture at full, others off
+- `work-light` - Bright neutral white for task lighting
+- `warm-white` - Warm white (2700K-3000K color temperature)
+- `cool-white` - Cool white (5000K-6500K color temperature)
+
 **Configuration:**
 Add to your `.env` file:
 ```bash
