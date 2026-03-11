@@ -11,11 +11,27 @@ from pathlib import Path
 
 
 def import_from_workspace(workspace_file, groups_file):
-    """Import fixture groups from QLC+ workspace XML to JSON"""
+    """
+    Import fixture groups from QLC+ workspace XML to JSON
     
-    # Parse workspace XML
-    tree = ET.parse(workspace_file)
-    root = tree.getroot()
+    Args:
+        workspace_file: Path to QLC+ workspace XML
+        groups_file: Path to groups JSON file
+    
+    Returns:
+        int: Number of groups imported
+    """
+    
+    try:
+        # Parse workspace XML
+        tree = ET.parse(workspace_file)
+        root = tree.getroot()
+    except FileNotFoundError:
+        print(f"Error: Workspace file not found: {workspace_file}", file=sys.stderr)
+        return 0
+    except ET.ParseError as e:
+        print(f"Error: Invalid workspace XML: {e}", file=sys.stderr)
+        return 0
     
     # Find all FixtureGroup elements (handle namespace)
     groups = {}
@@ -44,30 +60,58 @@ def import_from_workspace(workspace_file, groups_file):
         }
     
     # Load existing groups file or create new
-    if Path(groups_file).exists():
-        with open(groups_file, 'r') as f:
-            data = json.load(f)
-    else:
+    try:
+        if Path(groups_file).exists():
+            with open(groups_file, 'r') as f:
+                data = json.load(f)
+        else:
+            data = {"groups": {}}
+    except json.JSONDecodeError as e:
+        print(f"Warning: Invalid groups file, creating new: {e}", file=sys.stderr)
         data = {"groups": {}}
+    except Exception as e:
+        print(f"Error reading groups file: {e}", file=sys.stderr)
+        return 0
     
     # Merge imported groups (preserve existing if not in workspace)
     for name, group_data in groups.items():
         data["groups"][name] = group_data
     
     # Save updated groups
-    with open(groups_file, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(groups_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Error writing groups file: {e}", file=sys.stderr)
+        return 0
     
     print(f"✓ Imported {len(groups)} group(s) from workspace")
     return len(groups)
 
 
 def export_to_workspace(groups_file, workspace_file, output_file):
-    """Export fixture groups from JSON to QLC+ workspace XML"""
+    """
+    Export fixture groups from JSON to QLC+ workspace XML
+    
+    Args:
+        groups_file: Path to groups JSON file
+        workspace_file: Path to input workspace XML
+        output_file: Path to output workspace XML
+    
+    Returns:
+        int: Number of groups exported
+    """
     
     # Load groups
-    with open(groups_file, 'r') as f:
-        data = json.load(f)
+    try:
+        with open(groups_file, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: Groups file not found: {groups_file}", file=sys.stderr)
+        return 0
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid groups JSON: {e}", file=sys.stderr)
+        return 0
     
     groups = data.get("groups", {})
     
@@ -79,8 +123,15 @@ def export_to_workspace(groups_file, workspace_file, output_file):
     ET.register_namespace('', 'http://www.qlcplus.org/Workspace')
     
     # Parse workspace XML
-    tree = ET.parse(workspace_file)
-    root = tree.getroot()
+    try:
+        tree = ET.parse(workspace_file)
+        root = tree.getroot()
+    except FileNotFoundError:
+        print(f"Error: Workspace file not found: {workspace_file}", file=sys.stderr)
+        return 0
+    except ET.ParseError as e:
+        print(f"Error: Invalid workspace XML: {e}", file=sys.stderr)
+        return 0
     
     # Remove existing FixtureGroup elements
     engine = root.find('.//{http://www.qlcplus.org/Workspace}Engine')
@@ -123,7 +174,11 @@ def export_to_workspace(groups_file, workspace_file, output_file):
         group_id += 1
     
     # Write output
-    tree.write(output_file, encoding='utf-8', xml_declaration=True)
+    try:
+        tree.write(output_file, encoding='utf-8', xml_declaration=True)
+    except Exception as e:
+        print(f"Error writing output file: {e}", file=sys.stderr)
+        return 0
     
     print(f"✓ Exported {len(groups)} group(s) to workspace")
     return len(groups)

@@ -6,23 +6,47 @@ Inject a scene into a QLC+ workspace XML file
 import sys
 import xml.etree.ElementTree as ET
 
+
 def inject_scene(workspace_file, scene_xml, output_file, next_id):
-    """Inject a scene into the workspace"""
+    """
+    Inject a scene into the workspace
     
-    # Parse workspace
-    tree = ET.parse(workspace_file)
-    root = tree.getroot()
+    Args:
+        workspace_file: Path to input workspace XML
+        scene_xml: Scene XML string to inject
+        output_file: Path to output workspace XML
+        next_id: ID to assign to the new scene
     
-    # Parse scene XML
-    scene_root = ET.fromstring(scene_xml)
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    
+    try:
+        # Parse workspace
+        tree = ET.parse(workspace_file)
+        root = tree.getroot()
+    except FileNotFoundError:
+        print(f"Error: Workspace file not found: {workspace_file}", file=sys.stderr)
+        return False
+    except ET.ParseError as e:
+        print(f"Error: Invalid workspace XML: {e}", file=sys.stderr)
+        return False
+    
+    try:
+        # Parse scene XML
+        scene_root = ET.fromstring(scene_xml)
+    except ET.ParseError as e:
+        print(f"Error: Invalid scene XML: {e}", file=sys.stderr)
+        return False
     
     # Set the ID attribute
     scene_root.set('ID', str(next_id))
     
+    # Register namespace to preserve it in output
+    ET.register_namespace('', 'http://www.qlcplus.org/Workspace')
+    
     # Find the Engine element
-    # Handle namespace
-    ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
-    engine = root.find('.//qlc:Engine', ns)
+    engine = root.find('.//{http://www.qlcplus.org/Workspace}Engine')
     
     if engine is None:
         # Try without namespace
@@ -32,8 +56,23 @@ def inject_scene(workspace_file, scene_xml, output_file, next_id):
         print("Error: Could not find Engine element", file=sys.stderr)
         return False
     
-    # Append the scene to Engine
-    engine.append(scene_root)
+    # Convert scene to use QLC+ namespace
+    # Create new element with namespace
+    ns_scene = ET.Element('{http://www.qlcplus.org/Workspace}Function')
+    ns_scene.set('ID', str(next_id))
+    ns_scene.set('Type', scene_root.get('Type', 'Scene'))
+    ns_scene.set('Name', scene_root.get('Name', 'Unnamed'))
+    
+    # Copy all child elements
+    for child in scene_root:
+        ns_child = ET.Element(f'{{http://www.qlcplus.org/Workspace}}{child.tag}')
+        ns_child.text = child.text
+        for key, value in child.attrib.items():
+            ns_child.set(key, value)
+        ns_scene.append(ns_child)
+    
+    # Append to Engine
+    engine.append(ns_scene)
     
     # Write output
     tree.write(output_file, encoding='UTF-8', xml_declaration=True)

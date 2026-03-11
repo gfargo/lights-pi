@@ -61,8 +61,35 @@ def execute_command(command):
 def interpret_command(user_input):
     """
     Use AI to interpret natural language command and convert to lighting action
-    Returns: dict with action type and parameters
+    
+    Args:
+        user_input: Natural language command from user
+    
+    Returns:
+        dict: Action data with action type, parameters, and explanation
     """
+    
+    if not user_input or not user_input.strip():
+        return {
+            "action": "error",
+            "parameters": {},
+            "explanation": "Empty command"
+        }
+    
+    # Check AI configuration
+    if AI_PROVIDER not in ["anthropic", "openai", "ollama"]:
+        return {
+            "action": "error",
+            "parameters": {},
+            "explanation": f"Invalid AI provider: {AI_PROVIDER}"
+        }
+    
+    if AI_PROVIDER != "ollama" and not AI_API_KEY:
+        return {
+            "action": "error",
+            "parameters": {},
+            "explanation": "AI_API_KEY not configured"
+        }
     
     # Build prompt for AI
     system_prompt = """You are a lighting control assistant. Convert natural language commands into structured lighting actions.
@@ -103,17 +130,24 @@ Output: {"action": "fade", "parameters": {"duration": "5", "target": "0"}, "expl
     user_prompt = f"Convert this command: {user_input}"
     
     # Call AI based on provider
-    if AI_PROVIDER == "anthropic":
-        response = call_anthropic(system_prompt, user_prompt)
-    elif AI_PROVIDER == "openai":
-        response = call_openai(system_prompt, user_prompt)
-    elif AI_PROVIDER == "ollama":
-        response = call_ollama(system_prompt, user_prompt)
-    else:
+    try:
+        if AI_PROVIDER == "anthropic":
+            response = call_anthropic(system_prompt, user_prompt)
+        elif AI_PROVIDER == "openai":
+            response = call_openai(system_prompt, user_prompt)
+        elif AI_PROVIDER == "ollama":
+            response = call_ollama(system_prompt, user_prompt)
+        else:
+            return {
+                "action": "error",
+                "parameters": {},
+                "explanation": f"Unknown AI provider: {AI_PROVIDER}"
+            }
+    except Exception as e:
         return {
             "action": "error",
             "parameters": {},
-            "explanation": f"Unknown AI provider: {AI_PROVIDER}"
+            "explanation": f"AI API error: {str(e)}"
         }
     
     # Parse JSON response
@@ -137,46 +171,54 @@ def call_anthropic(system_prompt, user_prompt):
     """Call Anthropic Claude API"""
     import requests
     
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": AI_API_KEY,
-            "anthropic-version": "2023-06-01"
-        },
-        json={
-            "model": AI_MODEL,
-            "max_tokens": 1024,
-            "system": system_prompt,
-            "messages": [
-                {"role": "user", "content": user_prompt}
-            ]
-        }
-    )
-    
-    return response.json()["content"][0]["text"]
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": AI_API_KEY,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": AI_MODEL,
+                "max_tokens": 1024,
+                "system": system_prompt,
+                "messages": [
+                    {"role": "user", "content": user_prompt}
+                ]
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()["content"][0]["text"]
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Anthropic API error: {str(e)}")
 
 
 def call_openai(system_prompt, user_prompt):
     """Call OpenAI API"""
     import requests
     
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {AI_API_KEY}"
-        },
-        json={
-            "model": AI_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        }
-    )
-    
-    return response.json()["choices"][0]["message"]["content"]
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {AI_API_KEY}"
+            },
+            json={
+                "model": AI_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"OpenAI API error: {str(e)}")
 
 
 def call_ollama(system_prompt, user_prompt):
@@ -185,16 +227,22 @@ def call_ollama(system_prompt, user_prompt):
     
     combined_prompt = f"{system_prompt}\n\n{user_prompt}"
     
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": AI_MODEL,
-            "prompt": combined_prompt,
-            "stream": False
-        }
-    )
-    
-    return response.json()["response"]
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": AI_MODEL,
+                "prompt": combined_prompt,
+                "stream": False
+            },
+            timeout=60
+        )
+        response.raise_for_status()
+        return response.json()["response"]
+    except requests.exceptions.ConnectionError:
+        raise Exception("Ollama not running. Start with: ollama serve")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Ollama API error: {str(e)}")
 
 
 def execute_lighting_action(action_data):
