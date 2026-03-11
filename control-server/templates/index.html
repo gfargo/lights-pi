@@ -135,6 +135,63 @@
             letter-spacing: 0.5px;
         }
 
+        .fixture-controls {
+            margin-bottom: 30px;
+        }
+
+        .fixture-controls h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .group-item {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+
+        .group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .group-name {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .group-fixtures {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .group-templates {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .template-btn {
+            background: #667eea;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 5px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .template-btn:hover {
+            background: #5568d3;
+            transform: translateY(-1px);
+        }
+
         .example-chips {
             display: flex;
             flex-wrap: wrap;
@@ -275,6 +332,11 @@
                 <span class="chip" data-command="add more blue">More Blue</span>
                 <span class="chip" data-command="fade to black">Fade Out</span>
             </div>
+        </div>
+
+        <div class="fixture-controls">
+            <h3>Fixture Groups</h3>
+            <div id="groupsList"></div>
         </div>
 
         <div class="loading" id="loading">
@@ -433,8 +495,82 @@
             });
         });
 
+        // Load fixture groups
+        async function loadGroups() {
+            try {
+                const response = await fetch('/api/groups');
+                const data = await response.json();
+                const groupsList = document.getElementById('groupsList');
+                
+                if (!data.groups || data.groups.length === 0) {
+                    groupsList.innerHTML = '<p style="color: #999; font-size: 13px;">No fixture groups found</p>';
+                    return;
+                }
+                
+                groupsList.innerHTML = '';
+                
+                const templates = ['youtube-studio', 'party', 'ambient', 'warm-white', 'cool-white'];
+                
+                data.groups.forEach(group => {
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'group-item';
+                    
+                    const fixtureCount = group.fixtures.length;
+                    const fixtureText = `${fixtureCount} fixture${fixtureCount !== 1 ? 's' : ''}`;
+                    
+                    groupDiv.innerHTML = `
+                        <div class="group-header">
+                            <div>
+                                <div class="group-name">${group.name}</div>
+                                <div class="group-fixtures">${fixtureText}</div>
+                            </div>
+                        </div>
+                        <div class="group-templates">
+                            ${templates.map(t => `
+                                <button class="template-btn" onclick="applyGroupTemplate('${group.name}', '${t}')">
+                                    ${t.replace('-', ' ')}
+                                </button>
+                            `).join('')}
+                        </div>
+                    `;
+                    
+                    groupsList.appendChild(groupDiv);
+                });
+            } catch (error) {
+                console.error('Error loading groups:', error);
+            }
+        }
+        
+        // Apply template to group
+        async function applyGroupTemplate(groupName, template) {
+            loading.classList.add('active');
+            
+            try {
+                const response = await fetch(`/api/groups/${encodeURIComponent(groupName)}/template`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ template })
+                });
+                
+                const data = await response.json();
+                
+                addToHistory(`Apply ${template} to ${groupName}`, data);
+                
+            } catch (error) {
+                addToHistory(`Apply ${template} to ${groupName}`, {
+                    success: false,
+                    error: error.message
+                });
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
         // Initial status check
         checkStatus();
+        loadGroups();
         setInterval(checkStatus, 10000); // Check every 10 seconds
     </script>
 </body>

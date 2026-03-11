@@ -2,12 +2,14 @@
 """
 Natural Language Lighting Control Server
 Interprets natural language commands and adjusts QLC+ workspace in real-time
+Also provides direct fixture/group controls
 """
 
 import os
 import sys
 import json
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
@@ -22,6 +24,7 @@ CORS(app)
 SCRIPT_DIR = Path(__file__).parent.parent
 LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
 WORKSPACE_PATH = Path.home() / ".qlcplus" / "default.qxw"
+GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 
 # AI Configuration from environment
 AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic")
@@ -359,6 +362,84 @@ def list_templates():
     ]
     
     return jsonify({"templates": templates})
+
+
+@app.route("/api/groups", methods=["GET"])
+def list_groups():
+    """List fixture groups"""
+    try:
+        if not GROUPS_FILE.exists():
+            return jsonify({"groups": []})
+        
+        with open(GROUPS_FILE, 'r') as f:
+            groups_data = json.load(f)
+        
+        groups = []
+        for group_name, group_info in groups_data.items():
+            groups.append({
+                "name": group_name,
+                "fixtures": group_info.get("fixtures", []),
+                "description": group_info.get("description", "")
+            })
+        
+        return jsonify({"groups": groups})
+    except Exception as e:
+        return jsonify({"error": str(e), "groups": []}), 500
+
+
+@app.route("/api/groups/<group_name>/template", methods=["POST"])
+def apply_group_template(group_name):
+    """Apply a template to a specific fixture group"""
+    try:
+        data = request.get_json()
+        template = data.get("template")
+        
+        if not template:
+            return jsonify({"success": False, "error": "Template name required"}), 400
+        
+        # Use lightsctl to apply template to group
+        cmd = f"{LIGHTSCTL} group-template '{group_name}' {template} --add-to-workspace"
+        result = execute_command(cmd)
+        
+        return jsonify({
+            "success": result["success"],
+            "output": result.get("output", ""),
+            "error": result.get("error", "")
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/fixtures", methods=["GET"])
+def list_fixtures():
+    """List all fixtures from workspace"""
+    try:
+        if not WORKSPACE_PATH.exists():
+            return jsonify({"fixtures": []})
+        
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        
+        fixtures = []
+        for fixture in root.findall(".//Fixture"):
+            fixture_id = fixture.find("ID")
+            fixture_name = fixture.find("Name")
+            fixture_universe = fixture.find("Universe")
+            fixture_address = fixture.find("Address")
+            fixture_channels = fixture.find("Channels")
+            
+            if fixture_id is not None and fixture_name is not None:
+                fixtures.append({
+                    "id": int(fixture_id.text),
+                    "name": fixture_name.text,
+                    "universe": int(fixture_universe.text) if fixture_universe is not None else 0,
+                    "address": int(fixture_address.text) if fixture_address is not None else 0,
+                    "channels": int(fixture_channels.text) if fixture_channels is not None else 1
+                })
+        
+        return jsonify({"fixtures": fixtures})
+    except Exception as e:
+        return jsonify({"error": str(e), "fixtures": []}), 500
 
 
 if __name__ == "__main__":
