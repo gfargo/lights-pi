@@ -159,6 +159,8 @@ Fixture Groups/Zones:
   group-remove <name> <ids>   remove fixtures from group
   group-scene <name> <desc> [opts]  generate scene for group only
   group-template <name> <template> [opts]  apply template to group only
+  group-import [workspace]    import groups from QLC+ workspace
+  group-export [--deploy]     export groups to QLC+ workspace
 
 Set env vars to override defaults: PI_HOST, PI_USER, PI_HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
 AI config: AI_PROVIDER, AI_API_KEY, AI_MODEL, AI_SCENE_STYLE
@@ -1114,6 +1116,27 @@ function command_group_template() {
   fi
 }
 
+function command_group_import() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_import "$@"
+}
+
+function command_group_export() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  
+  local deploy=false
+  
+  # Parse options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --deploy) deploy=true; shift ;;
+      *) echo "Unknown option: $1" >&2; return 1 ;;
+    esac
+  done
+  
+  groups_export "" "$deploy"
+}
+
 # Main command dispatcher
 if [[ $# -eq 0 ]]; then
   usage
@@ -1191,6 +1214,8 @@ case "$1" in
   group-remove) shift; command_group_remove "$@" ;;
   group-scene) shift; command_group_scene "$@" ;;
   group-template) shift; command_group_template "$@" ;;
+  group-import) shift; command_group_import "$@" ;;
+  group-export) shift; command_group_export "$@" ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
   edit)

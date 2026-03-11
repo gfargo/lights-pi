@@ -977,6 +977,17 @@ Organize fixtures into named groups for easier control and management.
 - Function: "overhead", "floor", "accent"
 - Color: "rgb-pars", "white-spots"
 
+**QLC+ Workspace Integration:**
+```bash
+# Import groups from QLC+ workspace
+./lightsctl.sh group-import
+
+# Export groups back to QLC+ workspace
+./lightsctl.sh group-export --deploy
+```
+
+Groups are bidirectionally synced with QLC+ workspace, making them visible in QLC+'s UI and usable in Virtual Console!
+
 ---
 
 ## 📄 License

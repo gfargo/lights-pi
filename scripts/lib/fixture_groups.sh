@@ -314,3 +314,62 @@ export -f groups_add_fixtures
 export -f groups_remove_fixtures
 export -f groups_generate_scene
 export -f groups_apply_template
+
+# Import groups from QLC+ workspace
+function groups_import() {
+  local workspace_file="${1:-}"
+  
+  groups_init
+  
+  # Get workspace
+  if [[ -z "$workspace_file" ]]; then
+    workspace_file=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+    echo "Pulling current workspace from Pi..." >&2
+    source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+    qlc_pull_workspace "$workspace_file" >/dev/null
+  fi
+  
+  # Import using Python script
+  python3 "${SCRIPT_DIR}/scripts/lib/fixture_groups_sync.py" import "$workspace_file" "$GROUPS_FILE"
+}
+
+# Export groups to QLC+ workspace
+function groups_export() {
+  local workspace_file="${1:-}"
+  local deploy="${2:-false}"
+  
+  groups_init
+  
+  # Get workspace
+  local temp_workspace=false
+  if [[ -z "$workspace_file" ]]; then
+    workspace_file=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+    temp_workspace=true
+    echo "Pulling current workspace from Pi..." >&2
+    source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+    qlc_pull_workspace "$workspace_file" >/dev/null
+  fi
+  
+  # Export using Python script
+  local output_file=$(mktemp /tmp/qlc-workspace-modified-XXXXXX.qxw)
+  python3 "${SCRIPT_DIR}/scripts/lib/fixture_groups_sync.py" export "$GROUPS_FILE" "$workspace_file" "$output_file"
+  
+  # Deploy if requested
+  if [[ "$deploy" == "true" ]]; then
+    echo "Deploying to Pi..." >&2
+    source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+    qlc_deploy_workspace "$output_file"
+  else
+    # Output to stdout or save
+    cat "$output_file"
+  fi
+  
+  # Cleanup
+  rm -f "$output_file"
+  if [[ "$temp_workspace" == true ]]; then
+    rm -f "$workspace_file"
+  fi
+}
+
+export -f groups_import
+export -f groups_export
