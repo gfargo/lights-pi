@@ -917,6 +917,34 @@ See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete docu
 
 ---
 
+## 🎙️ Natural Language Control (Beta)
+
+Control your lights in real-time using natural language commands via a web interface.
+
+```bash
+# Install control server
+./lightsctl.sh control-install
+
+# Access at http://lights.local:5000
+```
+
+**Features:**
+- 🎤 Voice and text input
+- 🤖 AI-powered command interpretation
+- ⚡ Real-time lighting adjustments
+- 📱 Works on any device
+
+**Example Commands:**
+- "Make it brighter"
+- "Add more blue"
+- "Party mode"
+- "Warm sunset"
+- "Fade to black over 5 seconds"
+
+See [control-server/README.md](control-server/README.md) for complete documentation.
+
+---
+
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details

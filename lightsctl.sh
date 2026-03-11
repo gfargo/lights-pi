@@ -143,6 +143,13 @@ AI Scene Generation:
     --output <file>             save scene XML to file
     --workspace <file>          use specific workspace file
 
+Natural Language Control:
+  control-install             install natural language control server
+  control-uninstall           uninstall control server
+  control-status              show control server status
+  control-logs                show control server logs
+  control-restart             restart control server
+
 Set env vars to override defaults: PI_HOST, PI_USER, PI_HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
 AI config: AI_PROVIDER, AI_API_KEY, AI_MODEL, AI_SCENE_STYLE
 (Note: use PI_HOSTNAME not HOSTNAME — HOSTNAME is a macOS shell built-in)
@@ -911,6 +918,27 @@ function command_generate_from_template() {
   fi
 }
 
+# Natural Language Control commands
+function command_control_install() {
+  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" install
+}
+
+function command_control_uninstall() {
+  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" uninstall
+}
+
+function command_control_status() {
+  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" status
+}
+
+function command_control_logs() {
+  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" logs
+}
+
+function command_control_restart() {
+  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" restart
+}
+
 # Main command dispatcher
 if [[ $# -eq 0 ]]; then
   usage
@@ -975,6 +1003,11 @@ case "$1" in
   generate-scene) shift; command_generate_scene "$@" ;;
   list-templates) command_list_templates ;;
   generate-from-template) shift; command_generate_from_template "$@" ;;
+  control-install) command_control_install ;;
+  control-uninstall) command_control_uninstall ;;
+  control-status) command_control_status ;;
+  control-logs) command_control_logs ;;
+  control-restart) command_control_restart ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
   edit)

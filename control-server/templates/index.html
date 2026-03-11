@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lighting Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .status {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .status.online {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        #commandInput {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        #commandInput:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            padding: 15px 25px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        #sendBtn {
+            background: #667eea;
+            color: white;
+        }
+
+        #sendBtn:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        #sendBtn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        #voiceBtn {
+            background: #f0f0f0;
+            color: #333;
+            min-width: 60px;
+        }
+
+        #voiceBtn:hover {
+            background: #e0e0e0;
+        }
+
+        #voiceBtn.listening {
+            background: #ff4444;
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .examples {
+            margin-bottom: 30px;
+        }
+
+        .examples h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .example-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .chip {
+            background: #f0f0f0;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .chip:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        .history {
+            margin-top: 30px;
+        }
+
+        .history h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .history-item {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .history-item.error {
+            border-left-color: #ff4444;
+            background: #fff5f5;
+        }
+
+        .history-command {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .history-action {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .history-time {
+            font-size: 11px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 25px;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
+
+            .input-group {
+                flex-direction: column;
+            }
+
+            #voiceBtn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💡 Lighting Control</h1>
+        <p class="subtitle">Control your lights with natural language</p>
+
+        <div id="status" class="status">
+            Checking connection...
+        </div>
+
+        <div class="input-group">
+            <input 
+                type="text" 
+                id="commandInput" 
+                placeholder="Try: 'make it warmer' or 'party mode'"
+                autocomplete="off"
+            >
+            <button id="voiceBtn" title="Voice input">🎤</button>
+            <button id="sendBtn">Send</button>
+        </div>
+
+        <div class="examples">
+            <h3>Quick Commands</h3>
+            <div class="example-chips">
+                <span class="chip" data-command="make it brighter">Brighter</span>
+                <span class="chip" data-command="make it warmer">Warmer</span>
+                <span class="chip" data-command="party mode">Party</span>
+                <span class="chip" data-command="youtube studio">Studio</span>
+                <span class="chip" data-command="ambient lighting">Ambient</span>
+                <span class="chip" data-command="add more blue">More Blue</span>
+                <span class="chip" data-command="fade to black">Fade Out</span>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processing command...</p>
+        </div>
+
+        <div class="history">
+            <h3>Command History</h3>
+            <div id="historyList"></div>
+        </div>
+    </div>
+
+    <script>
+        const commandInput = document.getElementById('commandInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const voiceBtn = document.getElementById('voiceBtn');
+        const loading = document.getElementById('loading');
+        const historyList = document.getElementById('historyList');
+        const statusDiv = document.getElementById('status');
+
+        let recognition = null;
+        let isListening = false;
+
+        // Initialize speech recognition
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                commandInput.value = transcript;
+                sendCommand();
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                voiceBtn.classList.remove('listening');
+                voiceBtn.textContent = '🎤';
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                isListening = false;
+                voiceBtn.classList.remove('listening');
+                voiceBtn.textContent = '🎤';
+            };
+        } else {
+            voiceBtn.style.display = 'none';
+        }
+
+        // Check status
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                if (data.qlc_running) {
+                    statusDiv.className = 'status online';
+                    statusDiv.textContent = `✓ Connected • ${data.ai_provider} (${data.ai_model})`;
+                } else {
+                    statusDiv.className = 'status';
+                    statusDiv.textContent = '⚠ QLC+ not running';
+                }
+            } catch (error) {
+                statusDiv.className = 'status';
+                statusDiv.textContent = '✗ Connection error';
+            }
+        }
+
+        // Send command
+        async function sendCommand() {
+            const command = commandInput.value.trim();
+            if (!command) return;
+
+            loading.classList.add('active');
+            sendBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ command })
+                });
+
+                const data = await response.json();
+
+                addToHistory(command, data);
+                commandInput.value = '';
+
+            } catch (error) {
+                addToHistory(command, {
+                    success: false,
+                    error: error.message
+                });
+            } finally {
+                loading.classList.remove('active');
+                sendBtn.disabled = false;
+                commandInput.focus();
+            }
+        }
+
+        // Add to history
+        function addToHistory(command, result) {
+            const item = document.createElement('div');
+            item.className = 'history-item' + (result.success ? '' : ' error');
+            
+            const explanation = result.action?.explanation || result.error || 'Unknown error';
+            const time = new Date().toLocaleTimeString();
+
+            item.innerHTML = `
+                <div class="history-command">${command}</div>
+                <div class="history-action">${explanation}</div>
+                <div class="history-time">${time}</div>
+            `;
+
+            historyList.insertBefore(item, historyList.firstChild);
+
+            // Keep only last 10 items
+            while (historyList.children.length > 10) {
+                historyList.removeChild(historyList.lastChild);
+            }
+        }
+
+        // Event listeners
+        sendBtn.addEventListener('click', sendCommand);
+        
+        commandInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendCommand();
+            }
+        });
+
+        voiceBtn.addEventListener('click', () => {
+            if (!recognition) return;
+
+            if (isListening) {
+                recognition.stop();
+            } else {
+                recognition.start();
+                isListening = true;
+                voiceBtn.classList.add('listening');
+                voiceBtn.textContent = '🔴';
+            }
+        });
+
+        // Example chips
+        document.querySelectorAll('.chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                commandInput.value = chip.dataset.command;
+                sendCommand();
+            });
+        });
+
+        // Initial status check
+        checkStatus();
+        setInterval(checkStatus, 10000); // Check every 10 seconds
+    </script>
+</body>
+</html>
