@@ -932,23 +932,28 @@ function command_generate_from_template() {
 
 # Natural Language Control commands
 function command_control_install() {
-  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" install
+  source "${SCRIPT_DIR}/scripts/services/control_server.sh"
+  install_control_server
 }
 
 function command_control_uninstall() {
-  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" uninstall
+  source "${SCRIPT_DIR}/scripts/services/control_server.sh"
+  uninstall_control_server
 }
 
 function command_control_status() {
-  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" status
+  source "${SCRIPT_DIR}/scripts/services/control_server.sh"
+  status_control_server
 }
 
 function command_control_logs() {
-  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" logs
+  source "${SCRIPT_DIR}/scripts/services/control_server.sh"
+  logs_control_server
 }
 
 function command_control_restart() {
-  bash "${SCRIPT_DIR}/scripts/services/control_server.sh" restart
+  source "${SCRIPT_DIR}/scripts/services/control_server.sh"
+  restart_control_server
 }
 
 # Fixture Groups commands
