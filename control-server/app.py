@@ -374,8 +374,14 @@ def list_groups():
         with open(GROUPS_FILE, 'r') as f:
             groups_data = json.load(f)
         
+        # Handle both formats: {"groups": {...}} and direct {...}
+        if "groups" in groups_data:
+            groups_dict = groups_data["groups"]
+        else:
+            groups_dict = groups_data
+        
         groups = []
-        for group_name, group_info in groups_data.items():
+        for group_name, group_info in groups_dict.items():
             groups.append({
                 "name": group_name,
                 "fixtures": group_info.get("fixtures", []),
