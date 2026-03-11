@@ -150,6 +150,16 @@ Natural Language Control:
   control-logs                show control server logs
   control-restart             restart control server
 
+Fixture Groups/Zones:
+  group-list                  list all fixture groups
+  group-create <name> <ids> [desc]  create new group (ids: comma-separated)
+  group-delete <name>         delete a group
+  group-update <name> <desc>  update group description
+  group-add <name> <ids>      add fixtures to group
+  group-remove <name> <ids>   remove fixtures from group
+  group-scene <name> <desc> [opts]  generate scene for group only
+  group-template <name> <template> [opts]  apply template to group only
+
 Set env vars to override defaults: PI_HOST, PI_USER, PI_HOSTNAME, QLC_PORT, SSH_KEY, BACKUP_STORAGE, SSL_CERT, SSL_KEY
 AI config: AI_PROVIDER, AI_API_KEY, AI_MODEL, AI_SCENE_STYLE
 (Note: use PI_HOSTNAME not HOSTNAME — HOSTNAME is a macOS shell built-in)
@@ -939,6 +949,171 @@ function command_control_restart() {
   bash "${SCRIPT_DIR}/scripts/services/control_server.sh" restart
 }
 
+# Fixture Groups commands
+function command_group_list() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_list
+}
+
+function command_group_create() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_create "$@"
+}
+
+function command_group_delete() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_delete "$@"
+}
+
+function command_group_update() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_update "$@"
+}
+
+function command_group_add() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_add_fixtures "$@"
+}
+
+function command_group_remove() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  groups_remove_fixtures "$@"
+}
+
+function command_group_scene() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  source "${SCRIPT_DIR}/scripts/lib/workspace.sh"
+  
+  local group_name="$1"
+  local description="$2"
+  shift 2
+  
+  local preview=false
+  local add_to_workspace=false
+  local output_file=""
+  
+  # Parse options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --preview) preview=true; shift ;;
+      --add-to-workspace) add_to_workspace=true; shift ;;
+      --output) output_file="$2"; shift 2 ;;
+      *) echo "Unknown option: $1" >&2; return 1 ;;
+    esac
+  done
+  
+  # Generate scene
+  local scene_xml
+  scene_xml=$(groups_generate_scene "$group_name" "$description")
+  
+  if [[ $? -ne 0 ]]; then
+    return 1
+  fi
+  
+  # Handle output
+  if [[ "$preview" == true ]]; then
+    echo ""
+    echo "Generated Scene XML:"
+    echo "===================="
+    echo "$scene_xml"
+    echo "===================="
+  fi
+  
+  if [[ -n "$output_file" ]]; then
+    echo "$scene_xml" > "$output_file"
+    echo "Scene saved to: $output_file"
+  fi
+  
+  if [[ "$add_to_workspace" == true ]]; then
+    echo "Adding scene to workspace..."
+    local workspace_file=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+    source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+    qlc_pull_workspace "$workspace_file" >/dev/null
+    
+    local modified_workspace=$(mktemp /tmp/qlc-workspace-modified-XXXXXX.qxw)
+    if workspace_inject_scene "$workspace_file" "$scene_xml" "$modified_workspace"; then
+      echo "Deploying to Pi..."
+      qlc_deploy_workspace "$modified_workspace"
+      rm -f "$modified_workspace" "$workspace_file"
+    else
+      echo "Error: Failed to inject scene" >&2
+      rm -f "$modified_workspace" "$workspace_file"
+      return 1
+    fi
+  fi
+  
+  if [[ "$preview" == false && -z "$output_file" && "$add_to_workspace" == false ]]; then
+    echo "$scene_xml"
+  fi
+}
+
+function command_group_template() {
+  source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
+  source "${SCRIPT_DIR}/scripts/lib/workspace.sh"
+  
+  local group_name="$1"
+  local template_name="$2"
+  shift 2
+  
+  local preview=false
+  local add_to_workspace=false
+  local output_file=""
+  
+  # Parse options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --preview) preview=true; shift ;;
+      --add-to-workspace) add_to_workspace=true; shift ;;
+      --output) output_file="$2"; shift 2 ;;
+      *) echo "Unknown option: $1" >&2; return 1 ;;
+    esac
+  done
+  
+  # Apply template
+  local scene_xml
+  scene_xml=$(groups_apply_template "$group_name" "$template_name")
+  
+  if [[ $? -ne 0 ]]; then
+    return 1
+  fi
+  
+  # Handle output (same as group-scene)
+  if [[ "$preview" == true ]]; then
+    echo ""
+    echo "Generated Scene XML:"
+    echo "===================="
+    echo "$scene_xml"
+    echo "===================="
+  fi
+  
+  if [[ -n "$output_file" ]]; then
+    echo "$scene_xml" > "$output_file"
+    echo "Scene saved to: $output_file"
+  fi
+  
+  if [[ "$add_to_workspace" == true ]]; then
+    echo "Adding scene to workspace..."
+    local workspace_file=$(mktemp /tmp/qlc-workspace-XXXXXX.qxw)
+    source "${SCRIPT_DIR}/scripts/lib/qlc.sh"
+    qlc_pull_workspace "$workspace_file" >/dev/null
+    
+    local modified_workspace=$(mktemp /tmp/qlc-workspace-modified-XXXXXX.qxw)
+    if workspace_inject_scene "$workspace_file" "$scene_xml" "$modified_workspace"; then
+      echo "Deploying to Pi..."
+      qlc_deploy_workspace "$modified_workspace"
+      rm -f "$modified_workspace" "$workspace_file"
+    else
+      echo "Error: Failed to inject scene" >&2
+      rm -f "$modified_workspace" "$workspace_file"
+      return 1
+    fi
+  fi
+  
+  if [[ "$preview" == false && -z "$output_file" && "$add_to_workspace" == false ]]; then
+    echo "$scene_xml"
+  fi
+}
+
 # Main command dispatcher
 if [[ $# -eq 0 ]]; then
   usage
@@ -1008,6 +1183,14 @@ case "$1" in
   control-status) command_control_status ;;
   control-logs) command_control_logs ;;
   control-restart) command_control_restart ;;
+  group-list) command_group_list ;;
+  group-create) shift; command_group_create "$@" ;;
+  group-delete) shift; command_group_delete "$@" ;;
+  group-update) shift; command_group_update "$@" ;;
+  group-add) shift; command_group_add "$@" ;;
+  group-remove) shift; command_group_remove "$@" ;;
+  group-scene) shift; command_group_scene "$@" ;;
+  group-template) shift; command_group_template "$@" ;;
   ssh) command_ssh ;;
   wifi-edit) command_wifi_edit ;;
   edit)

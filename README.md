@@ -945,6 +945,40 @@ See [control-server/README.md](control-server/README.md) for complete documentat
 
 ---
 
+## 🎯 Fixture Groups/Zones
+
+Organize fixtures into named groups for easier control and management.
+
+```bash
+# Create groups
+./lightsctl.sh group-create "key-lights" "0,3" "Main key lights"
+./lightsctl.sh group-create "fill-lights" "4,5" "Fill and background"
+
+# List all groups
+./lightsctl.sh group-list
+
+# Apply template to specific group
+./lightsctl.sh group-template "key-lights" warm-white --add-to-workspace
+
+# Generate scene for specific group
+./lightsctl.sh group-scene "fill-lights" "soft blue ambient" --preview
+```
+
+**Features:**
+- Name and organize fixtures into logical groups
+- Control groups independently
+- Apply templates to specific groups
+- Generate AI scenes for specific groups only
+- Persistent storage in `~/.qlcplus/fixture_groups.json`
+
+**Common Use Cases:**
+- Three-point lighting: "key", "fill", "back"
+- Zones: "stage-left", "stage-right", "audience"
+- Function: "overhead", "floor", "accent"
+- Color: "rgb-pars", "white-spots"
+
+---
+
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details
