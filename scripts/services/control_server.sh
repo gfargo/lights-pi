@@ -83,6 +83,10 @@ EOF
   run_sudo systemctl enable ${SERVICE_NAME}
   run_sudo systemctl start ${SERVICE_NAME}
   
+  # Add firewall rule for control server port
+  echo "Configuring firewall..."
+  run_sudo ufw allow ${CONTROL_PORT}/tcp comment "'Control Server'"
+  
   echo "✓ Control server installed and started"
   echo ""
   echo "Access at: http://lights.local:${CONTROL_PORT}"
@@ -95,6 +99,10 @@ function uninstall_control_server() {
   run_sudo systemctl disable ${SERVICE_NAME} || true
   run_sudo rm -f /etc/systemd/system/${SERVICE_NAME}
   run_sudo systemctl daemon-reload
+  
+  # Remove firewall rule
+  echo "Removing firewall rule..."
+  run_sudo ufw delete allow ${CONTROL_PORT}/tcp || true
   
   echo "✓ Control server uninstalled"
 }
