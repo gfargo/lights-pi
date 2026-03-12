@@ -426,13 +426,16 @@ def list_fixtures():
         tree = ET.parse(WORKSPACE_PATH)
         root = tree.getroot()
         
+        # Handle QLC+ namespace
+        ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
+        
         fixtures = []
-        for fixture in root.findall(".//Fixture"):
-            fixture_id = fixture.find("ID")
-            fixture_name = fixture.find("Name")
-            fixture_universe = fixture.find("Universe")
-            fixture_address = fixture.find("Address")
-            fixture_channels = fixture.find("Channels")
+        for fixture in root.findall(".//qlc:Fixture", ns):
+            fixture_id = fixture.find("qlc:ID", ns)
+            fixture_name = fixture.find("qlc:Name", ns)
+            fixture_universe = fixture.find("qlc:Universe", ns)
+            fixture_address = fixture.find("qlc:Address", ns)
+            fixture_channels = fixture.find("qlc:Channels", ns)
             
             if fixture_id is not None and fixture_name is not None:
                 fixtures.append({
