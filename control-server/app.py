@@ -95,13 +95,20 @@ def set_channel_value(universe, address, value):
     # QLC+ Simple Desk command format: CH|<absolute_address>|<value>
     command = f"CH|{absolute_address}|{value}"
     
-    # Send via asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    success = loop.run_until_complete(send_qlc_command(command))
-    loop.close()
-    
-    return success
+    # Send via asyncio - create new event loop for each call
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        success = loop.run_until_complete(send_qlc_command(command))
+        return success
+    except Exception as e:
+        print(f"Error in set_channel_value: {e}")
+        return False
+    finally:
+        try:
+            loop.close()
+        except:
+            pass
 
 
 def execute_command(command):
@@ -575,11 +582,18 @@ if __name__ == "__main__":
         sys.exit(1)
     
     # Connect to QLC+ on startup
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(connect_to_qlc())
-    loop.close()
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(connect_to_qlc())
+    except Exception as e:
+        print(f"Warning: Could not connect to QLC+ on startup: {e}")
+    finally:
+        try:
+            loop.close()
+        except:
+            pass
     
     # Run server with SocketIO
     port = int(os.getenv("CONTROL_PORT", "5000"))
-    socketio.run(app, host="0.0.0.0", port=port, debug=True)
+    socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)
