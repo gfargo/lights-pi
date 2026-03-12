@@ -23,7 +23,8 @@ CORS(app)
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.parent
 LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
-WORKSPACE_PATH = Path.home() / ".qlcplus" / "default.qxw"
+# Default to ~/.qlcplus/default.qxw, but can be overridden via env var
+WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / "default.qxw")))
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 
 # AI Configuration from environment
@@ -343,6 +344,7 @@ def get_status():
     return jsonify({
         "qlc_running": "running" in result.get("output", "").lower(),
         "workspace": str(WORKSPACE_PATH),
+        "workspace_exists": WORKSPACE_PATH.exists(),
         "ai_provider": AI_PROVIDER,
         "ai_model": AI_MODEL
     })
