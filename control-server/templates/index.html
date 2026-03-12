@@ -746,7 +746,7 @@
                                 value="0"
                                 data-fixture="${fixture.id}"
                                 data-channel="${index}"
-                                onchange="updateChannel(${fixture.id}, ${index}, this.value)"
+                                oninput="updateChannel(${fixture.id}, ${index}, this.value)"
                             >
                             <div class="channel-value">0</div>
                         </div>
@@ -796,8 +796,26 @@
         
         // Update channel value
         async function updateChannel(fixtureId, channel, value) {
-            console.log(`Fixture ${fixtureId}, Channel ${channel}: ${value}`);
-            // TODO: Implement QLC+ WebSocket API integration
+            try {
+                const response = await fetch('/api/channel', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        fixture_id: fixtureId,
+                        channel: channel,
+                        value: parseInt(value)
+                    })
+                });
+                
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('Failed to set channel:', data.error);
+                }
+            } catch (error) {
+                console.error('Error setting channel:', error);
+            }
         }
 
         // Event listeners

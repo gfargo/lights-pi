@@ -2,7 +2,7 @@
 """
 Natural Language Lighting Control Server
 Interprets natural language commands and adjusts QLC+ workspace in real-time
-Also provides direct fixture/group controls
+Also provides direct fixture/group controls with QLC+ WebSocket integration
 """
 
 import os
@@ -10,15 +10,19 @@ import sys
 import json
 import subprocess
 import xml.etree.ElementTree as ET
+import asyncio
+import websockets
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.parent
@@ -27,10 +31,77 @@ LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
 WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / "default.qxw")))
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 
+# QLC+ WebSocket configuration
+QLC_HOST = os.getenv("QLC_HOST", "localhost")
+QLC_PORT = int(os.getenv("QLC_PORT", "9999"))
+QLC_WS_URL = f"ws://{QLC_HOST}:{QLC_PORT}/qlcplusWS"
+
 # AI Configuration from environment
 AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_MODEL = os.getenv("AI_MODEL", "claude-3-5-sonnet-20241022")
+
+# Global QLC+ WebSocket connection
+qlc_websocket = None
+
+
+# Global QLC+ WebSocket connection
+qlc_websocket = None
+
+
+async def connect_to_qlc():
+    """Connect to QLC+ WebSocket"""
+    global qlc_websocket
+    try:
+        qlc_websocket = await websockets.connect(QLC_WS_URL)
+        print(f"✓ Connected to QLC+ WebSocket at {QLC_WS_URL}")
+        return True
+    except Exception as e:
+        print(f"✗ Failed to connect to QLC+: {e}")
+        qlc_websocket = None
+        return False
+
+
+async def send_qlc_command(command):
+    """Send command to QLC+ WebSocket"""
+    global qlc_websocket
+    try:
+        if qlc_websocket is None or qlc_websocket.closed:
+            await connect_to_qlc()
+        
+        if qlc_websocket:
+            await qlc_websocket.send(command)
+            return True
+    except Exception as e:
+        print(f"Error sending QLC+ command: {e}")
+        qlc_websocket = None
+    return False
+
+
+def set_channel_value(universe, address, value):
+    """
+    Set DMX channel value via QLC+ Simple Desk
+    
+    Args:
+        universe: Universe index (0-based)
+        address: DMX address within universe (1-512)
+        value: DMX value (0-255)
+    """
+    # Calculate absolute DMX address
+    # Universe 0: addresses 1-512
+    # Universe 1: addresses 513-1024, etc.
+    absolute_address = (universe * 512) + address
+    
+    # QLC+ Simple Desk command format: CH|<absolute_address>|<value>
+    command = f"CH|{absolute_address}|{value}"
+    
+    # Send via asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    success = loop.run_until_complete(send_qlc_command(command))
+    loop.close()
+    
+    return success
 
 
 def execute_command(command):
@@ -453,12 +524,62 @@ def list_fixtures():
         return jsonify({"error": str(e), "fixtures": []}), 500
 
 
+@app.route("/api/channel", methods=["POST"])
+def set_channel():
+    """Set DMX channel value"""
+    try:
+        data = request.get_json()
+        fixture_id = data.get("fixture_id")
+        channel_offset = data.get("channel", 0)  # 0-based offset within fixture
+        value = data.get("value", 0)
+        
+        if fixture_id is None or value is None:
+            return jsonify({"success": False, "error": "Missing fixture_id or value"}), 400
+        
+        # Get fixture info from workspace
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
+        
+        fixture = root.find(f".//qlc:Fixture[qlc:ID='{fixture_id}']", ns)
+        if fixture is None:
+            return jsonify({"success": False, "error": f"Fixture {fixture_id} not found"}), 404
+        
+        universe_elem = fixture.find("qlc:Universe", ns)
+        address_elem = fixture.find("qlc:Address", ns)
+        
+        universe = int(universe_elem.text) if universe_elem is not None else 0
+        base_address = int(address_elem.text) if address_elem is not None else 0
+        
+        # Calculate actual DMX address (1-based)
+        dmx_address = base_address + channel_offset + 1
+        
+        # Set channel value
+        success = set_channel_value(universe, dmx_address, int(value))
+        
+        return jsonify({
+            "success": success,
+            "fixture_id": fixture_id,
+            "universe": universe,
+            "address": dmx_address,
+            "value": value
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():
         print(f"Error: lightsctl.sh not found at {LIGHTSCTL}")
         sys.exit(1)
     
-    # Run server
+    # Connect to QLC+ on startup
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(connect_to_qlc())
+    loop.close()
+    
+    # Run server with SocketIO
     port = int(os.getenv("CONTROL_PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    socketio.run(app, host="0.0.0.0", port=port, debug=True)
