@@ -192,6 +192,112 @@
             transform: translateY(-1px);
         }
 
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .tab {
+            padding: 12px 20px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            color: #667eea;
+        }
+
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .virtual-console {
+            display: grid;
+            gap: 15px;
+        }
+
+        .fixture-control {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 10px;
+        }
+
+        .fixture-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .channel-controls {
+            display: grid;
+            gap: 10px;
+        }
+
+        .channel-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .channel-label {
+            min-width: 80px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .channel-slider {
+            flex: 1;
+            height: 8px;
+            border-radius: 4px;
+            background: #e0e0e0;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .channel-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+        }
+
+        .channel-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+        }
+
+        .channel-value {
+            min-width: 40px;
+            text-align: right;
+            font-size: 13px;
+            font-weight: 600;
+            color: #333;
+        }
+
         .example-chips {
             display: flex;
             flex-wrap: wrap;
@@ -310,33 +416,50 @@
             Checking connection...
         </div>
 
-        <div class="input-group">
-            <input 
-                type="text" 
-                id="commandInput" 
-                placeholder="Try: 'make it warmer' or 'party mode'"
-                autocomplete="off"
-            >
-            <button id="voiceBtn" title="Voice input">🎤</button>
-            <button id="sendBtn">Send</button>
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('ai')">AI Control</button>
+            <button class="tab" onclick="switchTab('groups')">Groups</button>
+            <button class="tab" onclick="switchTab('console')">Virtual Console</button>
         </div>
 
-        <div class="examples">
-            <h3>Quick Commands</h3>
-            <div class="example-chips">
-                <span class="chip" data-command="make it brighter">Brighter</span>
-                <span class="chip" data-command="make it warmer">Warmer</span>
-                <span class="chip" data-command="party mode">Party</span>
-                <span class="chip" data-command="youtube studio">Studio</span>
-                <span class="chip" data-command="ambient lighting">Ambient</span>
-                <span class="chip" data-command="add more blue">More Blue</span>
-                <span class="chip" data-command="fade to black">Fade Out</span>
+        <div id="ai-tab" class="tab-content active">
+            <div class="input-group">
+                <input 
+                    type="text" 
+                    id="commandInput" 
+                    placeholder="Try: 'make it warmer' or 'party mode'"
+                    autocomplete="off"
+                >
+                <button id="voiceBtn" title="Voice input">🎤</button>
+                <button id="sendBtn">Send</button>
+            </div>
+
+            <div class="examples">
+                <h3>Quick Commands</h3>
+                <div class="example-chips">
+                    <span class="chip" data-command="make it brighter">Brighter</span>
+                    <span class="chip" data-command="make it warmer">Warmer</span>
+                    <span class="chip" data-command="party mode">Party</span>
+                    <span class="chip" data-command="youtube studio">Studio</span>
+                    <span class="chip" data-command="ambient lighting">Ambient</span>
+                    <span class="chip" data-command="add more blue">More Blue</span>
+                    <span class="chip" data-command="fade to black">Fade Out</span>
+                </div>
             </div>
         </div>
 
-        <div class="fixture-controls">
-            <h3>Fixture Groups</h3>
-            <div id="groupsList"></div>
+        <div id="groups-tab" class="tab-content">
+            <div class="fixture-controls">
+                <h3>Fixture Groups</h3>
+                <div id="groupsList"></div>
+            </div>
+        </div>
+
+        <div id="console-tab" class="tab-content">
+            <div class="virtual-console">
+                <h3>Virtual Console</h3>
+                <div id="fixturesList"></div>
+            </div>
         </div>
 
         <div class="loading" id="loading">
@@ -360,6 +483,28 @@
 
         let recognition = null;
         let isListening = false;
+
+        // Tab switching
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            event.target.classList.add('active');
+            
+            // Load data if needed
+            if (tabName === 'groups') {
+                loadGroups();
+            } else if (tabName === 'console') {
+                loadFixtures();
+            }
+        }
 
         // Initialize speech recognition
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -566,6 +711,98 @@
             } finally {
                 loading.classList.remove('active');
             }
+        }
+
+        // Load fixtures for virtual console
+        async function loadFixtures() {
+            try {
+                const response = await fetch('/api/fixtures');
+                const data = await response.json();
+                const fixturesList = document.getElementById('fixturesList');
+                
+                if (!data.fixtures || data.fixtures.length === 0) {
+                    fixturesList.innerHTML = '<p style="color: #999; font-size: 13px;">No fixtures found</p>';
+                    return;
+                }
+                
+                fixturesList.innerHTML = '';
+                
+                data.fixtures.forEach(fixture => {
+                    const fixtureDiv = document.createElement('div');
+                    fixtureDiv.className = 'fixture-control';
+                    
+                    // Create channel controls based on fixture type
+                    const channels = getChannelNames(fixture.name, fixture.channels);
+                    
+                    const channelControls = channels.map((channelName, index) => `
+                        <div class="channel-control">
+                            <div class="channel-label">${channelName}</div>
+                            <input 
+                                type="range" 
+                                class="channel-slider" 
+                                min="0" 
+                                max="255" 
+                                value="0"
+                                data-fixture="${fixture.id}"
+                                data-channel="${index}"
+                                onchange="updateChannel(${fixture.id}, ${index}, this.value)"
+                            >
+                            <div class="channel-value">0</div>
+                        </div>
+                    `).join('');
+                    
+                    fixtureDiv.innerHTML = `
+                        <div class="fixture-name">${fixture.name}</div>
+                        <div class="channel-controls">
+                            ${channelControls}
+                        </div>
+                    `;
+                    
+                    fixturesList.appendChild(fixtureDiv);
+                });
+                
+                // Update value displays
+                document.querySelectorAll('.channel-slider').forEach(slider => {
+                    slider.addEventListener('input', function() {
+                        this.parentElement.querySelector('.channel-value').textContent = this.value;
+                    });
+                });
+            } catch (error) {
+                console.error('Error loading fixtures:', error);
+            }
+        }
+        
+        // Get channel names based on fixture type
+        function getChannelNames(fixtureName, channelCount) {
+            const name = fixtureName.toLowerCase();
+            
+            // PAR fixtures (RGB)
+            if (name.includes('par') || name.includes('rgb')) {
+                if (channelCount >= 3) {
+                    return ['Red', 'Green', 'Blue', 'Dimmer'].slice(0, channelCount);
+                }
+            }
+            
+            // Moving heads / intelligent fixtures
+            if (name.includes('56') || name.includes('moving') || name.includes('spot')) {
+                const channels = ['Pan', 'Tilt', 'Dimmer', 'Shutter', 'Color', 'Gobo', 'Prism', 'Focus'];
+                return channels.slice(0, channelCount);
+            }
+            
+            // Generic dimmer
+            if (channelCount === 1) {
+                return ['Dimmer'];
+            }
+            
+            // Default: numbered channels
+            return Array.from({length: channelCount}, (_, i) => `Ch ${i + 1}`);
+        }
+        
+        // Update channel value (placeholder - needs QLC+ WebSocket integration)
+        async function updateChannel(fixtureId, channel, value) {
+            console.log(`Fixture ${fixtureId}, Channel ${channel}: ${value}`);
+            // TODO: Implement QLC+ WebSocket API integration
+            // For now, this is a UI-only control
         }
 
         // Initial status check
