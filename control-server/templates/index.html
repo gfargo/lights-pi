@@ -5,219 +5,100 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lighting Control</title>
     <style>
-        * {
+        *, *::before, *::after {
+            box-sizing: border-box;
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
+            background: #0a0a0a;
+            color: #f0f0f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            padding: 2rem 1rem;
         }
 
         .container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
-            width: 100%;
-            padding: 40px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            opacity: 0.9;
+            margin-bottom: 1rem;
         }
 
         h1 {
-            font-size: 32px;
-            margin-bottom: 10px;
-            color: #333;
+            font-size: 1.75rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #ffffff;
+            margin-bottom: 0.5rem;
         }
 
         .subtitle {
+            font-size: 0.75rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
             color: #666;
-            margin-bottom: 30px;
-            font-size: 14px;
         }
 
         .status {
-            background: #f0f0f0;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-            font-size: 13px;
-            color: #666;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            margin-bottom: 2rem;
+            font-size: 0.85rem;
+            color: #999;
+            text-align: center;
         }
 
         .status.online {
-            background: #d4edda;
-            color: #155724;
-        }
-
-        .input-group {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        #commandInput {
-            flex: 1;
-            padding: 15px 20px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 16px;
-            transition: border-color 0.3s;
-        }
-
-        #commandInput:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        button {
-            padding: 15px 25px;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-
-        #sendBtn {
-            background: #667eea;
-            color: white;
-        }
-
-        #sendBtn:hover:not(:disabled) {
-            background: #5568d3;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        #sendBtn:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-
-        #voiceBtn {
-            background: #f0f0f0;
-            color: #333;
-            min-width: 60px;
-        }
-
-        #voiceBtn:hover {
-            background: #e0e0e0;
-        }
-
-        #voiceBtn.listening {
-            background: #ff4444;
-            color: white;
-            animation: pulse 1.5s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
-
-        .examples {
-            margin-bottom: 30px;
-        }
-
-        .examples h3 {
-            font-size: 14px;
-            color: #666;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .fixture-controls {
-            margin-bottom: 30px;
-        }
-
-        .fixture-controls h3 {
-            font-size: 14px;
-            color: #666;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .group-item {
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 10px;
-        }
-
-        .group-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-
-        .group-name {
-            font-weight: 600;
-            color: #333;
-        }
-
-        .group-fixtures {
-            font-size: 12px;
-            color: #999;
-        }
-
-        .group-templates {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-        }
-
-        .template-btn {
-            background: #667eea;
-            color: white;
-            padding: 5px 12px;
-            border-radius: 5px;
-            font-size: 12px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .template-btn:hover {
-            background: #5568d3;
-            transform: translateY(-1px);
+            background: #0d2818;
+            border-color: #1a4d2e;
+            color: #4ade80;
         }
 
         .tabs {
             display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 2px solid #e0e0e0;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid #333;
+            overflow-x: auto;
         }
 
         .tab {
-            padding: 12px 20px;
+            padding: 0.75rem 1.5rem;
             background: transparent;
             border: none;
-            border-bottom: 3px solid transparent;
+            border-bottom: 2px solid transparent;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 0.85rem;
             font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
             color: #666;
-            transition: all 0.3s;
+            transition: all 0.2s;
+            white-space: nowrap;
         }
 
         .tab:hover {
-            color: #667eea;
+            color: #f0f0f0;
         }
 
         .tab.active {
-            color: #667eea;
-            border-bottom-color: #667eea;
+            color: #f0f0f0;
+            border-bottom-color: #f0f0f0;
         }
 
         .tab-content {
@@ -228,145 +109,279 @@
             display: block;
         }
 
-        .virtual-console {
-            display: grid;
-            gap: 15px;
-        }
-
-        .fixture-control {
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 10px;
-        }
-
-        .fixture-name {
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 10px;
-        }
-
-        .channel-controls {
-            display: grid;
-            gap: 10px;
-        }
-
-        .channel-control {
+        /* AI Control Tab */
+        .input-group {
             display: flex;
-            align-items: center;
-            gap: 10px;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
         }
 
-        .channel-label {
-            min-width: 80px;
-            font-size: 13px;
-            color: #666;
-        }
-
-        .channel-slider {
+        #commandInput {
             flex: 1;
-            height: 8px;
-            border-radius: 4px;
-            background: #e0e0e0;
+            padding: 0.875rem 1rem;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            color: #f0f0f0;
+            transition: border-color 0.2s;
+        }
+
+        #commandInput:focus {
             outline: none;
-            -webkit-appearance: none;
+            border-color: #555;
         }
 
-        .channel-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: #667eea;
-            cursor: pointer;
+        #commandInput::placeholder {
+            color: #555;
         }
 
-        .channel-slider::-moz-range-thumb {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: #667eea;
-            cursor: pointer;
+        button {
+            padding: 0.875rem 1.5rem;
             border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.03em;
         }
 
-        .channel-value {
-            min-width: 40px;
-            text-align: right;
-            font-size: 13px;
-            font-weight: 600;
-            color: #333;
+        #sendBtn {
+            background: #f0f0f0;
+            color: #0a0a0a;
+        }
+
+        #sendBtn:hover:not(:disabled) {
+            background: #ffffff;
+        }
+
+        #sendBtn:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+        }
+
+        #voiceBtn {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: #f0f0f0;
+            min-width: 50px;
+        }
+
+        #voiceBtn:hover {
+            background: #222;
+        }
+
+        #voiceBtn.listening {
+            background: #dc2626;
+            border-color: #dc2626;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .section-title {
+            font-size: 0.75rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: #666;
+            margin-bottom: 1rem;
         }
 
         .example-chips {
             display: flex;
             flex-wrap: wrap;
-            gap: 8px;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
         }
 
         .chip {
-            background: #f0f0f0;
-            padding: 8px 15px;
-            border-radius: 20px;
-            font-size: 13px;
-            color: #666;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: #999;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.2s;
         }
 
         .chip:hover {
-            background: #667eea;
-            color: white;
-            transform: translateY(-2px);
+            background: #f0f0f0;
+            border-color: #f0f0f0;
+            color: #0a0a0a;
         }
 
-        .history {
-            margin-top: 30px;
+        /* Groups Tab */
+        .group-item {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 0.75rem;
         }
 
-        .history h3 {
-            font-size: 14px;
+        .group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .group-name {
+            font-weight: 600;
+            color: #f0f0f0;
+            font-size: 0.95rem;
+        }
+
+        .group-fixtures {
+            font-size: 0.75rem;
             color: #666;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.05em;
+        }
+
+        .group-templates {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .template-btn {
+            background: #f0f0f0;
+            color: #0a0a0a;
+            padding: 0.4rem 0.875rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            letter-spacing: 0.03em;
+        }
+
+        .template-btn:hover {
+            background: #ffffff;
+        }
+
+        /* Virtual Console Tab */
+        .fixture-control {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 0.75rem;
+        }
+
+        .fixture-name {
+            font-weight: 600;
+            color: #f0f0f0;
+            margin-bottom: 0.75rem;
+            font-size: 0.95rem;
+        }
+
+        .channel-controls {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .channel-control {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .channel-label {
+            min-width: 70px;
+            font-size: 0.8rem;
+            color: #999;
+            letter-spacing: 0.03em;
+        }
+
+        .channel-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #333;
+            outline: none;
+            -webkit-appearance: none;
+            cursor: pointer;
+        }
+
+        .channel-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #f0f0f0;
+            cursor: pointer;
+        }
+
+        .channel-slider::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #f0f0f0;
+            cursor: pointer;
+            border: none;
+        }
+
+        .channel-value {
+            min-width: 35px;
+            text-align: right;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #f0f0f0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* History */
+        .history {
+            margin-top: 2rem;
         }
 
         .history-item {
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 10px;
-            border-left: 4px solid #667eea;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-left: 3px solid #f0f0f0;
+            padding: 0.875rem;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
         }
 
         .history-item.error {
-            border-left-color: #ff4444;
-            background: #fff5f5;
+            border-left-color: #dc2626;
+            background: #1a0a0a;
         }
 
         .history-command {
             font-weight: 600;
-            color: #333;
-            margin-bottom: 5px;
+            color: #f0f0f0;
+            margin-bottom: 0.25rem;
+            font-size: 0.9rem;
         }
 
         .history-action {
-            font-size: 13px;
-            color: #666;
+            font-size: 0.8rem;
+            color: #999;
         }
 
         .history-time {
-            font-size: 11px;
-            color: #999;
-            margin-top: 5px;
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 0.25rem;
         }
 
+        /* Loading */
         .loading {
             display: none;
             text-align: center;
-            padding: 20px;
-            color: #667eea;
+            padding: 2rem;
+            color: #f0f0f0;
         }
 
         .loading.active {
@@ -374,13 +389,13 @@
         }
 
         .spinner {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
+            border: 3px solid #333;
+            border-top: 3px solid #f0f0f0;
             border-radius: 50%;
             width: 40px;
             height: 40px;
             animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
+            margin: 0 auto 1rem;
         }
 
         @keyframes spin {
@@ -388,13 +403,21 @@
             100% { transform: rotate(360deg); }
         }
 
+        footer {
+            text-align: center;
+            margin-top: 3rem;
+            font-size: 0.7rem;
+            color: #333;
+            letter-spacing: 0.05em;
+        }
+
         @media (max-width: 600px) {
-            .container {
-                padding: 25px;
+            body {
+                padding: 1rem 0.75rem;
             }
 
             h1 {
-                font-size: 24px;
+                font-size: 1.25rem;
             }
 
             .input-group {
@@ -404,13 +427,32 @@
             #voiceBtn {
                 width: 100%;
             }
+
+            .tab {
+                padding: 0.75rem 1rem;
+                font-size: 0.75rem;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>💡 Lighting Control</h1>
-        <p class="subtitle">Control your lights with natural language</p>
+        <div class="header">
+            <svg class="logo-icon" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="36" cy="36" r="34" stroke="#444" stroke-width="2"/>
+                <circle cx="36" cy="36" r="10" fill="#f0f0f0" opacity="0.9"/>
+                <line x1="36" y1="4"  x2="36" y2="16" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="36" y1="56" x2="36" y2="68" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="4"  y1="36" x2="16" y2="36" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="56" y1="36" x2="68" y2="36" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="14.1" y1="14.1" x2="22.4" y2="22.4" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="49.6" y1="49.6" x2="57.9" y2="57.9" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="57.9" y1="14.1" x2="49.6" y2="22.4" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+                <line x1="22.4" y1="49.6" x2="14.1" y2="57.9" stroke="#555" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <h1>Lighting Control</h1>
+            <p class="subtitle">Advanced Control Interface</p>
+        </div>
 
         <div id="status" class="status">
             Checking connection...
@@ -434,43 +476,39 @@
                 <button id="sendBtn">Send</button>
             </div>
 
-            <div class="examples">
-                <h3>Quick Commands</h3>
-                <div class="example-chips">
-                    <span class="chip" data-command="make it brighter">Brighter</span>
-                    <span class="chip" data-command="make it warmer">Warmer</span>
-                    <span class="chip" data-command="party mode">Party</span>
-                    <span class="chip" data-command="youtube studio">Studio</span>
-                    <span class="chip" data-command="ambient lighting">Ambient</span>
-                    <span class="chip" data-command="add more blue">More Blue</span>
-                    <span class="chip" data-command="fade to black">Fade Out</span>
-                </div>
+            <div class="section-title">Quick Commands</div>
+            <div class="example-chips">
+                <span class="chip" data-command="make it brighter">Brighter</span>
+                <span class="chip" data-command="make it warmer">Warmer</span>
+                <span class="chip" data-command="party mode">Party</span>
+                <span class="chip" data-command="youtube studio">Studio</span>
+                <span class="chip" data-command="ambient lighting">Ambient</span>
+                <span class="chip" data-command="add more blue">More Blue</span>
+                <span class="chip" data-command="fade to black">Fade Out</span>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Processing command...</p>
+            </div>
+
+            <div class="history">
+                <div class="section-title">Command History</div>
+                <div id="historyList"></div>
             </div>
         </div>
 
         <div id="groups-tab" class="tab-content">
-            <div class="fixture-controls">
-                <h3>Fixture Groups</h3>
-                <div id="groupsList"></div>
-            </div>
+            <div class="section-title">Fixture Groups</div>
+            <div id="groupsList"></div>
         </div>
 
         <div id="console-tab" class="tab-content">
-            <div class="virtual-console">
-                <h3>Virtual Console</h3>
-                <div id="fixturesList"></div>
-            </div>
+            <div class="section-title">Virtual Console</div>
+            <div id="fixturesList"></div>
         </div>
 
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p>Processing command...</p>
-        </div>
-
-        <div class="history">
-            <h3>Command History</h3>
-            <div id="historyList"></div>
-        </div>
+        <footer>lights.local</footer>
     </div>
 
     <script>
@@ -486,7 +524,6 @@
 
         // Tab switching
         function switchTab(tabName) {
-            // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
             });
@@ -494,11 +531,9 @@
                 tab.classList.remove('active');
             });
             
-            // Show selected tab
             document.getElementById(`${tabName}-tab`).classList.add('active');
             event.target.classList.add('active');
             
-            // Load data if needed
             if (tabName === 'groups') {
                 loadGroups();
             } else if (tabName === 'console') {
@@ -572,7 +607,6 @@
                 });
 
                 const data = await response.json();
-
                 addToHistory(command, data);
                 commandInput.value = '';
 
@@ -593,52 +627,21 @@
             const item = document.createElement('div');
             item.className = 'history-item' + (result.success ? '' : ' error');
             
-            const explanation = result.action?.explanation || result.error || 'Unknown error';
             const time = new Date().toLocaleTimeString();
-
+            const action = result.action ? result.action.explanation || result.action.action : 'Error';
+            
             item.innerHTML = `
                 <div class="history-command">${command}</div>
-                <div class="history-action">${explanation}</div>
+                <div class="history-action">${action}</div>
                 <div class="history-time">${time}</div>
             `;
-
+            
             historyList.insertBefore(item, historyList.firstChild);
-
-            // Keep only last 10 items
-            while (historyList.children.length > 10) {
+            
+            if (historyList.children.length > 10) {
                 historyList.removeChild(historyList.lastChild);
             }
         }
-
-        // Event listeners
-        sendBtn.addEventListener('click', sendCommand);
-        
-        commandInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                sendCommand();
-            }
-        });
-
-        voiceBtn.addEventListener('click', () => {
-            if (!recognition) return;
-
-            if (isListening) {
-                recognition.stop();
-            } else {
-                recognition.start();
-                isListening = true;
-                voiceBtn.classList.add('listening');
-                voiceBtn.textContent = '🔴';
-            }
-        });
-
-        // Example chips
-        document.querySelectorAll('.chip').forEach(chip => {
-            chip.addEventListener('click', () => {
-                commandInput.value = chip.dataset.command;
-                sendCommand();
-            });
-        });
 
         // Load fixture groups
         async function loadGroups() {
@@ -648,7 +651,7 @@
                 const groupsList = document.getElementById('groupsList');
                 
                 if (!data.groups || data.groups.length === 0) {
-                    groupsList.innerHTML = '<p style="color: #999; font-size: 13px;">No fixture groups found</p>';
+                    groupsList.innerHTML = '<p style="color: #666; font-size: 0.85rem;">No fixture groups found</p>';
                     return;
                 }
                 
@@ -700,7 +703,6 @@
                 });
                 
                 const data = await response.json();
-                
                 addToHistory(`Apply ${template} to ${groupName}`, data);
                 
             } catch (error) {
@@ -721,7 +723,7 @@
                 const fixturesList = document.getElementById('fixturesList');
                 
                 if (!data.fixtures || data.fixtures.length === 0) {
-                    fixturesList.innerHTML = '<p style="color: #999; font-size: 13px;">No fixtures found</p>';
+                    fixturesList.innerHTML = '<p style="color: #666; font-size: 0.85rem;">No fixtures found</p>';
                     return;
                 }
                 
@@ -731,7 +733,6 @@
                     const fixtureDiv = document.createElement('div');
                     fixtureDiv.className = 'fixture-control';
                     
-                    // Create channel controls based on fixture type
                     const channels = getChannelNames(fixture.name, fixture.channels);
                     
                     const channelControls = channels.map((channelName, index) => `
@@ -761,7 +762,6 @@
                     fixturesList.appendChild(fixtureDiv);
                 });
                 
-                // Update value displays
                 document.querySelectorAll('.channel-slider').forEach(slider => {
                     slider.addEventListener('input', function() {
                         this.parentElement.querySelector('.channel-value').textContent = this.value;
@@ -776,39 +776,59 @@
         function getChannelNames(fixtureName, channelCount) {
             const name = fixtureName.toLowerCase();
             
-            // PAR fixtures (RGB)
             if (name.includes('par') || name.includes('rgb')) {
                 if (channelCount >= 3) {
                     return ['Red', 'Green', 'Blue', 'Dimmer'].slice(0, channelCount);
                 }
             }
             
-            // Moving heads / intelligent fixtures
             if (name.includes('56') || name.includes('moving') || name.includes('spot')) {
                 const channels = ['Pan', 'Tilt', 'Dimmer', 'Shutter', 'Color', 'Gobo', 'Prism', 'Focus'];
                 return channels.slice(0, channelCount);
             }
             
-            // Generic dimmer
             if (channelCount === 1) {
                 return ['Dimmer'];
             }
             
-            // Default: numbered channels
             return Array.from({length: channelCount}, (_, i) => `Ch ${i + 1}`);
         }
         
-        // Update channel value (placeholder - needs QLC+ WebSocket integration)
+        // Update channel value
         async function updateChannel(fixtureId, channel, value) {
             console.log(`Fixture ${fixtureId}, Channel ${channel}: ${value}`);
             // TODO: Implement QLC+ WebSocket API integration
-            // For now, this is a UI-only control
         }
 
-        // Initial status check
+        // Event listeners
+        sendBtn.addEventListener('click', sendCommand);
+        commandInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendCommand();
+        });
+
+        voiceBtn.addEventListener('click', () => {
+            if (!recognition) return;
+            
+            if (isListening) {
+                recognition.stop();
+            } else {
+                recognition.start();
+                isListening = true;
+                voiceBtn.classList.add('listening');
+                voiceBtn.textContent = '⏸';
+            }
+        });
+
+        document.querySelectorAll('.chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                commandInput.value = chip.dataset.command;
+                sendCommand();
+            });
+        });
+
+        // Initial load
         checkStatus();
-        loadGroups();
-        setInterval(checkStatus, 10000); // Check every 10 seconds
+        setInterval(checkStatus, 10000);
     </script>
 </body>
 </html>
