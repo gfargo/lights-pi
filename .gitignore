@@ -4,5 +4,7 @@ certs/
 .vscode/
 docs/
 
+scenes/*.xml
+
 # Marketing site (separate git repo)
 marketing-site/
