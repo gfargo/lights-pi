@@ -149,6 +149,7 @@ Natural Language Control:
   control-status              show control server status
   control-logs                show control server logs
   control-restart             restart control server
+  env-sync                    sync local .env file to Pi and restart services
 
 Fixture Groups/Zones:
   group-list                  list all fixture groups
@@ -956,6 +957,37 @@ function command_control_restart() {
   restart_control_server
 }
 
+function command_env_sync() {
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    echo "Error: .env file not found at ${ENV_FILE}" >&2
+    echo "Copy from .env.example and configure first" >&2
+    return 1
+  fi
+  
+  echo "Syncing .env file to Pi..."
+  
+  # Copy to home directory
+  "${SCP_CMD[@]}" "${ENV_FILE}" "${PI_USER}@${PI_HOST}:~/"
+  echo "✓ Copied to ~/"
+  
+  # Copy to control-server directory if it exists
+  if "${REMOTE_CMD[@]}" "test -d ~/control-server" 2>/dev/null; then
+    "${SCP_CMD[@]}" "${ENV_FILE}" "${PI_USER}@${PI_HOST}:~/control-server/"
+    echo "✓ Copied to ~/control-server/"
+    
+    # Restart control server if it's running
+    if "${REMOTE_CMD[@]}" "systemctl is-active --quiet lighting-control.service" 2>/dev/null; then
+      echo "Restarting control server..."
+      run_sudo systemctl restart lighting-control.service
+      echo "✓ Control server restarted"
+    fi
+  fi
+  
+  echo ""
+  echo "Environment variables synced successfully!"
+  echo "The Pi will now use your local .env configuration."
+}
+
 # Fixture Groups commands
 function command_group_list() {
   source "${SCRIPT_DIR}/scripts/lib/fixture_groups.sh"
@@ -1211,6 +1243,7 @@ case "$1" in
   control-status) command_control_status ;;
   control-logs) command_control_logs ;;
   control-restart) command_control_restart ;;
+  env-sync) command_env_sync ;;
   group-list) command_group_list ;;
   group-create) shift; command_group_create "$@" ;;
   group-delete) shift; command_group_delete "$@" ;;

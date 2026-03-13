@@ -3,7 +3,7 @@ CTL := ./lightsctl.sh
 .PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless list-fixtures install-fixture test-dmx deploy-workspace set-default-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
-        reboot poweroff hdmi-disable os-version landing-setup landing-deploy
+        reboot poweroff hdmi-disable os-version landing-setup landing-deploy env-sync
 
 help:
 	@$(CTL) help
@@ -149,3 +149,7 @@ landing-setup:
 
 landing-deploy:
 	$(CTL) landing-deploy
+
+# ── Environment ────────────────────────────────────────────────────────────────
+env-sync:
+	$(CTL) env-sync
