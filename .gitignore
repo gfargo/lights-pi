@@ -2,9 +2,12 @@
 backups/
 certs/
 .vscode/
-docs/
+# docs/ intentionally tracked
 
 scenes/*.xml
 
 # Marketing site (separate git repo)
 marketing-site/
+
+# Python files
+__pycache__/

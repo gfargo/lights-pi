@@ -138,7 +138,7 @@ Environment=XDG_RUNTIME_DIR=/run/qlcplus
 RuntimeDirectory=qlcplus
 RuntimeDirectoryMode=0700
 WorkingDirectory=/home/${PI_USER}
-ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT}
+ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --open /home/${PI_USER}/.qlcplus/default.qxw
 Restart=always
 RestartSec=3
 
