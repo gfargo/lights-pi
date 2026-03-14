@@ -789,7 +789,9 @@
         function applyAbsoluteValues(values) {
             fixtureData.forEach(f => {
                 for (let ch = 0; ch < f.channels; ch++) {
-                    const absAddr = f.universe * 512 + f.address + ch;
+                    // workspace address is 0-based; QLC+ WS uses 1-based channel numbers
+                    // abs_addr = universe * 512 + (address + ch + 1)
+                    const absAddr = f.universe * 512 + f.address + ch + 1;
                     const val = values[absAddr];
                     if (val != null) {
                         const s = document.getElementById(`ch-${f.id}-${ch}`);
@@ -805,20 +807,26 @@
             if (qlcWs && qlcWs.readyState < 2) return;
             const wsUrl = `ws://${location.hostname}:9999/qlcplusWS`;
             try { qlcWs = new WebSocket(wsUrl); } catch(e) { return; }
-            qlcWs.onopen = () => qlcWs.send('QLC+API|getChannelValues');
+            qlcWs.onopen = () => {
+                // Request all channels for universe 1 (1-based), starting at ch 1, count 512
+                qlcWs.send('QLC+API|getChannelsValues|1|1|512');
+            };
             qlcWs.onmessage = (evt) => {
                 const msg = evt.data;
+                // Live single-channel update: "CH|<1based_ch>|<value>"
                 if (msg.startsWith('CH|')) {
                     const parts = msg.split('|');
                     if (parts.length >= 3) updateSliderByAbsAddr(+parts[1], +parts[2]);
                 }
-                if (msg.includes('getChannelValues')) {
-                    const pipeIdx = msg.lastIndexOf('|');
-                    const payload = pipeIdx >= 0 ? msg.slice(pipeIdx + 1) : '';
+                // Bulk response: "getChannelsValues|v1,v2,v3,..."
+                // Values are for universe 0, channels 1..N (1-based)
+                if (msg.startsWith('getChannelsValues|')) {
+                    const payload = msg.slice('getChannelsValues|'.length);
+                    const vals = payload.split(',');
                     const values = {};
-                    payload.split(',').forEach(entry => {
-                        const [a, v] = entry.split('=');
-                        if (a && v != null) { const n = +a; if (!isNaN(n)) values[n] = +v; }
+                    vals.forEach((v, i) => {
+                        const n = parseInt(v, 10);
+                        if (!isNaN(n)) values[i + 1] = n; // 1-based abs addr for universe 0
                     });
                     if (Object.keys(values).length) applyAbsoluteValues(values);
                 }
@@ -829,7 +837,9 @@
 
         function updateSliderByAbsAddr(absAddr, value) {
             fixtureData.forEach(f => {
-                const ch = absAddr - (f.universe * 512 + f.address);
+                // absAddr is 1-based; fixture.address is 0-based
+                // ch = absAddr - (universe * 512 + address + 1)
+                const ch = absAddr - (f.universe * 512 + f.address + 1);
                 if (ch >= 0 && ch < f.channels) {
                     const s = document.getElementById(`ch-${f.id}-${ch}`);
                     const v = document.getElementById(`cv-${f.id}-${ch}`);

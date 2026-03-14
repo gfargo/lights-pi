@@ -405,8 +405,8 @@ def execute_lighting_action(action_data, target_groups=None):
                 return f"{LIGHTSCTL} generate-scene '{safe_desc}' --add-to-workspace"
 
     def _inject_and_restart(result):
-        """After a local scene generation, inject the XML into the workspace
-        and restart the QLC+ service."""
+        """After a local scene generation, inject the XML into the workspace,
+        restart the QLC+ service, then activate the scene via WebSocket."""
         if not IS_LOCAL or not result["success"]:
             return result
 
@@ -455,12 +455,52 @@ def execute_lighting_action(action_data, target_groups=None):
         if not restart["success"]:
             result["error"] = (result.get("error", "") +
                                f"\nRestart warning: {restart.get('error', '')}").strip()
-            # Don't mark as failed — the scene was injected, restart is best-effort
 
         result["output"] = (result.get("output", "") +
                             f"\nScene injected (ID {next_id}) and service restarted").strip()
         scene_file.unlink(missing_ok=True)
+
+        # Activate the scene via WebSocket after QLC+ comes back up
+        _activate_scene_ws(next_id, result)
         return result
+
+    def _activate_scene_ws(scene_id, result, retries=6, delay=2.0):
+        """Wait for QLC+ to restart then activate the scene via WebSocket API."""
+        import time as _t
+
+        async def _do_activate():
+            for attempt in range(retries):
+                try:
+                    async with websockets.connect(
+                        QLC_WS_URL, open_timeout=3, close_timeout=2
+                    ) as ws:
+                        # Start the scene function
+                        await ws.send(f"QLC+API|setFunctionStatus|{scene_id}|1")
+                        # Brief wait to confirm it was received
+                        try:
+                            await asyncio.wait_for(ws.recv(), timeout=0.5)
+                        except asyncio.TimeoutError:
+                            pass
+                        return True
+                except Exception:
+                    if attempt < retries - 1:
+                        _t.sleep(delay)
+            return False
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            activated = loop.run_until_complete(_do_activate())
+            loop.close()
+            if activated:
+                result["output"] = (result.get("output", "") +
+                                    f"\nScene {scene_id} activated").strip()
+            else:
+                result["output"] = (result.get("output", "") +
+                                    f"\nScene {scene_id} injected (activation timed out — QLC+ may still be starting)").strip()
+        except Exception as e:
+            result["output"] = (result.get("output", "") +
+                                f"\nActivation warning: {e}").strip()
 
     if action == "apply_template":
         template = params.get("template")
@@ -914,47 +954,73 @@ def set_channel():
 
 @app.route("/api/channel_values", methods=["GET"])
 def get_channel_values():
-    """Get current DMX channel values from QLC+ via WebSocket"""
+    """Get current DMX channel values from QLC+ via WebSocket.
+
+    Uses the correct QLC+ 4.x API: QLC+API|getChannelsValues|<universe>|<start>|<count>
+    where universe and start are 1-based.  The response is:
+        getChannelsValues|<val0>,<val1>,...
+    Values are returned as a dict keyed by 1-based absolute address
+    (universe_0_based * 512 + 1-based_channel_within_universe).
+    """
     import asyncio as _asyncio
     import websockets as _ws
-    import json as _json
+
+    # Fetch all fixtures to know which universes/ranges to query
+    universes_to_fetch = {}  # universe_0based -> max_channel_1based_needed
+    try:
+        if WORKSPACE_PATH.exists():
+            tree = ET.parse(str(WORKSPACE_PATH))
+            root = tree.getroot()
+            ns = "http://www.qlcplus.org/Workspace"
+            for f in root.iter(f"{{{ns}}}Fixture"):
+                uni_el = f.find(f"{{{ns}}}Universe")
+                addr_el = f.find(f"{{{ns}}}Address")
+                chs_el = f.find(f"{{{ns}}}Channels")
+                if uni_el is None or addr_el is None or chs_el is None:
+                    continue
+                uni = int(uni_el.text)
+                addr = int(addr_el.text)   # 0-based
+                chs = int(chs_el.text)
+                # highest 1-based channel needed in this universe
+                top = addr + chs  # addr is 0-based, so addr+chs = last channel (1-based)
+                universes_to_fetch[uni] = max(universes_to_fetch.get(uni, 0), top)
+    except Exception:
+        # Fall back to fetching first 32 channels of universe 0
+        universes_to_fetch = {0: 32}
+
+    if not universes_to_fetch:
+        universes_to_fetch = {0: 32}
 
     async def _fetch():
+        values = {}
         try:
-            uri = QLC_WS_URL
-            async with _ws.connect(uri, open_timeout=3, close_timeout=2) as ws:
-                # Request channel dump
-                await ws.send("QLC+API|getChannelValues")
-                # Collect messages for up to 1 second
-                values = {}
-                import time as _t
-                deadline = _t.time() + 1.0
-                while _t.time() < deadline:
-                    try:
-                        msg = await _asyncio.wait_for(ws.recv(), timeout=0.3)
-                        if "getChannelValues" in msg:
-                            parts = msg.split("|")
-                            if len(parts) >= 3:
-                                for entry in parts[2].split(","):
-                                    if "=" in entry:
-                                        addr, val = entry.split("=", 1)
-                                        try:
-                                            values[int(addr)] = int(val)
-                                        except ValueError:
-                                            pass
+            async with _ws.connect(QLC_WS_URL, open_timeout=4, close_timeout=2) as ws:
+                for uni_0based, max_ch in universes_to_fetch.items():
+                    uni_1based = uni_0based + 1
+                    count = max_ch  # fetch from ch 1 up to max_ch
+                    cmd = f"QLC+API|getChannelsValues|{uni_1based}|1|{count}"
+                    await ws.send(cmd)
+                    import time as _t
+                    deadline = _t.time() + 1.5
+                    while _t.time() < deadline:
+                        try:
+                            msg = await _asyncio.wait_for(ws.recv(), timeout=0.4)
+                            if "getChannelsValues" in msg:
+                                # format: "getChannelsValues|v1,v2,v3,..."
+                                parts = msg.split("|", 1)
+                                if len(parts) == 2:
+                                    for i, v in enumerate(parts[1].split(",")):
+                                        v = v.strip()
+                                        if v.isdigit():
+                                            # absolute 1-based address
+                                            abs_addr = uni_0based * 512 + (i + 1)
+                                            values[abs_addr] = int(v)
+                                break
+                        except _asyncio.TimeoutError:
                             break
-                        elif msg.startswith("CH|"):
-                            p = msg.split("|")
-                            if len(p) >= 3:
-                                try:
-                                    values[int(p[1])] = int(p[2])
-                                except ValueError:
-                                    pass
-                    except _asyncio.TimeoutError:
-                        break
-                return values
-        except Exception:
-            return {}
+        except Exception as e:
+            print(f"channel_values fetch error: {e}")
+        return values
 
     try:
         loop = _asyncio.new_event_loop()
