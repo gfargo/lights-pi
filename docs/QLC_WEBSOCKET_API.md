@@ -174,29 +174,65 @@ ssh riversway@lights.local "python3 /tmp/probe_qlc_ws.py"
 
 ---
 
+## Auto-Loading a Workspace at Boot
+
+### The `autostart.qxw` mechanism (recommended)
+
+QLC+ automatically loads `~/.qlcplus/autostart.qxw` on startup when running in
+`--nogui --web` mode. This is the most reliable way to ensure your workspace
+loads at boot — no command-line flag required.
+
+Create a symlink from `autostart.qxw` to your workspace:
+
+```bash
+ln -sf ~/.qlcplus/default.qxw ~/.qlcplus/autostart.qxw
+sudo systemctl restart qlcplus-web.service
+```
+
+Verify it worked:
+
+```bash
+# Should show your fixtures in the Simple Desk
+curl -s http://lights.local:9999/simpleDesk | head -20
+```
+
+A diagnostic/fix script is available:
+
+```bash
+scp scripts/debug/fix_qlc_workspace_autoload.sh riversway@lights.local:/tmp/
+ssh riversway@lights.local "bash /tmp/fix_qlc_workspace_autoload.sh"
+```
+
+### The `--open` flag
+
+The `-o` / `--open` flag is documented and valid for QLC+ 4.x:
+
+```bash
+qlcplus --nogui --web --web-port 9999 --open ~/.qlcplus/default.qxw
+```
+
+However, in practice on Raspberry Pi with `--nogui`, this flag is sometimes
+silently ignored (likely a Qt platform initialization ordering issue). The
+`autostart.qxw` symlink approach is more reliable and should be used instead.
+
+---
+
 ## Common Issues
 
-### SimpleDesk shows all zeros after reboot
+### SimpleDesk shows all zeros / no fixtures after reboot
 
-QLC+ was started without a workspace. Check the systemd service:
-
-```bash
-systemctl cat qlcplus-web.service | grep ExecStart
-```
-
-The `--open` flag must point to the workspace file:
-
-```
-ExecStart=/usr/bin/qlcplus --nogui --web --web-port 9999 --open /home/riversway/.qlcplus/default.qxw
-```
-
-Fix and reload:
+QLC+ started without a workspace loaded. Fix with the `autostart.qxw` symlink:
 
 ```bash
-sudo sed -i 's|--web-port 9999$|--web-port 9999 --open /home/riversway/.qlcplus/default.qxw|' \
-  /etc/systemd/system/qlcplus-web.service
-sudo systemctl daemon-reload
+ln -sf ~/.qlcplus/default.qxw ~/.qlcplus/autostart.qxw
 sudo systemctl restart qlcplus-web.service
+```
+
+Then verify:
+
+```bash
+journalctl -u qlcplus-web.service -n 30
+# Look for lines mentioning your workspace file being loaded
 ```
 
 ### Virtual Console shows all zeros despite active scene
@@ -211,3 +247,9 @@ the scene. If QLC+ hasn't finished booting yet the activation is retried up to
 The scene is activated via WebSocket after restart. The Virtual Console polls
 `/api/channel_values` on load and subscribes to live `CH|` pushes via the
 browser WebSocket connection to `ws://lights.local:9999/qlcplusWS`.
+
+### Web interface not responding when autostart.qxw is present
+
+Known QLC+ bug: if `autostart.qxw` is a large or complex project, the web
+interface may be slow to respond on first load. Wait 10–15 seconds after
+restart before accessing the web UI.

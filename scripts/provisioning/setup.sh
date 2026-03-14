@@ -57,7 +57,7 @@ hostnamectl set-hostname "${PI_HOSTNAME}"
 echo "[2/9] Packages"
 apt-get update
 apt-get -y upgrade
-apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpasupplicant iw jq libxml2-utils
+apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpasupplicant iw
 
 systemctl enable avahi-daemon
 systemctl start avahi-daemon
@@ -148,6 +148,25 @@ SERVICE
 
 systemctl daemon-reload
 systemctl enable qlcplus-web.service
+
+# Create autostart.qxw symlink so QLC+ loads the workspace automatically.
+# QLC+ checks for ~/.qlcplus/autostart.qxw on startup in --nogui --web mode.
+# This is more reliable than the --open flag on some Pi builds.
+QLCPLUS_DIR="/home/${PI_USER}/.qlcplus"
+mkdir -p "\${QLCPLUS_DIR}"
+chown ${PI_USER}:${PI_USER} "\${QLCPLUS_DIR}"
+if [[ ! -e "\${QLCPLUS_DIR}/autostart.qxw" ]]; then
+  if [[ -f "\${QLCPLUS_DIR}/default.qxw" ]]; then
+    ln -sf "\${QLCPLUS_DIR}/default.qxw" "\${QLCPLUS_DIR}/autostart.qxw"
+    echo "  ✓ Created autostart.qxw symlink → default.qxw"
+  else
+    echo "  ℹ default.qxw not found yet; create it then run:"
+    echo "    ln -sf ~/.qlcplus/default.qxw ~/.qlcplus/autostart.qxw"
+  fi
+else
+  echo "  ✓ autostart.qxw already exists"
+fi
+
 systemctl restart qlcplus-web.service || true
 
 echo "[7/9] System configuration"
