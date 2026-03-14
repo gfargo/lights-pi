@@ -9,6 +9,52 @@ if [[ -f "${ENV_FILE:-}" ]]; then
   source "${ENV_FILE}"
 fi
 
+# --- jq-free helpers (Python fallback) ---
+# JSON-encode a string for safe embedding in JSON payloads
+# Replaces: jq -Rs .
+_json_encode() {
+  python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))"
+}
+
+# Extract a value from JSON by path expression
+# Usage: echo '{"a":"b"}' | _json_extract '.key' [default]
+# Replaces: jq -r '.path'
+_json_extract() {
+  local path="$1"
+  local default="${2:-}"
+  python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    keys = [k for k in '''${path}'''.replace(']','').replace('[','.').split('.') if k]
+    val = data
+    for k in keys:
+        if isinstance(val, list):
+            val = val[int(k)]
+        else:
+            val = val[k]
+    if val is None:
+        print('${default}')
+    else:
+        print(val if isinstance(val, str) else json.dumps(val))
+except Exception:
+    print('${default}')
+"
+}
+
+# Check if a JSON path exists / matches (for jq -e style checks)
+_json_check() {
+  local expr="$1"
+  python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    ${expr}
+except Exception:
+    sys.exit(1)
+"
+}
+
 # AI Configuration
 AI_PROVIDER="${AI_PROVIDER:-anthropic}"
 AI_API_KEY="${AI_API_KEY:-}"
@@ -44,10 +90,14 @@ function ai_validate_config() {
     fi
     
     # Check if model is available
-    if ! curl -s http://localhost:11434/api/tags | jq -e ".models[] | select(.name | startswith(\"$AI_MODEL\"))" >/dev/null 2>&1; then
+    if ! curl -s http://localhost:11434/api/tags | _json_check "
+models = data.get('models', [])
+if not any(m['name'].startswith('$AI_MODEL') for m in models):
+    sys.exit(1)
+" 2>/dev/null; then
       echo "Warning: Model '$AI_MODEL' may not be available in Ollama" >&2
       echo "Available models:" >&2
-      curl -s http://localhost:11434/api/tags | jq -r '.models[].name' >&2
+      curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; [print(m['name']) for m in json.load(sys.stdin).get('models',[])]" >&2
       echo "" >&2
       echo "Pull model with: ollama pull $AI_MODEL" >&2
     fi
@@ -57,6 +107,7 @@ function ai_validate_config() {
 }
 
 # Extract fixture inventory from QLC+ workspace XML
+# Extract fixture inventory from QLC+ workspace XML (Python-based, no xmllint needed)
 function ai_extract_fixtures() {
   local workspace_file="$1"
   
@@ -65,71 +116,69 @@ function ai_extract_fixtures() {
     return 1
   fi
   
-  # Extract fixtures using xmllint with namespace handling
-  local fixtures_json='{"fixtures":[]}'
-  
-  # Get fixture count (use local-name() to ignore namespace)
-  local fixture_count
-  fixture_count=$(xmllint --xpath "count(//*[local-name()='Fixture'])" "$workspace_file" 2>/dev/null || echo "0")
-  
-  if [[ "$fixture_count" -eq 0 ]]; then
-    echo "$fixtures_json"
-    return 0
-  fi
-  
-  # Build JSON array of fixtures
-  local fixtures_array="["
-  local first=true
-  
-  for i in $(seq 1 "$fixture_count"); do
-    local id manufacturer model mode name universe address channels
+  python3 -c "
+import sys, json
+import xml.etree.ElementTree as ET
+
+workspace = sys.argv[1]
+
+def get_text(el, tag):
+    child = el.find(tag)
+    return child.text.strip() if child is not None and child.text else ''
+
+def determine_capabilities(model, channels):
+    ch = int(channels) if channels else 0
+    if any(x in model for x in ['Moving', 'Spot', 'Wash']):
+        return ['rgb', 'dimmer', 'pan_tilt', 'gobo', 'color_wheel']
+    if 'Pro H' in model or ch >= 5:
+        return ['rgb', 'amber', 'white', 'dimmer']
+    if 'RGB' in model or 'Par' in model or ch >= 3:
+        return ['rgb', 'dimmer']
+    return ['dimmer']
+
+def build_channel_map(model, mode):
+    if model == 'SlimPAR 56' and mode == '3-Ch':
+        return {'1': 'Red', '2': 'Green', '3': 'Blue'}
+    if model == 'SlimPAR Pro H USB' and mode == '7 Channel':
+        return {'1': 'Dimmer', '2': 'Red', '3': 'Green', '4': 'Blue',
+                '5': 'Color Macros', '6': 'Amber', '7': 'Strobe'}
+    return {}
+
+try:
+    tree = ET.parse(workspace)
+    root = tree.getroot()
+    ns_prefix = ''
+    if root.tag.startswith('{'):
+        ns_prefix = root.tag[:root.tag.index('}')+1]
     
-    id=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='ID'])" "$workspace_file" 2>/dev/null)
-    manufacturer=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Manufacturer'])" "$workspace_file" 2>/dev/null)
-    model=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Model'])" "$workspace_file" 2>/dev/null)
-    mode=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Mode'])" "$workspace_file" 2>/dev/null)
-    name=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Name'])" "$workspace_file" 2>/dev/null)
-    universe=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Universe'])" "$workspace_file" 2>/dev/null)
-    address=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Address'])" "$workspace_file" 2>/dev/null)
-    channels=$(xmllint --xpath "string(//*[local-name()='Fixture'][$i]/*[local-name()='Channels'])" "$workspace_file" 2>/dev/null)
-    
-    # Determine capabilities based on model and mode
-    local capabilities
-    capabilities=$(ai_determine_capabilities "$manufacturer" "$model" "$mode" "$channels")
-    
-    # Build channel map
-    local channel_map
-    channel_map=$(ai_build_channel_map "$manufacturer" "$model" "$mode" "$channels")
-    
-    if [[ "$first" == true ]]; then
-      first=false
-    else
-      fixtures_array+=","
-    fi
-    
-    fixtures_array+=$(cat <<JSON
-{
-  "id": $id,
-  "name": $(echo "$name" | jq -Rs .),
-  "manufacturer": $(echo "$manufacturer" | jq -Rs .),
-  "model": $(echo "$model" | jq -Rs .),
-  "mode": $(echo "$mode" | jq -Rs .),
-  "universe": $universe,
-  "address": $address,
-  "channels": $channels,
-  "capabilities": $capabilities,
-  "channel_map": $channel_map
-}
-JSON
-)
-  done
-  
-  fixtures_array+="]"
-  
-  echo "{\"fixtures\":$fixtures_array}"
+    fixtures = []
+    for fix in root.iter(ns_prefix + 'Fixture'):
+        fid_el = fix.find(ns_prefix + 'ID')
+        if fid_el is None:
+            continue
+        fid      = int(fid_el.text.strip())
+        mfr      = get_text(fix, ns_prefix + 'Manufacturer')
+        model    = get_text(fix, ns_prefix + 'Model')
+        mode     = get_text(fix, ns_prefix + 'Mode')
+        name     = get_text(fix, ns_prefix + 'Name')
+        universe = int(get_text(fix, ns_prefix + 'Universe') or '0')
+        address  = int(get_text(fix, ns_prefix + 'Address') or '0')
+        channels = int(get_text(fix, ns_prefix + 'Channels') or '0')
+        fixtures.append({
+            'id': fid, 'name': name, 'manufacturer': mfr,
+            'model': model, 'mode': mode, 'universe': universe,
+            'address': address, 'channels': channels,
+            'capabilities': determine_capabilities(model, channels),
+            'channel_map': build_channel_map(model, mode)
+        })
+    print(json.dumps({'fixtures': fixtures}))
+except Exception as e:
+    import sys as _sys
+    _sys.stderr.write('Error parsing workspace: ' + str(e) + '\n')
+    print(json.dumps({'fixtures': []}))
+" "$workspace_file"
 }
 
-# Determine fixture capabilities based on model
 function ai_determine_capabilities() {
   local manufacturer="$1"
   local model="$2"
@@ -298,6 +347,30 @@ Generate the scene XML now:
 PROMPT
 }
 
+# Clean AI response: strip markdown fences, extract XML
+function ai_clean_response() {
+  local text="$1"
+  
+  # Use Python for robust cleaning - handles all edge cases
+  echo "$text" | python3 -c "
+import sys, re
+
+text = sys.stdin.read()
+
+# Strip markdown code fences (e.g. \`\`\`xml ... \`\`\` or \`\`\` ... \`\`\`)
+fence_match = re.search(r'\`\`\`(?:xml)?\s*\n?(.*?)\n?\`\`\`', text, re.DOTALL)
+if fence_match:
+    text = fence_match.group(1).strip()
+
+# Extract XML: find from <?xml or <Function to last </Function>
+xml_match = re.search(r'(<\?xml.*?</Function>|<Function.*?</Function>)', text, re.DOTALL)
+if xml_match:
+    text = xml_match.group(1).strip()
+
+print(text)
+"
+}
+
 # Call AI API
 function ai_call_api() {
   local system_prompt="$1"
@@ -330,19 +403,46 @@ function ai_call_anthropic() {
 {
   "model": "${AI_MODEL}",
   "max_tokens": 4096,
-  "system": $(jq -Rs . <<< "$system_prompt"),
+  "system": $(echo "$system_prompt" | _json_encode),
   "messages": [
     {
       "role": "user",
-      "content": $(jq -Rs . <<< "$user_prompt")
+      "content": $(echo "$user_prompt" | _json_encode)
     }
   ]
 }
 JSON
 )
   
-  # Extract content from response
-  echo "$response" | jq -r '.content[0].text'
+  # Check for API errors
+  local error_type
+  error_type=$(echo "$response" | _json_extract 'error.type')
+  if [[ -n "$error_type" ]]; then
+    local error_msg
+    error_msg=$(echo "$response" | _json_extract 'error.message' 'Unknown error')
+    echo "Error: Anthropic API ($error_type): $error_msg" >&2
+    return 1
+  fi
+  
+  local generated_text
+  generated_text=$(echo "$response" | _json_extract 'content.0.text')
+  
+  if [[ -z "$generated_text" || "$generated_text" == "null" ]]; then
+    echo "Error: Empty response from Anthropic" >&2
+    return 1
+  fi
+  
+  # Debug: Save raw response
+  if [[ "${DEBUG:-}" == "true" ]]; then
+    echo "=== RAW ANTHROPIC RESPONSE ===" >&2
+    echo "$generated_text" >&2
+    echo "=== END RAW RESPONSE ===" >&2
+  fi
+  
+  # Clean response: strip markdown code blocks if present
+  generated_text=$(ai_clean_response "$generated_text")
+  
+  echo "$generated_text"
 }
 
 # Call OpenAI API
@@ -360,18 +460,55 @@ function ai_call_openai() {
   "messages": [
     {
       "role": "system",
-      "content": $(jq -Rs . <<< "$system_prompt")
+      "content": $(echo "$system_prompt" | _json_encode)
     },
     {
       "role": "user",
-      "content": $(jq -Rs . <<< "$user_prompt")
+      "content": $(echo "$user_prompt" | _json_encode)
     }
   ]
 }
 JSON
 )
   
-  echo "$response" | jq -r '.choices[0].message.content'
+  # Check for API errors
+  local error_msg
+  error_msg=$(echo "$response" | _json_extract 'error.message')
+  if [[ -n "$error_msg" ]]; then
+    echo "Error: OpenAI API: $error_msg" >&2
+    return 1
+  fi
+  
+  local generated_text
+  generated_text=$(echo "$response" | _json_extract 'choices.0.message.content')
+  
+  if [[ -z "$generated_text" || "$generated_text" == "null" ]]; then
+    echo "Error: Empty response from OpenAI" >&2
+    return 1
+  fi
+  
+  # Always log raw response for debugging
+  echo "$generated_text" > /tmp/qlc_ai_raw_response.txt 2>/dev/null || true
+  
+  # Debug: Save raw response
+  if [[ "${DEBUG:-}" == "true" ]]; then
+    echo "=== RAW OPENAI RESPONSE ===" >&2
+    echo "$generated_text" >&2
+    echo "=== END RAW RESPONSE ===" >&2
+  fi
+  
+  # Clean response: strip markdown code blocks if present
+  generated_text=$(ai_clean_response "$generated_text")
+  
+  # Log cleaned response
+  echo "$generated_text" > /tmp/qlc_ai_cleaned_response.txt 2>/dev/null || true
+  
+  if [[ -z "$generated_text" ]]; then
+    echo "Error: Response was empty after cleaning (raw response saved to /tmp/qlc_ai_raw_response.txt)" >&2
+    return 1
+  fi
+  
+  echo "$generated_text"
 }
 
 # Call Ollama (local LLM)
@@ -386,14 +523,14 @@ function ai_call_ollama() {
     -d @- <<JSON
 {
   "model": "${AI_MODEL}",
-  "prompt": $(echo "$combined_prompt" | jq -Rs .),
+  "prompt": $(echo "$combined_prompt" | _json_encode),
   "stream": false
 }
 JSON
 )
   
   local generated_text
-  generated_text=$(echo "$response" | jq -r '.response')
+  generated_text=$(echo "$response" | _json_extract 'response')
   
   # Debug: Save raw response
   if [[ "${DEBUG:-}" == "true" ]]; then
@@ -402,13 +539,10 @@ JSON
     echo "=== END RAW RESPONSE ===" >&2
   fi
   
-  # Try to extract XML if wrapped in markdown or other text
-  if echo "$generated_text" | grep -q '<?xml'; then
-    # Extract from first <?xml to last </Function>
-    echo "$generated_text" | sed -n '/<\?xml/,/<\/Function>/p'
-  else
-    echo "$generated_text"
-  fi
+  # Clean response: strip markdown code blocks, extract XML
+  generated_text=$(ai_clean_response "$generated_text")
+  
+  echo "$generated_text"
 }
 
 # Validate generated XML
@@ -416,18 +550,52 @@ function ai_validate_xml() {
   local xml_content="$1"
   local workspace_file="$2"
   
-  # Check XML syntax
-  if ! echo "$xml_content" | xmllint --noout - 2>/dev/null; then
-    echo "Error: Invalid XML syntax" >&2
-    return 1
+  local validate_content="$xml_content"
+  
+  # For modular style with multiple Function elements, wrap in a root
+  local func_count
+  func_count=$(echo "$xml_content" | grep -c '<Function ' || true)
+  
+  if [[ "$func_count" -gt 1 ]]; then
+    validate_content="<?xml version=\"1.0\" encoding=\"UTF-8\"?><Scenes>"
+    validate_content+=$(echo "$xml_content" | sed '/<\?xml/d; /<!DOCTYPE/d')
+    validate_content+="</Scenes>"
   fi
   
-  # TODO: Add more validation:
-  # - Fixture ID existence
-  # - Channel number validity
-  # - DMX value range (0-255)
+  # Validate using Python (xmllint may not be installed on Pi)
+  local py_result
+  py_result=$(echo "$validate_content" | python3 -c "
+import sys, re
+import xml.etree.ElementTree as ET
+content = sys.stdin.read().strip()
+if not content:
+    print('EMPTY'); sys.exit(1)
+try:
+    clean = re.sub(r'<!DOCTYPE[^>]*>', '', content)
+    root = ET.fromstring(clean)
+    if len(root.findall('.//FixtureVal')) == 0:
+        print('NO_FIXTURE_VALS'); sys.exit(1)
+    print('OK')
+except ET.ParseError as e:
+    print('PARSE_ERROR: ' + str(e)); sys.exit(1)
+" 2>&1)
   
-  return 0
+  case "$py_result" in
+    OK) return 0 ;;
+    EMPTY)
+      echo "Error: Empty XML content after cleaning" >&2
+      return 1 ;;
+    NO_FIXTURE_VALS)
+      echo "Error: AI returned empty scene (no FixtureVal elements)" >&2
+      echo "=== CONTENT ===" >&2; echo "$validate_content" >&2; echo "=== END ===" >&2
+      return 1 ;;
+    *)
+      echo "Error: Invalid XML syntax" >&2
+      echo "=== XML ERROR ===" >&2; echo "$py_result" >&2
+      echo "=== CONTENT (first 500 chars) ===" >&2
+      echo "$validate_content" | head -c 500 >&2; echo "" >&2; echo "=== END ===" >&2
+      return 1 ;;
+  esac
 }
 
 # Main scene generation function
@@ -522,7 +690,7 @@ function ai_generate_variations() {
     else
       json_output+=","
     fi
-    json_output+=$(echo "$var" | jq -Rs .)
+    json_output+=$(echo "$var" | _json_encode)
   done
   json_output+=']}'
   
@@ -530,6 +698,10 @@ function ai_generate_variations() {
 }
 
 # Export functions
+export -f _json_encode
+export -f _json_extract
+export -f _json_check
+export -f ai_clean_response
 export -f ai_validate_config
 export -f ai_extract_fixtures
 export -f ai_determine_capabilities

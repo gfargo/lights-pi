@@ -4,6 +4,25 @@
 
 set -euo pipefail
 
+# Python-based JSON helpers for templates (jq-free)
+# Emit fixture data as tab-separated lines: id\tchannels\tcapabilities_csv\tmodel
+_template_fixture_lines() {
+  python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for f in data.get('fixtures', []):
+    fid = f.get('id', '')
+    ch = f.get('channels', 0)
+    caps = ','.join(f.get('capabilities', []))
+    model = f.get('model', '')
+    print(f'{fid}\t{ch}\t{caps}\t{model}')
+"
+}
+
+_template_fixture_count() {
+  python3 -c "import sys,json; print(len(json.load(sys.stdin).get('fixtures',[])))"
+}
+
 # Template definitions
 # Each template defines DMX values for common fixture types
 
@@ -19,11 +38,7 @@ function template_youtube_studio() {
 XML
 
   # Set all fixtures to neutral white, high brightness
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     # Build DMX values based on capabilities
     local dmx_values=""
     
@@ -60,14 +75,10 @@ function template_party() {
 XML
 
   # Alternate fixtures between vibrant colors
-  local fixture_count=$(echo "$fixtures_json" | jq '.fixtures | length')
+  local fixture_count=$(echo "$fixtures_json" | _template_fixture_count)
   local color_index=0
   
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     local dmx_values=""
     
     if echo "$capabilities" | grep -q "rgb"; then
@@ -127,11 +138,7 @@ function template_ambient() {
 XML
 
   # Soft warm glow at low intensity
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     local dmx_values=""
     
     if echo "$capabilities" | grep -q "rgb"; then
@@ -166,11 +173,7 @@ XML
 
   # First fixture at full, others off
   local first=true
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     local dmx_values=""
     
     if [[ "$first" == true ]]; then
@@ -216,11 +219,7 @@ function template_work_light() {
 XML
 
   # All fixtures at full brightness, neutral white
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     local dmx_values=""
     
     if echo "$capabilities" | grep -q "rgb"; then
@@ -253,11 +252,7 @@ function template_warm_white() {
 XML
 
   # Warm white (high red, medium green, low blue)
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     local dmx_values=""
     
     if echo "$capabilities" | grep -q "rgb"; then
@@ -290,11 +285,7 @@ function template_cool_white() {
 XML
 
   # Cool white (low red, medium green, high blue)
-  echo "$fixtures_json" | jq -r '.fixtures[] | @json' | while IFS= read -r fixture; do
-    local id=$(echo "$fixture" | jq -r '.id')
-    local channels=$(echo "$fixture" | jq -r '.channels')
-    local capabilities=$(echo "$fixture" | jq -r '.capabilities[]' 2>/dev/null || echo "")
-    
+  echo "$fixtures_json" | _template_fixture_lines | while IFS=$'\t' read -r id channels capabilities model; do
     local dmx_values=""
     
     if echo "$capabilities" | grep -q "rgb"; then
@@ -381,6 +372,8 @@ function template_generate() {
 }
 
 # Export functions
+export -f _template_fixture_lines
+export -f _template_fixture_count
 export -f template_youtube_studio
 export -f template_party
 export -f template_ambient

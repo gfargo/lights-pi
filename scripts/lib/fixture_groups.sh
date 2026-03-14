@@ -7,6 +7,97 @@ set -euo pipefail
 # Configuration
 GROUPS_FILE="${GROUPS_FILE:-${HOME}/.qlcplus/fixture_groups.json}"
 
+# Python helper for all groups JSON operations (jq-free)
+_groups_py() {
+  python3 -c "
+import sys, json, os
+from datetime import datetime, timezone
+
+args = sys.argv[1:]
+cmd = args[0] if args else ''
+gfile = args[1] if len(args) > 1 else ''
+
+def load(f):
+    with open(f) as fh:
+        return json.load(fh)
+
+def save(f, data):
+    with open(f, 'w') as fh:
+        json.dump(data, fh, indent=2)
+
+if cmd == 'count':
+    data = load(gfile)
+    print(len(data.get('groups', {})))
+
+elif cmd == 'list':
+    data = load(gfile)
+    for name, g in data.get('groups', {}).items():
+        fixtures = ', '.join(g.get('fixtures', []))
+        desc = g.get('description', '') or 'No description'
+        print(f'  {name}')
+        print(f'    Fixtures: {fixtures}')
+        print(f'    Description: {desc}')
+        print()
+
+elif cmd == 'exists':
+    name = args[2]
+    data = load(gfile)
+    sys.exit(0 if name in data.get('groups', {}) else 1)
+
+elif cmd == 'create':
+    name, ids_json, desc = args[2], args[3], args[4] if len(args) > 4 else ''
+    data = load(gfile)
+    ids = json.loads(ids_json)
+    data.setdefault('groups', {})[name] = {
+        'fixtures': ids,
+        'description': desc,
+        'created': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    }
+    save(gfile, data)
+
+elif cmd == 'delete':
+    name = args[2]
+    data = load(gfile)
+    del data['groups'][name]
+    save(gfile, data)
+
+elif cmd == 'get':
+    name = args[2]
+    data = load(gfile)
+    print(json.dumps(data['groups'][name]['fixtures']))
+
+elif cmd == 'update_desc':
+    name, desc = args[2], args[3]
+    data = load(gfile)
+    data['groups'][name]['description'] = desc
+    save(gfile, data)
+
+elif cmd == 'add_fixtures':
+    name, ids_json = args[2], args[3]
+    data = load(gfile)
+    ids = json.loads(ids_json)
+    existing = data['groups'][name]['fixtures']
+    for fid in ids:
+        if fid not in existing:
+            existing.append(fid)
+    save(gfile, data)
+
+elif cmd == 'remove_fixtures':
+    name, ids_json = args[2], args[3]
+    data = load(gfile)
+    ids = json.loads(ids_json)
+    data['groups'][name]['fixtures'] = [f for f in data['groups'][name]['fixtures'] if f not in ids]
+    save(gfile, data)
+
+elif cmd == 'filter_fixtures':
+    # Read all_fixtures_json from stdin, filter by fixture_ids (args[2])
+    fixture_ids = json.loads(args[2])
+    all_data = json.load(sys.stdin)
+    filtered = [f for f in all_data.get('fixtures', []) if str(f.get('id', '')) in fixture_ids]
+    print(json.dumps({'fixtures': filtered}))
+" "$@"
+}
+
 # Initialize groups file if it doesn't exist
 function groups_init() {
   if [[ ! -f "$GROUPS_FILE" ]]; then
@@ -19,11 +110,8 @@ function groups_init() {
 function groups_list() {
   groups_init
   
-  local groups_json
-  groups_json=$(cat "$GROUPS_FILE")
-  
   local group_count
-  group_count=$(echo "$groups_json" | jq '.groups | length')
+  group_count=$(_groups_py count "$GROUPS_FILE")
   
   if [[ "$group_count" -eq 0 ]]; then
     echo "No fixture groups defined."
@@ -37,8 +125,7 @@ function groups_list() {
   echo "==============="
   echo ""
   
-  echo "$groups_json" | jq -r '.groups | to_entries[] | 
-    "  \(.key)\n    Fixtures: \(.value.fixtures | join(", "))\n    Description: \(.value.description // "No description")\n"'
+  _groups_py list "$GROUPS_FILE"
 }
 
 # Create a new group
@@ -55,27 +142,13 @@ function groups_create() {
     return 1
   fi
   
-  # Parse fixture IDs (comma-separated)
+  # Parse fixture IDs (comma-separated) into JSON array
   local ids_array
   IFS=',' read -ra ids_array <<< "$fixture_ids"
-  
-  # Build JSON array
   local json_ids
-  json_ids=$(printf '%s\n' "${ids_array[@]}" | jq -R . | jq -s .)
+  json_ids=$(printf '%s\n' "${ids_array[@]}" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))")
   
-  # Update groups file
-  local updated
-  updated=$(cat "$GROUPS_FILE" | jq \
-    --arg name "$name" \
-    --argjson ids "$json_ids" \
-    --arg desc "$description" \
-    '.groups[$name] = {
-      "fixtures": $ids,
-      "description": $desc,
-      "created": (now | todate)
-    }')
-  
-  echo "$updated" > "$GROUPS_FILE"
+  _groups_py create "$GROUPS_FILE" "$name" "$json_ids" "$description"
   
   echo "✓ Group '$name' created with ${#ids_array[@]} fixture(s)"
 }
@@ -86,16 +159,12 @@ function groups_delete() {
   
   groups_init
   
-  # Check if group exists
-  if ! cat "$GROUPS_FILE" | jq -e ".groups[\"$name\"]" >/dev/null 2>&1; then
+  if ! _groups_py exists "$GROUPS_FILE" "$name"; then
     echo "Error: Group '$name' not found" >&2
     return 1
   fi
   
-  # Delete group
-  local updated
-  updated=$(cat "$GROUPS_FILE" | jq --arg name "$name" 'del(.groups[$name])')
-  echo "$updated" > "$GROUPS_FILE"
+  _groups_py delete "$GROUPS_FILE" "$name"
   
   echo "✓ Group '$name' deleted"
 }
@@ -106,14 +175,12 @@ function groups_get() {
   
   groups_init
   
-  # Check if group exists
-  if ! cat "$GROUPS_FILE" | jq -e ".groups[\"$name\"]" >/dev/null 2>&1; then
+  if ! _groups_py exists "$GROUPS_FILE" "$name"; then
     echo "Error: Group '$name' not found" >&2
     return 1
   fi
   
-  # Return fixture IDs as JSON array
-  cat "$GROUPS_FILE" | jq -r ".groups[\"$name\"].fixtures | @json"
+  _groups_py get "$GROUPS_FILE" "$name"
 }
 
 # Update group description
@@ -123,20 +190,12 @@ function groups_update() {
   
   groups_init
   
-  # Check if group exists
-  if ! cat "$GROUPS_FILE" | jq -e ".groups[\"$name\"]" >/dev/null 2>&1; then
+  if ! _groups_py exists "$GROUPS_FILE" "$name"; then
     echo "Error: Group '$name' not found" >&2
     return 1
   fi
   
-  # Update description
-  local updated
-  updated=$(cat "$GROUPS_FILE" | jq \
-    --arg name "$name" \
-    --arg desc "$description" \
-    '.groups[$name].description = $desc')
-  
-  echo "$updated" > "$GROUPS_FILE"
+  _groups_py update_desc "$GROUPS_FILE" "$name" "$description"
   
   echo "✓ Group '$name' updated"
 }
@@ -148,25 +207,18 @@ function groups_add_fixtures() {
   
   groups_init
   
-  # Check if group exists
-  if ! cat "$GROUPS_FILE" | jq -e ".groups[\"$name\"]" >/dev/null 2>&1; then
+  if ! _groups_py exists "$GROUPS_FILE" "$name"; then
     echo "Error: Group '$name' not found" >&2
     return 1
   fi
   
-  # Parse fixture IDs
+  # Parse fixture IDs into JSON array
   local ids_array
   IFS=',' read -ra ids_array <<< "$fixture_ids"
+  local json_ids
+  json_ids=$(printf '%s\n' "${ids_array[@]}" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))")
   
-  # Add to existing fixtures
-  local updated
-  for id in "${ids_array[@]}"; do
-    updated=$(cat "$GROUPS_FILE" | jq \
-      --arg name "$name" \
-      --arg id "$id" \
-      '.groups[$name].fixtures += [$id] | .groups[$name].fixtures |= unique')
-    echo "$updated" > "$GROUPS_FILE"
-  done
+  _groups_py add_fixtures "$GROUPS_FILE" "$name" "$json_ids"
   
   echo "✓ Added ${#ids_array[@]} fixture(s) to group '$name'"
 }
@@ -178,25 +230,18 @@ function groups_remove_fixtures() {
   
   groups_init
   
-  # Check if group exists
-  if ! cat "$GROUPS_FILE" | jq -e ".groups[\"$name\"]" >/dev/null 2>&1; then
+  if ! _groups_py exists "$GROUPS_FILE" "$name"; then
     echo "Error: Group '$name' not found" >&2
     return 1
   fi
   
-  # Parse fixture IDs
+  # Parse fixture IDs into JSON array
   local ids_array
   IFS=',' read -ra ids_array <<< "$fixture_ids"
+  local json_ids
+  json_ids=$(printf '%s\n' "${ids_array[@]}" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))")
   
-  # Remove from fixtures
-  local updated
-  for id in "${ids_array[@]}"; do
-    updated=$(cat "$GROUPS_FILE" | jq \
-      --arg name "$name" \
-      --arg id "$id" \
-      '.groups[$name].fixtures -= [$id]')
-    echo "$updated" > "$GROUPS_FILE"
-  done
+  _groups_py remove_fixtures "$GROUPS_FILE" "$name" "$json_ids"
   
   echo "✓ Removed ${#ids_array[@]} fixture(s) from group '$name'"
 }
@@ -231,9 +276,7 @@ function groups_generate_scene() {
   
   # Filter to only group fixtures
   local group_fixtures_json
-  group_fixtures_json=$(echo "$all_fixtures_json" | jq \
-    --argjson ids "$fixture_ids" \
-    '{fixtures: [.fixtures[] | select(.id | tostring | IN($ids[]))]}')
+  group_fixtures_json=$(echo "$all_fixtures_json" | _groups_py filter_fixtures "" "$fixture_ids")
   
   # Build prompts
   local system_prompt
@@ -287,9 +330,7 @@ function groups_apply_template() {
   
   # Filter to only group fixtures
   local group_fixtures_json
-  group_fixtures_json=$(echo "$all_fixtures_json" | jq \
-    --argjson ids "$fixture_ids" \
-    '{fixtures: [.fixtures[] | select(.id | tostring | IN($ids[]))]}')
+  group_fixtures_json=$(echo "$all_fixtures_json" | _groups_py filter_fixtures "" "$fixture_ids")
   
   # Generate template
   echo "Applying template '$template_name' to group '$group_name'..." >&2
@@ -304,6 +345,7 @@ function groups_apply_template() {
 }
 
 # Export functions
+export -f _groups_py
 export -f groups_init
 export -f groups_list
 export -f groups_create

@@ -1097,6 +1097,7 @@ function command_group_template() {
   local preview=false
   local add_to_workspace=false
   local output_file=""
+  local workspace_file=""
   
   # Parse options
   while [[ $# -gt 0 ]]; do
@@ -1104,13 +1105,14 @@ function command_group_template() {
       --preview) preview=true; shift ;;
       --add-to-workspace) add_to_workspace=true; shift ;;
       --output) output_file="$2"; shift 2 ;;
+      --workspace) workspace_file="$2"; shift 2 ;;
       *) echo "Unknown option: $1" >&2; return 1 ;;
     esac
   done
   
-  # Apply template
+  # Apply template (pass workspace_file if provided)
   local scene_xml
-  scene_xml=$(groups_apply_template "$group_name" "$template_name")
+  scene_xml=$(groups_apply_template "$group_name" "$template_name" "${workspace_file:-}")
   
   if [[ $? -ne 0 ]]; then
     return 1

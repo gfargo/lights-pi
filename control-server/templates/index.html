@@ -5,11 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lighting Control</title>
     <style>
-        *, *::before, *::after {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             min-height: 100vh;
@@ -19,419 +15,297 @@
             padding: 2rem 1rem;
         }
 
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
+        .container { max-width: 900px; margin: 0 auto; }
 
-        .header {
-            text-align: center;
-            margin-bottom: 3rem;
-        }
-
-        .logo-icon {
-            width: 48px;
-            height: 48px;
-            opacity: 0.9;
-            margin-bottom: 1rem;
-        }
+        .header { text-align: center; margin-bottom: 2rem; }
+        .logo-icon { width: 48px; height: 48px; opacity: 0.9; margin-bottom: 1rem; }
 
         h1 {
-            font-size: 1.75rem;
-            font-weight: 600;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: #ffffff;
-            margin-bottom: 0.5rem;
+            font-size: 1.75rem; font-weight: 600; letter-spacing: 0.08em;
+            text-transform: uppercase; color: #ffffff; margin-bottom: 0.5rem;
         }
+        .subtitle { font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; color: #666; }
 
-        .subtitle {
-            font-size: 0.75rem;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            color: #666;
-        }
-
-        .status {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            padding: 0.75rem 1rem;
-            border-radius: 0;
-            margin-bottom: 2rem;
-            font-size: 0.85rem;
-            color: #999;
-            text-align: center;
-        }
-
-        .status.online {
-            background: #0d2818;
-            border-color: #1a4d2e;
-            color: #4ade80;
-        }
-
-        .tabs {
+        /* ── Top bar: health + groups toggle ── */
+        .top-bar {
             display: flex;
-            gap: 0.5rem;
+            align-items: stretch;
+            gap: 0;
             margin-bottom: 2rem;
-            border-bottom: 1px solid #333;
-            overflow-x: auto;
         }
-
-        .tab {
-            padding: 0.75rem 1.5rem;
-            background: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            cursor: pointer;
-            font-size: 0.85rem;
-            font-weight: 600;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            color: #666;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
-
-        .tab:hover {
-            color: #f0f0f0;
-        }
-
-        .tab.active {
-            color: #f0f0f0;
-            border-bottom-color: #f0f0f0;
-        }
-
-        .tab-content {
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
-        }
-
-        /* AI Control Tab */
-        .input-group {
-            display: flex;
-            gap: 0.5rem;
-            margin-bottom: 1.5rem;
-        }
-
-        #commandInput {
+        .health-widget {
             flex: 1;
-            padding: 0.875rem 1rem;
             background: #1a1a1a;
             border: 1px solid #333;
+            border-right: none;
+            overflow: hidden;
+        }
+        .groups-toggle-btn {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: #888;
+            padding: 0 1.25rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            cursor: pointer;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.15s;
             border-radius: 0;
-            font-size: 0.95rem;
-            color: #f0f0f0;
-            transition: border-color 0.2s;
         }
+        .groups-toggle-btn:hover { background: #222; color: #f0f0f0; }
+        .groups-toggle-btn.active { background: #f0f0f0; color: #0a0a0a; border-color: #f0f0f0; }
+        .groups-toggle-btn .gt-icon { font-size: 1rem; line-height: 1; }
 
-        #commandInput:focus {
-            outline: none;
-            border-color: #555;
+        /* ── Health Widget internals ── */
+        .health-summary {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.625rem 1rem; cursor: pointer; user-select: none; transition: background 0.15s;
         }
+        .health-summary:hover { background: #222; }
+        .health-left { display: flex; align-items: center; gap: 0.625rem; }
+        .health-dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex-shrink: 0; }
+        .health-dot.ok { background: #4ade80; }
+        .health-dot.warn { background: #facc15; }
+        .health-dot.err { background: #f87171; }
+        .health-label { font-size: 0.8rem; color: #ccc; letter-spacing: 0.03em; }
+        .health-pills { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+        .health-pill {
+            display: flex; align-items: center; gap: 0.3rem;
+            font-size: 0.7rem; color: #888; background: #111; padding: 0.2rem 0.5rem; border-radius: 2px;
+        }
+        .health-pill .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+        .health-pill .dot.ok { background: #4ade80; }
+        .health-pill .dot.err { background: #f87171; }
+        .health-chevron { font-size: 0.7rem; color: #555; transition: transform 0.2s; margin-left: 0.5rem; }
+        .health-widget.expanded .health-chevron { transform: rotate(180deg); }
+        .health-details { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
+        .health-widget.expanded .health-details { max-height: 400px; }
+        .health-detail-list { border-top: 1px solid #222; padding: 0.5rem 0; }
+        .health-row { display: flex; align-items: center; padding: 0.5rem 1rem; gap: 0.75rem; font-size: 0.8rem; }
+        .health-row:hover { background: #151515; }
+        .health-row .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .health-row .dot.ok { background: #4ade80; }
+        .health-row .dot.err { background: #f87171; }
+        .health-row-name { min-width: 130px; color: #ccc; font-weight: 500; }
+        .health-row-detail { color: #777; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .health-row-badge { font-size: 0.7rem; color: #555; background: #111; padding: 0.15rem 0.4rem; border-radius: 2px; white-space: nowrap; }
 
-        #commandInput::placeholder {
-            color: #555;
+        /* ── Groups Drawer ── */
+        .drawer-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+            z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.25s;
         }
+        .drawer-overlay.open { opacity: 1; pointer-events: all; }
+
+        .groups-drawer {
+            position: fixed; top: 0; right: 0; bottom: 0;
+            width: 340px; max-width: 92vw;
+            background: #111; border-left: 1px solid #2a2a2a;
+            z-index: 101; display: flex; flex-direction: column;
+            transform: translateX(100%); transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+            overflow: hidden;
+        }
+        .groups-drawer.open { transform: translateX(0); }
+
+        .drawer-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 1rem 1.25rem; border-bottom: 1px solid #222; flex-shrink: 0;
+        }
+        .drawer-title { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #ccc; }
+        .drawer-close {
+            background: none; border: none; color: #555; font-size: 1.2rem;
+            cursor: pointer; padding: 0.25rem; line-height: 1; transition: color 0.15s;
+        }
+        .drawer-close:hover { color: #f0f0f0; }
+
+        .drawer-body { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; }
+        .drawer-body::-webkit-scrollbar { width: 4px; }
+        .drawer-body::-webkit-scrollbar-track { background: #111; }
+        .drawer-body::-webkit-scrollbar-thumb { background: #333; }
+
+        .drawer-group { margin-bottom: 1.25rem; border: 1px solid #222; }
+        .drawer-group-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.75rem 1rem; cursor: pointer; user-select: none;
+            background: #161616; transition: background 0.15s;
+        }
+        .drawer-group-header:hover { background: #1e1e1e; }
+        .drawer-group-meta { display: flex; flex-direction: column; gap: 0.2rem; }
+        .drawer-group-name { font-size: 0.9rem; font-weight: 600; color: #f0f0f0; }
+        .drawer-group-count { font-size: 0.7rem; color: #555; letter-spacing: 0.04em; }
+        .drawer-group-chevron { font-size: 0.65rem; color: #444; transition: transform 0.2s; }
+        .drawer-group.expanded .drawer-group-chevron { transform: rotate(180deg); }
+
+        .drawer-group-scenes {
+            display: flex; flex-wrap: wrap; gap: 0.375rem;
+            padding: 0.75rem 1rem; border-top: 1px solid #1e1e1e; background: #131313;
+        }
+        .drawer-scene-btn {
+            background: #1e1e1e; border: 1px solid #2a2a2a; color: #aaa;
+            padding: 0.35rem 0.75rem; font-size: 0.75rem; font-weight: 600;
+            cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; border-radius: 0;
+        }
+        .drawer-scene-btn:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
+
+        .drawer-fixture-list {
+            max-height: 0; overflow: hidden; transition: max-height 0.2s ease;
+            background: #0e0e0e;
+        }
+        .drawer-group.expanded .drawer-fixture-list { max-height: 300px; }
+        .drawer-fixture-item {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.4rem 1rem; border-top: 1px solid #1a1a1a; font-size: 0.75rem; color: #666;
+        }
+        .drawer-fixture-dot { width: 5px; height: 5px; border-radius: 50%; background: #333; flex-shrink: 0; }
+
+        /* ── Tabs ── */
+        .tabs {
+            display: flex; gap: 0.5rem; margin-bottom: 2rem;
+            border-bottom: 1px solid #333; overflow-x: auto;
+        }
+        .tab {
+            padding: 0.75rem 1.5rem; background: transparent; border: none;
+            border-bottom: 2px solid transparent; cursor: pointer;
+            font-size: 0.85rem; font-weight: 600; letter-spacing: 0.05em;
+            text-transform: uppercase; color: #666; transition: all 0.2s; white-space: nowrap;
+        }
+        .tab:hover { color: #f0f0f0; }
+        .tab.active { color: #f0f0f0; border-bottom-color: #f0f0f0; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* ── AI Control ── */
+        .input-group { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+        #commandInput {
+            flex: 1; padding: 0.875rem 1rem; background: #1a1a1a; border: 1px solid #333;
+            border-radius: 0; font-size: 0.95rem; color: #f0f0f0; transition: border-color 0.2s;
+        }
+        #commandInput:focus { outline: none; border-color: #555; }
+        #commandInput::placeholder { color: #555; }
 
         button {
-            padding: 0.875rem 1.5rem;
-            border: none;
-            border-radius: 0;
-            font-size: 0.9rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            letter-spacing: 0.03em;
+            padding: 0.875rem 1.5rem; border: none; border-radius: 0;
+            font-size: 0.9rem; font-weight: 600; cursor: pointer;
+            transition: all 0.2s; letter-spacing: 0.03em;
         }
+        #sendBtn { background: #f0f0f0; color: #0a0a0a; }
+        #sendBtn:hover:not(:disabled) { background: #ffffff; }
+        #sendBtn:disabled { background: #333; color: #666; cursor: not-allowed; }
+        #voiceBtn { background: #1a1a1a; border: 1px solid #333; color: #f0f0f0; min-width: 50px; }
+        #voiceBtn:hover { background: #222; }
+        #voiceBtn.listening { background: #dc2626; border-color: #dc2626; animation: pulse 1.5s infinite; }
 
-        #sendBtn {
-            background: #f0f0f0;
-            color: #0a0a0a;
-        }
-
-        #sendBtn:hover:not(:disabled) {
-            background: #ffffff;
-        }
-
-        #sendBtn:disabled {
-            background: #333;
-            color: #666;
-            cursor: not-allowed;
-        }
-
-        #voiceBtn {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            color: #f0f0f0;
-            min-width: 50px;
-        }
-
-        #voiceBtn:hover {
-            background: #222;
-        }
-
-        #voiceBtn.listening {
-            background: #dc2626;
-            border-color: #dc2626;
-            animation: pulse 1.5s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
 
         .section-title {
-            font-size: 0.75rem;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            color: #666;
-            margin-bottom: 1rem;
+            font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase;
+            color: #666; margin-bottom: 0.75rem;
         }
 
-        .example-chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-bottom: 2rem;
-        }
-
+        /* ── Quick Commands ── */
+        .example-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
         .chip {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            padding: 0.5rem 1rem;
-            border-radius: 0;
-            font-size: 0.85rem;
-            color: #999;
-            cursor: pointer;
-            transition: all 0.2s;
+            background: #1a1a1a; border: 1px solid #333; padding: 0.5rem 1rem;
+            border-radius: 0; font-size: 0.85rem; color: #999; cursor: pointer; transition: all 0.2s;
         }
+        .chip:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
 
-        .chip:hover {
-            background: #f0f0f0;
-            border-color: #f0f0f0;
-            color: #0a0a0a;
+        /* ── Target Groups (AI tab) ── */
+        .target-groups-row {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+            margin-bottom: 1.5rem; padding: 0.75rem; background: #111; border: 1px solid #222;
         }
-
-        /* Groups Tab */
-        .group-item {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            padding: 1rem;
-            border-radius: 0;
-            margin-bottom: 0.75rem;
+        .target-label {
+            font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase;
+            color: #555; margin-right: 0.25rem; white-space: nowrap;
         }
-
-        .group-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.75rem;
+        .group-chip {
+            background: #1a1a1a; border: 1px solid #2a2a2a; color: #666;
+            padding: 0.35rem 0.875rem; font-size: 0.78rem; font-weight: 600;
+            cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; border-radius: 0;
+            user-select: none;
         }
-
-        .group-name {
-            font-weight: 600;
-            color: #f0f0f0;
-            font-size: 0.95rem;
+        .group-chip:hover { border-color: #555; color: #ccc; }
+        .group-chip.active {
+            background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a;
         }
-
-        .group-fixtures {
-            font-size: 0.75rem;
-            color: #666;
-            letter-spacing: 0.05em;
+        .group-chip-all {
+            background: #1a1a1a; border: 1px solid #2a2a2a; color: #555;
+            padding: 0.35rem 0.875rem; font-size: 0.78rem; font-weight: 600;
+            cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; border-radius: 0;
+            user-select: none;
         }
+        .group-chip-all.active { background: #222; border-color: #444; color: #888; }
 
-        .group-templates {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .template-btn {
-            background: #f0f0f0;
-            color: #0a0a0a;
-            padding: 0.4rem 0.875rem;
-            border-radius: 0;
-            font-size: 0.8rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: none;
-            letter-spacing: 0.03em;
-        }
-
-        .template-btn:hover {
-            background: #ffffff;
-        }
-
-        /* Virtual Console Tab */
-        .fixture-control {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            padding: 1rem;
-            border-radius: 0;
-            margin-bottom: 0.75rem;
-        }
-
-        .fixture-name {
-            font-weight: 600;
-            color: #f0f0f0;
-            margin-bottom: 0.75rem;
-            font-size: 0.95rem;
-        }
-
-        .channel-controls {
-            display: grid;
-            gap: 0.75rem;
-        }
-
-        .channel-control {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .channel-label {
-            min-width: 70px;
-            font-size: 0.8rem;
-            color: #999;
-            letter-spacing: 0.03em;
-        }
-
+        /* ── Virtual Console ── */
+        .fixture-control { background: #1a1a1a; border: 1px solid #333; padding: 1rem; margin-bottom: 0.75rem; }
+        .fixture-name { font-weight: 600; color: #f0f0f0; margin-bottom: 0.75rem; font-size: 0.95rem; }
+        .channel-controls { display: grid; gap: 0.75rem; }
+        .channel-control { display: flex; align-items: center; gap: 0.75rem; }
+        .channel-label { min-width: 70px; font-size: 0.8rem; color: #999; letter-spacing: 0.03em; }
         .channel-slider {
-            flex: 1;
-            height: 6px;
-            border-radius: 0;
-            background: #333;
-            outline: none;
-            -webkit-appearance: none;
-            cursor: pointer;
+            flex: 1; height: 6px; background: #333; outline: none;
+            -webkit-appearance: none; appearance: none; cursor: pointer;
         }
+        .channel-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; background: #f0f0f0; cursor: pointer; }
+        .channel-slider::-moz-range-thumb { width: 16px; height: 16px; background: #f0f0f0; cursor: pointer; border: none; }
+        .channel-value { min-width: 35px; text-align: right; font-size: 0.8rem; font-weight: 600; color: #f0f0f0; font-variant-numeric: tabular-nums; }
 
-        .channel-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            border-radius: 0;
-            background: #f0f0f0;
-            cursor: pointer;
-        }
-
-        .channel-slider::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            border-radius: 0;
-            background: #f0f0f0;
-            cursor: pointer;
-            border: none;
-        }
-
-        .channel-value {
-            min-width: 35px;
-            text-align: right;
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #f0f0f0;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* History */
-        .history {
-            margin-top: 2rem;
-        }
-
+        /* ── History ── */
+        .history { margin-top: 1.5rem; }
         .history-item {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-left: 3px solid #f0f0f0;
-            padding: 0.875rem;
-            border-radius: 0;
-            margin-bottom: 0.5rem;
+            background: #1a1a1a; border: 1px solid #333; border-left: 3px solid #f0f0f0;
+            padding: 0.875rem; margin-bottom: 0.5rem;
+        }
+        .history-item.error { border-left-color: #f87171; background: #1a0a0a; }
+        .history-item.pending { border-left-color: #555; opacity: 0.7; }
+        .history-item.success { border-left-color: #4ade80; }
+        .pending-dots span { animation: blink 1.2s infinite; color: #666; font-size: 1.2rem; line-height: 1; }
+        .pending-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .pending-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
+        .history-log { font-size: 0.72rem; color: #555; white-space: pre-wrap; margin-top: 2px; line-height: 1.4; }
+        .history-command { font-weight: 600; color: #f0f0f0; margin-bottom: 0.25rem; font-size: 0.9rem; }
+        .history-action { font-size: 0.8rem; color: #999; }
+        .history-meta { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.35rem; flex-wrap: wrap; }
+        .history-time { font-size: 0.7rem; color: #666; }
+        .history-badge { font-size: 0.65rem; padding: 0.1rem 0.4rem; border-radius: 2px; font-variant-numeric: tabular-nums; }
+        .badge-latency { background: #1a1a2e; color: #818cf8; }
+        .badge-action  { background: #1a2e1a; color: #4ade80; }
+        .badge-error   { background: #2e1a1a; color: #f87171; }
+        .badge-model   { background: #1a1a1a; color: #666; border: 1px solid #333; }
+        .badge-group   { background: #1a1e2e; color: #7aa2f7; }
+        .history-debug-toggle { font-size: 0.7rem; color: #555; cursor: pointer; user-select: none; margin-left: auto; }
+        .history-debug-toggle:hover { color: #999; }
+        .history-debug { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; }
+        .history-debug.open { max-height: 300px; }
+        .history-debug-inner {
+            margin-top: 0.5rem; padding: 0.5rem; background: #111; border: 1px solid #222;
+            font-size: 0.7rem; font-family: "SF Mono", "Fira Code", monospace; color: #888;
+            white-space: pre-wrap; word-break: break-all; max-height: 250px; overflow-y: auto;
         }
 
-        .history-item.error {
-            border-left-color: #dc2626;
-            background: #1a0a0a;
-        }
+        /* ── Loading ── */
+        .loading { display: none; text-align: center; padding: 2rem; color: #f0f0f0; }
+        .loading.active { display: block; }
+        .spinner { border: 3px solid #333; border-top: 3px solid #f0f0f0; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 1rem; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
-        .history-command {
-            font-weight: 600;
-            color: #f0f0f0;
-            margin-bottom: 0.25rem;
-            font-size: 0.9rem;
-        }
-
-        .history-action {
-            font-size: 0.8rem;
-            color: #999;
-        }
-
-        .history-time {
-            font-size: 0.7rem;
-            color: #666;
-            margin-top: 0.25rem;
-        }
-
-        /* Loading */
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 2rem;
-            color: #f0f0f0;
-        }
-
-        .loading.active {
-            display: block;
-        }
-
-        .spinner {
-            border: 3px solid #333;
-            border-top: 3px solid #f0f0f0;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 1rem;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        footer {
-            text-align: center;
-            margin-top: 3rem;
-            font-size: 0.7rem;
-            color: #333;
-            letter-spacing: 0.05em;
-        }
+        footer { text-align: center; margin-top: 3rem; font-size: 0.7rem; color: #333; letter-spacing: 0.05em; }
 
         @media (max-width: 600px) {
-            body {
-                padding: 1rem 0.75rem;
-            }
-
-            h1 {
-                font-size: 1.25rem;
-            }
-
-            .input-group {
-                flex-direction: column;
-            }
-
-            #voiceBtn {
-                width: 100%;
-            }
-
-            .tab {
-                padding: 0.75rem 1rem;
-                font-size: 0.75rem;
-            }
+            body { padding: 1rem 0.75rem; }
+            h1 { font-size: 1.25rem; }
+            .input-group { flex-direction: column; }
+            #voiceBtn { width: 100%; }
+            .tab { padding: 0.75rem 1rem; font-size: 0.75rem; }
+            .health-pills { display: none; }
+            .groups-drawer { width: 100%; max-width: 100vw; }
         }
     </style>
 </head>
@@ -454,25 +328,50 @@
             <p class="subtitle">Advanced Control Interface</p>
         </div>
 
-        <div id="status" class="status">
-            Checking connection...
+        <!-- Top bar: health widget + groups drawer toggle -->
+        <div class="top-bar">
+            <div class="health-widget" id="healthWidget">
+                <div class="health-summary" onclick="toggleHealth()">
+                    <div class="health-left">
+                        <div class="health-dot" id="healthDot"></div>
+                        <span class="health-label" id="healthLabel">Checking services…</span>
+                    </div>
+                    <div style="display:flex;align-items:center;">
+                        <div class="health-pills" id="healthPills"></div>
+                        <span class="health-chevron" id="healthChevron">▼</span>
+                    </div>
+                </div>
+                <div class="health-details">
+                    <div class="health-detail-list" id="healthDetailList"></div>
+                </div>
+            </div>
+            <button class="groups-toggle-btn" id="groupsToggleBtn" onclick="toggleDrawer()" aria-label="Toggle groups panel">
+                <span class="gt-icon">⊞</span> Groups
+            </button>
         </div>
 
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('ai')">AI Control</button>
-            <button class="tab" onclick="switchTab('groups')">Groups</button>
-            <button class="tab" onclick="switchTab('console')">Virtual Console</button>
+        <!-- Groups slide-out drawer -->
+        <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+        <div class="groups-drawer" id="groupsDrawer" role="dialog" aria-label="Fixture Groups">
+            <div class="drawer-header">
+                <span class="drawer-title">Fixture Groups</span>
+                <button class="drawer-close" onclick="closeDrawer()" aria-label="Close groups panel">✕</button>
+            </div>
+            <div class="drawer-body" id="drawerBody">
+                <p style="color:#555;font-size:0.8rem;">Loading groups…</p>
+            </div>
+        </div>
+
+        <!-- Tabs: AI Control + Virtual Console only -->
+        <div class="tabs" role="tablist">
+            <button class="tab active" onclick="switchTab('ai', this)" role="tab" aria-selected="true">AI Control</button>
+            <button class="tab" onclick="switchTab('console', this)" role="tab" aria-selected="false">Virtual Console</button>
         </div>
 
         <div id="ai-tab" class="tab-content active">
             <div class="input-group">
-                <input 
-                    type="text" 
-                    id="commandInput" 
-                    placeholder="Try: 'make it warmer' or 'party mode'"
-                    autocomplete="off"
-                >
-                <button id="voiceBtn" title="Voice input">🎤</button>
+                <input type="text" id="commandInput" placeholder="Try: 'make it warmer' or 'party mode'" autocomplete="off" aria-label="Lighting command">
+                <button id="voiceBtn" title="Voice input" aria-label="Voice input">🎤</button>
                 <button id="sendBtn">Send</button>
             </div>
 
@@ -487,20 +386,21 @@
                 <span class="chip" data-command="fade to black">Fade Out</span>
             </div>
 
+            <div id="targetGroupsRow" class="target-groups-row" style="display:none;">
+                <span class="target-label">Target</span>
+                <span class="group-chip-all active" id="chipAll" onclick="toggleAllGroups()">All Fixtures</span>
+                <span id="groupChips"></span>
+            </div>
+
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <p>Processing command...</p>
+                <p>Processing command…</p>
             </div>
 
             <div class="history">
                 <div class="section-title">Command History</div>
                 <div id="historyList"></div>
             </div>
-        </div>
-
-        <div id="groups-tab" class="tab-content">
-            <div class="section-title">Fixture Groups</div>
-            <div id="groupsList"></div>
         </div>
 
         <div id="console-tab" class="tab-content">
@@ -512,84 +412,149 @@
     </div>
 
     <script>
+        /* ── DOM refs ── */
         const commandInput = document.getElementById('commandInput');
         const sendBtn = document.getElementById('sendBtn');
         const voiceBtn = document.getElementById('voiceBtn');
         const loading = document.getElementById('loading');
         const historyList = document.getElementById('historyList');
-        const statusDiv = document.getElementById('status');
 
         let recognition = null;
         let isListening = false;
 
-        // Tab switching
-        function switchTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            
-            document.getElementById(`${tabName}-tab`).classList.add('active');
-            event.target.classList.add('active');
-            
-            if (tabName === 'groups') {
-                loadGroups();
-            } else if (tabName === 'console') {
-                loadFixtures();
+        /* ══════════════════════════════════════
+           Health Widget
+           ══════════════════════════════════════ */
+        let healthExpanded = false;
+        function toggleHealth() {
+            healthExpanded = !healthExpanded;
+            document.getElementById('healthWidget').classList.toggle('expanded', healthExpanded);
+        }
+
+        function renderHealth(data) {
+            const dot = document.getElementById('healthDot');
+            const label = document.getElementById('healthLabel');
+            const pills = document.getElementById('healthPills');
+            const detailList = document.getElementById('healthDetailList');
+            const services = data.services || {};
+            const keys = Object.keys(services);
+            const allOk = keys.every(k => services[k].ok);
+            const anyOk = keys.some(k => services[k].ok);
+            dot.className = 'health-dot ' + (allOk ? 'ok' : anyOk ? 'warn' : 'err');
+            const okCount = keys.filter(k => services[k].ok).length;
+            const modeTag = data.is_local ? 'local' : 'remote';
+            label.textContent = allOk ? `All systems operational (${modeTag})` : `${okCount}/${keys.length} services up (${modeTag})`;
+            pills.innerHTML = keys.map(k => {
+                const s = services[k];
+                return `<span class="health-pill"><span class="dot ${s.ok?'ok':'err'}"></span>${s.name}</span>`;
+            }).join('');
+            detailList.innerHTML = keys.map(k => {
+                const s = services[k];
+                let badges = '';
+                if (s.model) badges += `<span class="health-row-badge">${s.model}</span>`;
+                if (s.latency_ms != null) badges += `<span class="health-row-badge">${s.latency_ms}ms</span>`;
+                if (s.url) badges += `<span class="health-row-badge">${s.url}</span>`;
+                return `<div class="health-row"><span class="dot ${s.ok?'ok':'err'}"></span><span class="health-row-name">${s.name}</span><span class="health-row-detail">${s.detail}</span>${badges}</div>`;
+            }).join('');
+        }
+
+        async function checkStatus() {
+            try {
+                const r = await fetch('/api/status');
+                renderHealth(await r.json());
+            } catch (e) {
+                renderHealth({ services: { server: { name: 'Control Server', ok: false, detail: 'unreachable' } } });
             }
         }
 
-        // Initialize speech recognition
+        /* ══════════════════════════════════════
+           Groups Drawer
+           ══════════════════════════════════════ */
+        let drawerOpen = false;
+        let groupsLoaded = false;
+
+        function toggleDrawer() {
+            drawerOpen ? closeDrawer() : openDrawer();
+        }
+
+        function openDrawer() {
+            drawerOpen = true;
+            document.getElementById('groupsDrawer').classList.add('open');
+            document.getElementById('drawerOverlay').classList.add('open');
+            document.getElementById('groupsToggleBtn').classList.add('active');
+            document.body.style.overflow = 'hidden';
+            if (!groupsLoaded) loadGroups();
+        }
+
+        function closeDrawer() {
+            drawerOpen = false;
+            document.getElementById('groupsDrawer').classList.remove('open');
+            document.getElementById('drawerOverlay').classList.remove('open');
+            document.getElementById('groupsToggleBtn').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        function toggleDrawerGroup(el) {
+            el.closest('.drawer-group').classList.toggle('expanded');
+        }
+
+        /* ══════════════════════════════════════
+           Target Groups (AI tab chips)
+           ══════════════════════════════════════ */
+        let selectedGroups = new Set(); // empty = all fixtures
+
+        function toggleAllGroups() {
+            selectedGroups.clear();
+            renderGroupChips();
+        }
+
+        function toggleGroupChip(name) {
+            if (selectedGroups.has(name)) {
+                selectedGroups.delete(name);
+            } else {
+                selectedGroups.add(name);
+            }
+            renderGroupChips();
+        }
+
+        function renderGroupChips() {
+            const chipAll = document.getElementById('chipAll');
+            chipAll.classList.toggle('active', selectedGroups.size === 0);
+            document.querySelectorAll('.group-chip').forEach(c => {
+                c.classList.toggle('active', selectedGroups.has(c.dataset.group));
+            });
+        }
+
+        /* ══════════════════════════════════════
+           Tab switching
+           ══════════════════════════════════════ */
+        function switchTab(tabName, btn) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected','false'); });
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            btn.classList.add('active');
+            btn.setAttribute('aria-selected','true');
+            if (tabName === 'console') loadFixtures();
+        }
+
+        /* ══════════════════════════════════════
+           Speech recognition
+           ══════════════════════════════════════ */
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition = new SpeechRecognition();
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SR();
             recognition.continuous = false;
             recognition.interimResults = false;
-
-            recognition.onresult = (event) => {
-                const transcript = event.results[0][0].transcript;
-                commandInput.value = transcript;
-                sendCommand();
-            };
-
-            recognition.onend = () => {
-                isListening = false;
-                voiceBtn.classList.remove('listening');
-                voiceBtn.textContent = '🎤';
-            };
-
-            recognition.onerror = (event) => {
-                console.error('Speech recognition error:', event.error);
-                isListening = false;
-                voiceBtn.classList.remove('listening');
-                voiceBtn.textContent = '🎤';
-            };
+            recognition.onresult = (e) => { commandInput.value = e.results[0][0].transcript; sendCommand(); };
+            recognition.onend = () => { isListening = false; voiceBtn.classList.remove('listening'); voiceBtn.textContent = '🎤'; };
+            recognition.onerror = () => { isListening = false; voiceBtn.classList.remove('listening'); voiceBtn.textContent = '🎤'; };
         } else {
             voiceBtn.style.display = 'none';
         }
 
-        // Check status
-        async function checkStatus() {
-            try {
-                const response = await fetch('/api/status');
-                const data = await response.json();
-                
-                if (data.qlc_running) {
-                    statusDiv.className = 'status online';
-                    statusDiv.textContent = `✓ Connected • ${data.ai_provider} (${data.ai_model})`;
-                } else {
-                    statusDiv.className = 'status';
-                    statusDiv.textContent = '⚠ QLC+ not running';
-                }
-            } catch (error) {
-                statusDiv.className = 'status';
-                statusDiv.textContent = '✗ Connection error';
-            }
-        }
-
-        // Send command
+        /* ══════════════════════════════════════
+           Send command
+           ══════════════════════════════════════ */
         async function sendCommand() {
             const command = commandInput.value.trim();
             if (!command) return;
@@ -597,24 +562,21 @@
             loading.classList.add('active');
             sendBtn.disabled = true;
 
+            const groups = selectedGroups.size > 0 ? [...selectedGroups] : null;
+            const label = groups ? `${command} → [${groups.join(', ')}]` : command;
+            const pendingId = addPendingToHistory(label);
+
             try {
-                const response = await fetch('/api/command', {
+                const r = await fetch('/api/command', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ command })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command, groups })
                 });
-
-                const data = await response.json();
-                addToHistory(command, data);
+                const data = await r.json();
+                resolvePendingHistory(pendingId, label, data);
                 commandInput.value = '';
-
             } catch (error) {
-                addToHistory(command, {
-                    success: false,
-                    error: error.message
-                });
+                resolvePendingHistory(pendingId, label, { success: false, error: error.message });
             } finally {
                 loading.classList.remove('active');
                 sendBtn.disabled = false;
@@ -622,231 +584,299 @@
             }
         }
 
-        // Add to history
-        function addToHistory(command, result) {
-            const item = document.createElement('div');
-            item.className = 'history-item' + (result.success ? '' : ' error');
-            
-            const time = new Date().toLocaleTimeString();
-            const action = result.action ? result.action.explanation || result.action.action : 'Error';
-            
-            item.innerHTML = `
-                <div class="history-command">${command}</div>
-                <div class="history-action">${action}</div>
-                <div class="history-time">${time}</div>
-            `;
-            
-            historyList.insertBefore(item, historyList.firstChild);
-            
-            if (historyList.children.length > 10) {
-                historyList.removeChild(historyList.lastChild);
-            }
+        /* ══════════════════════════════════════
+           History — localStorage persistence + pending state
+           ══════════════════════════════════════ */
+        let historyCounter = 0;
+        const HISTORY_KEY = 'qlc_command_history';
+        const MAX_HISTORY = 50;
+
+        function loadPersistedHistory() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+                saved.slice().reverse().forEach(entry => renderHistoryItem(entry.command, entry.result, entry.time));
+            } catch (e) {}
         }
 
-        // Load fixture groups
+        function persistHistory(command, result, time) {
+            try {
+                const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+                saved.unshift({ command, result, time });
+                if (saved.length > MAX_HISTORY) saved.length = MAX_HISTORY;
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(saved));
+            } catch (e) {}
+        }
+
+        function addPendingToHistory(command) {
+            const id = ++historyCounter;
+            const item = document.createElement('div');
+            item.className = 'history-item pending';
+            item.id = `hist-${id}`;
+            item.innerHTML = `
+                <div class="history-command">${escHtml(command)}</div>
+                <div class="history-action" style="display:flex;align-items:center;gap:0.5rem;">
+                    <span class="pending-dots"><span>.</span><span>.</span><span>.</span></span>
+                    <span style="color:#666">Processing…</span>
+                </div>`;
+            historyList.insertBefore(item, historyList.firstChild);
+            return id;
+        }
+
+        function resolvePendingHistory(id, command, result) {
+            const time = new Date().toLocaleTimeString();
+            const existing = document.getElementById(`hist-${id}`);
+            if (existing) existing.remove();
+            renderHistoryItem(command, result, time);
+            persistHistory(command, result, time);
+            while (historyList.children.length > 20) historyList.removeChild(historyList.lastChild);
+        }
+
+        function renderHistoryItem(command, result, time) {
+            const id = ++historyCounter;
+            const ok = result.success;
+            const action = result.action ? (result.action.explanation || result.action.action) : 'Error';
+            const dbg = result.debug || {};
+            const errMsg = result.error || '';
+            const logMsg = result.log || '';
+            const groups = result.groups || null;
+
+            let badges = '';
+            if (dbg.total_ms != null) badges += `<span class="history-badge badge-latency">${dbg.total_ms}ms</span>`;
+            else if (dbg.interpret_ms != null) badges += `<span class="history-badge badge-latency">${dbg.interpret_ms}ms</span>`;
+            if (result.action && result.action.action && result.action.action !== 'error')
+                badges += `<span class="history-badge badge-action">${result.action.action}</span>`;
+            if (groups && groups.length) badges += `<span class="history-badge badge-group">${groups.join(', ')}</span>`;
+            if (dbg.model) badges += `<span class="history-badge badge-model">${dbg.provider}/${dbg.model}</span>`;
+            if (!ok) badges += `<span class="history-badge badge-error">error</span>`;
+
+            const debugPayload = JSON.stringify({ action: result.action||null, debug: dbg, output: result.output||null, error: errMsg||null }, null, 2);
+
+            const item = document.createElement('div');
+            item.className = 'history-item' + (ok ? ' success' : ' error');
+            item.innerHTML = `
+                <div class="history-command">${escHtml(command)}</div>
+                <div class="history-action">${escHtml(ok ? action : (errMsg || action))}</div>
+                ${ok && logMsg ? `<div class="history-log">${escHtml(logMsg)}</div>` : ''}
+                <div class="history-meta">
+                    <span class="history-time">${time}</span>
+                    ${badges}
+                    <span class="history-debug-toggle" onclick="toggleDebug(${id})">debug ▸</span>
+                </div>
+                <div class="history-debug" id="dbg-${id}">
+                    <div class="history-debug-inner">${escHtml(debugPayload)}</div>
+                </div>`;
+            historyList.insertBefore(item, historyList.firstChild);
+        }
+
+        function toggleDebug(id) { document.getElementById(`dbg-${id}`).classList.toggle('open'); }
+
+        function escHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        /* ══════════════════════════════════════
+           Groups — drawer + target chips
+           ══════════════════════════════════════ */
+        let allGroupsData = [];
+
         async function loadGroups() {
             try {
-                const response = await fetch('/api/groups');
-                const data = await response.json();
-                const groupsList = document.getElementById('groupsList');
-                
-                if (!data.groups || data.groups.length === 0) {
-                    groupsList.innerHTML = '<p style="color: #666; font-size: 0.85rem;">No fixture groups found</p>';
-                    return;
+                const r = await fetch('/api/groups');
+                const data = await r.json();
+                groupsLoaded = true;
+                allGroupsData = data.groups || [];
+
+                const templates = ['youtube-studio','party','ambient','warm-white','cool-white'];
+
+                // Drawer content
+                const drawerBody = document.getElementById('drawerBody');
+                if (!allGroupsData.length) {
+                    drawerBody.innerHTML = '<p style="color:#555;font-size:0.8rem;">No fixture groups found.</p>';
+                } else {
+                    drawerBody.innerHTML = allGroupsData.map((g, idx) => {
+                        const fixtureItems = (g.fixtures || []).map(f =>
+                            `<div class="drawer-fixture-item"><span class="drawer-fixture-dot"></span>${escHtml(String(f))}</div>`
+                        ).join('');
+                        const sceneBtns = templates.map(t =>
+                            `<button class="drawer-scene-btn" onclick="applyGroupTemplate('${escHtml(g.name)}','${t}')">${t.replace(/-/g,' ')}</button>`
+                        ).join('');
+                        return `
+                            <div class="drawer-group" id="dg-${idx}">
+                                <div class="drawer-group-header" onclick="toggleDrawerGroup(this)">
+                                    <div class="drawer-group-meta">
+                                        <div class="drawer-group-name">${escHtml(g.name)}</div>
+                                        <div class="drawer-group-count">${g.fixtures.length} fixture${g.fixtures.length!==1?'s':''}</div>
+                                    </div>
+                                    <span class="drawer-group-chevron">▼</span>
+                                </div>
+                                <div class="drawer-group-scenes">${sceneBtns}</div>
+                                <div class="drawer-fixture-list">${fixtureItems}</div>
+                            </div>`;
+                    }).join('');
                 }
-                
-                groupsList.innerHTML = '';
-                
-                const templates = ['youtube-studio', 'party', 'ambient', 'warm-white', 'cool-white'];
-                
-                data.groups.forEach(group => {
-                    const groupDiv = document.createElement('div');
-                    groupDiv.className = 'group-item';
-                    
-                    const fixtureCount = group.fixtures.length;
-                    const fixtureText = `${fixtureCount} fixture${fixtureCount !== 1 ? 's' : ''}`;
-                    
-                    groupDiv.innerHTML = `
-                        <div class="group-header">
-                            <div>
-                                <div class="group-name">${group.name}</div>
-                                <div class="group-fixtures">${fixtureText}</div>
-                            </div>
-                        </div>
-                        <div class="group-templates">
-                            ${templates.map(t => `
-                                <button class="template-btn" onclick="applyGroupTemplate('${group.name}', '${t}')">
-                                    ${t.replace('-', ' ')}
-                                </button>
-                            `).join('')}
-                        </div>
-                    `;
-                    
-                    groupsList.appendChild(groupDiv);
-                });
-            } catch (error) {
-                console.error('Error loading groups:', error);
-            }
+
+                // Target group chips in AI tab
+                const chipsContainer = document.getElementById('groupChips');
+                const targetRow = document.getElementById('targetGroupsRow');
+                if (allGroupsData.length) {
+                    chipsContainer.innerHTML = allGroupsData.map(g =>
+                        `<span class="group-chip" data-group="${escHtml(g.name)}" onclick="toggleGroupChip('${escHtml(g.name)}')">${escHtml(g.name)}</span>`
+                    ).join('');
+                    targetRow.style.display = 'flex';
+                }
+            } catch (e) { console.error('Error loading groups:', e); }
         }
-        
-        // Apply template to group
+
         async function applyGroupTemplate(groupName, template) {
             loading.classList.add('active');
-            
+            const label = `Apply ${template} → ${groupName}`;
+            const pendingId = addPendingToHistory(label);
             try {
-                const response = await fetch(`/api/groups/${encodeURIComponent(groupName)}/template`, {
+                const r = await fetch(`/api/groups/${encodeURIComponent(groupName)}/template`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ template })
                 });
-                
-                const data = await response.json();
-                addToHistory(`Apply ${template} to ${groupName}`, data);
-                
-            } catch (error) {
-                addToHistory(`Apply ${template} to ${groupName}`, {
-                    success: false,
-                    error: error.message
-                });
-            } finally {
-                loading.classList.remove('active');
-            }
+                const data = await r.json();
+                resolvePendingHistory(pendingId, label, data);
+            } catch (e) {
+                resolvePendingHistory(pendingId, label, { success: false, error: e.message });
+            } finally { loading.classList.remove('active'); }
         }
 
-        // Load fixtures for virtual console
+        /* ══════════════════════════════════════
+           Virtual Console
+           ══════════════════════════════════════ */
+        let qlcWs = null;
+        let fixtureData = [];
+
         async function loadFixtures() {
             try {
-                const response = await fetch('/api/fixtures');
-                const data = await response.json();
-                const fixturesList = document.getElementById('fixturesList');
-                
-                if (!data.fixtures || data.fixtures.length === 0) {
-                    fixturesList.innerHTML = '<p style="color: #666; font-size: 0.85rem;">No fixtures found</p>';
+                const r = await fetch('/api/fixtures');
+                const data = await r.json();
+                const list = document.getElementById('fixturesList');
+                if (!data.fixtures || !data.fixtures.length) {
+                    list.innerHTML = '<p style="color:#666;font-size:0.85rem;">No fixtures found</p>';
                     return;
                 }
-                
-                fixturesList.innerHTML = '';
-                
-                data.fixtures.forEach(fixture => {
-                    const fixtureDiv = document.createElement('div');
-                    fixtureDiv.className = 'fixture-control';
-                    
-                    const channels = getChannelNames(fixture.name, fixture.channels);
-                    
-                    const channelControls = channels.map((channelName, index) => `
+                fixtureData = data.fixtures;
+                list.innerHTML = data.fixtures.map(f => {
+                    const chNames = getChannelNames(f.name, f.channels);
+                    const sliders = chNames.map((name, i) => `
                         <div class="channel-control">
-                            <div class="channel-label">${channelName}</div>
-                            <input 
-                                type="range" 
-                                class="channel-slider" 
-                                min="0" 
-                                max="255" 
-                                value="0"
-                                data-fixture="${fixture.id}"
-                                data-channel="${index}"
-                                oninput="updateChannel(${fixture.id}, ${index}, this.value)"
-                            >
-                            <div class="channel-value">0</div>
-                        </div>
-                    `).join('');
-                    
-                    fixtureDiv.innerHTML = `
-                        <div class="fixture-name">${fixture.name}</div>
-                        <div class="channel-controls">
-                            ${channelControls}
-                        </div>
-                    `;
-                    
-                    fixturesList.appendChild(fixtureDiv);
-                });
-                
-                document.querySelectorAll('.channel-slider').forEach(slider => {
-                    slider.addEventListener('input', function() {
-                        this.parentElement.querySelector('.channel-value').textContent = this.value;
-                    });
-                });
-            } catch (error) {
-                console.error('Error loading fixtures:', error);
-            }
+                            <div class="channel-label">${name}</div>
+                            <input type="range" class="channel-slider" min="0" max="255" value="0"
+                                   id="ch-${f.id}-${i}" data-fixture="${f.id}" data-channel="${i}"
+                                   oninput="updateChannel(${f.id},${i},this.value);document.getElementById('cv-${f.id}-${i}').textContent=this.value"
+                                   aria-label="${name} for ${f.name}">
+                            <div class="channel-value" id="cv-${f.id}-${i}">0</div>
+                        </div>`).join('');
+                    return `<div class="fixture-control"><div class="fixture-name">${escHtml(f.name)}</div><div class="channel-controls">${sliders}</div></div>`;
+                }).join('');
+
+                try {
+                    const vr = await fetch('/api/channel_values');
+                    const vdata = await vr.json();
+                    if (vdata.values) applyAbsoluteValues(vdata.values);
+                } catch (e) {}
+
+                connectQlcWs();
+            } catch (e) { console.error('Error loading fixtures:', e); }
         }
-        
-        // Get channel names based on fixture type
-        function getChannelNames(fixtureName, channelCount) {
-            const name = fixtureName.toLowerCase();
-            
-            if (name.includes('par') || name.includes('rgb')) {
-                if (channelCount >= 3) {
-                    return ['Red', 'Green', 'Blue', 'Dimmer'].slice(0, channelCount);
+
+        function applyAbsoluteValues(values) {
+            fixtureData.forEach(f => {
+                for (let ch = 0; ch < f.channels; ch++) {
+                    const absAddr = f.universe * 512 + f.address + ch;
+                    const val = values[absAddr];
+                    if (val != null) {
+                        const s = document.getElementById(`ch-${f.id}-${ch}`);
+                        const v = document.getElementById(`cv-${f.id}-${ch}`);
+                        if (s) s.value = val;
+                        if (v) v.textContent = val;
+                    }
                 }
-            }
-            
-            if (name.includes('56') || name.includes('moving') || name.includes('spot')) {
-                const channels = ['Pan', 'Tilt', 'Dimmer', 'Shutter', 'Color', 'Gobo', 'Prism', 'Focus'];
-                return channels.slice(0, channelCount);
-            }
-            
-            if (channelCount === 1) {
-                return ['Dimmer'];
-            }
-            
-            return Array.from({length: channelCount}, (_, i) => `Ch ${i + 1}`);
+            });
         }
-        
-        // Update channel value
+
+        function connectQlcWs() {
+            if (qlcWs && qlcWs.readyState < 2) return;
+            const wsUrl = `ws://${location.hostname}:9999/qlcplusWS`;
+            try { qlcWs = new WebSocket(wsUrl); } catch(e) { return; }
+            qlcWs.onopen = () => qlcWs.send('QLC+API|getChannelValues');
+            qlcWs.onmessage = (evt) => {
+                const msg = evt.data;
+                if (msg.startsWith('CH|')) {
+                    const parts = msg.split('|');
+                    if (parts.length >= 3) updateSliderByAbsAddr(+parts[1], +parts[2]);
+                }
+                if (msg.includes('getChannelValues')) {
+                    const pipeIdx = msg.lastIndexOf('|');
+                    const payload = pipeIdx >= 0 ? msg.slice(pipeIdx + 1) : '';
+                    const values = {};
+                    payload.split(',').forEach(entry => {
+                        const [a, v] = entry.split('=');
+                        if (a && v != null) { const n = +a; if (!isNaN(n)) values[n] = +v; }
+                    });
+                    if (Object.keys(values).length) applyAbsoluteValues(values);
+                }
+            };
+            qlcWs.onerror = () => {};
+            qlcWs.onclose = () => {};
+        }
+
+        function updateSliderByAbsAddr(absAddr, value) {
+            fixtureData.forEach(f => {
+                const ch = absAddr - (f.universe * 512 + f.address);
+                if (ch >= 0 && ch < f.channels) {
+                    const s = document.getElementById(`ch-${f.id}-${ch}`);
+                    const v = document.getElementById(`cv-${f.id}-${ch}`);
+                    if (s) s.value = value;
+                    if (v) v.textContent = value;
+                }
+            });
+        }
+
+        function getChannelNames(name, count) {
+            const n = name.toLowerCase();
+            if (n.includes('pro h') && count >= 7) return ['Dimmer','Red','Green','Blue','Color Macros','Amber','Strobe'];
+            if ((n.includes('par') || n.includes('rgb')) && count >= 3) return ['Red','Green','Blue','Dimmer'].slice(0, count);
+            if (count === 1) return ['Dimmer'];
+            return Array.from({length: count}, (_, i) => `Ch ${i + 1}`);
+        }
+
         async function updateChannel(fixtureId, channel, value) {
             try {
-                const response = await fetch('/api/channel', {
+                await fetch('/api/channel', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        fixture_id: fixtureId,
-                        channel: channel,
-                        value: parseInt(value)
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fixture_id: fixtureId, channel, value: parseInt(value) })
                 });
-                
-                const data = await response.json();
-                if (!data.success) {
-                    console.error('Failed to set channel:', data.error);
-                }
-            } catch (error) {
-                console.error('Error setting channel:', error);
-            }
+            } catch (e) { console.error('Error setting channel:', e); }
         }
 
-        // Event listeners
+        /* ══════════════════════════════════════
+           Event listeners
+           ══════════════════════════════════════ */
         sendBtn.addEventListener('click', sendCommand);
-        commandInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendCommand();
-        });
-
+        commandInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendCommand(); });
         voiceBtn.addEventListener('click', () => {
             if (!recognition) return;
-            
-            if (isListening) {
-                recognition.stop();
-            } else {
-                recognition.start();
-                isListening = true;
-                voiceBtn.classList.add('listening');
-                voiceBtn.textContent = '⏸';
-            }
+            if (isListening) { recognition.stop(); }
+            else { recognition.start(); isListening = true; voiceBtn.classList.add('listening'); voiceBtn.textContent = '⏸'; }
         });
-
-        document.querySelectorAll('.chip').forEach(chip => {
-            chip.addEventListener('click', () => {
-                commandInput.value = chip.dataset.command;
-                sendCommand();
-            });
+        document.querySelectorAll('.chip').forEach(c => {
+            c.addEventListener('click', () => { commandInput.value = c.dataset.command; sendCommand(); });
         });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape' && drawerOpen) closeDrawer(); });
 
-        // Initial load
+        /* ── Boot ── */
+        loadPersistedHistory();
+        loadGroups();
         checkStatus();
-        setInterval(checkStatus, 10000);
+        setInterval(checkStatus, 15000);
     </script>
 </body>
 </html>

@@ -8,6 +8,7 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 import os
 import sys
 import json
+import socket
 import subprocess
 import xml.etree.ElementTree as ET
 import asyncio
@@ -37,13 +38,46 @@ QLC_PORT = int(os.getenv("QLC_PORT", "9999"))
 QLC_WS_URL = f"ws://{QLC_HOST}:{QLC_PORT}/qlcplusWS"
 
 # AI Configuration from environment
-AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
-AI_MODEL = os.getenv("AI_MODEL", "claude-3-5-sonnet-20241022")
+AI_MODEL = os.getenv("AI_MODEL", "gpt-4.1" if os.getenv("AI_PROVIDER", "openai") == "openai" else "claude-3-5-sonnet-20241022")
 
-# Global QLC+ WebSocket connection
-qlc_websocket = None
+SERVICE_NAME = os.getenv("SERVICE", "qlcplus-web.service")
 
+
+def _is_local():
+    """Detect whether we're running on the same host as QLC+.
+
+    Returns True when QLC_HOST resolves to a loopback address or to one of
+    this machine's own IPs, meaning we can use local systemctl / file
+    operations instead of SSH.
+    """
+    if QLC_HOST in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        target_ip = socket.gethostbyname(QLC_HOST)
+    except socket.gaierror:
+        return False
+    if target_ip.startswith("127."):
+        return True
+    # Check if the resolved IP belongs to one of our own interfaces
+    try:
+        local_ip = socket.gethostbyname(socket.gethostname())
+        if target_ip == local_ip:
+            return True
+    except socket.gaierror:
+        pass
+    # Also compare against the hostname set in PI_HOSTNAME / HOSTNAME
+    try:
+        pi_hostname = os.getenv("PI_HOSTNAME", "")
+        if pi_hostname and socket.gethostname().lower().startswith(pi_hostname.lower()):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+IS_LOCAL = _is_local()
 
 # Global QLC+ WebSocket connection
 qlc_websocket = None
@@ -298,7 +332,14 @@ def call_openai(system_prompt, user_prompt):
             timeout=30
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        # Strip markdown code fences if present
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+        return text
     except requests.exceptions.RequestException as e:
         raise Exception(f"OpenAI API error: {str(e)}")
 
@@ -327,45 +368,204 @@ def call_ollama(system_prompt, user_prompt):
         raise Exception(f"Ollama API error: {str(e)}")
 
 
-def execute_lighting_action(action_data):
-    """Execute the interpreted lighting action"""
+def execute_lighting_action(action_data, target_groups=None):
+    """Execute the interpreted lighting action.
+
+    When running locally on the Pi (IS_LOCAL=True) we generate scenes using
+    the local workspace file and inject + restart directly, avoiding SSH
+    round-trips that would fail without a key.
+
+    If target_groups is a non-empty list, the action is applied to each named
+    group in sequence using group-scene / group-template instead of the
+    global generate-scene command.
+    """
     action = action_data.get("action")
     params = action_data.get("parameters", {})
-    
+
+    def _build_scene_cmd(description, group_name=None):
+        safe_desc = description.replace("'", "'\\''")
+        if group_name:
+            safe_group = group_name.replace("'", "'\\''")
+            if IS_LOCAL and WORKSPACE_PATH.exists():
+                return (
+                    f"{LIGHTSCTL} group-scene '{safe_group}' '{safe_desc}'"
+                    f" --workspace '{WORKSPACE_PATH}'"
+                    f" --output /tmp/_qlc_scene_latest.xml"
+                )
+            else:
+                return f"{LIGHTSCTL} group-scene '{safe_group}' '{safe_desc}' --add-to-workspace"
+        else:
+            if IS_LOCAL and WORKSPACE_PATH.exists():
+                return (
+                    f"{LIGHTSCTL} generate-scene '{safe_desc}'"
+                    f" --workspace '{WORKSPACE_PATH}'"
+                    f" --output /tmp/_qlc_scene_latest.xml"
+                )
+            else:
+                return f"{LIGHTSCTL} generate-scene '{safe_desc}' --add-to-workspace"
+
+    def _inject_and_restart(result):
+        """After a local scene generation, inject the XML into the workspace
+        and restart the QLC+ service."""
+        if not IS_LOCAL or not result["success"]:
+            return result
+
+        scene_file = Path("/tmp/_qlc_scene_latest.xml")
+        if not scene_file.exists():
+            result["error"] = (result.get("error", "") +
+                               "\nScene file not created").strip()
+            result["success"] = False
+            return result
+
+        scene_xml = scene_file.read_text()
+
+        # Inject via the Python helper
+        inject_script = SCRIPT_DIR / "scripts" / "lib" / "workspace_inject.py"
+        if not inject_script.exists():
+            result["error"] = "workspace_inject.py not found"
+            result["success"] = False
+            return result
+
+        # Calculate next function ID
+        try:
+            tree = ET.parse(str(WORKSPACE_PATH))
+            root = tree.getroot()
+            ns = "http://www.qlcplus.org/Workspace"
+            max_id = 0
+            for func in root.iter(f"{{{ns}}}Function"):
+                fid = func.get("ID")
+                if fid and fid.isdigit():
+                    max_id = max(max_id, int(fid))
+            next_id = max_id + 1
+        except Exception:
+            next_id = 100
+
+        inject_result = execute_command(
+            f"python3 '{inject_script}' '{WORKSPACE_PATH}' "
+            f"'{scene_xml}' '{WORKSPACE_PATH}' {next_id}"
+        )
+        if not inject_result["success"]:
+            result["error"] = (result.get("error", "") +
+                               f"\nInject failed: {inject_result.get('error', '')}").strip()
+            result["success"] = False
+            return result
+
+        # Restart QLC+ so it picks up the modified workspace
+        restart = execute_command(f"sudo systemctl restart {SERVICE_NAME}")
+        if not restart["success"]:
+            result["error"] = (result.get("error", "") +
+                               f"\nRestart warning: {restart.get('error', '')}").strip()
+            # Don't mark as failed — the scene was injected, restart is best-effort
+
+        result["output"] = (result.get("output", "") +
+                            f"\nScene injected (ID {next_id}) and service restarted").strip()
+        scene_file.unlink(missing_ok=True)
+        return result
+
     if action == "apply_template":
         template = params.get("template")
-        cmd = f"{LIGHTSCTL} generate-from-template {template} --add-to-workspace"
-        result = execute_command(cmd)
-        return result
-    
+        groups = target_groups if target_groups else []
+        if groups:
+            # Apply template to each selected group
+            combined_output = ""
+            for gname in groups:
+                safe_name = gname.replace("'", "'\\''")
+                if IS_LOCAL and WORKSPACE_PATH.exists():
+                    cmd = (f"{LIGHTSCTL} group-template '{safe_name}' {template}"
+                           f" --workspace '{WORKSPACE_PATH}'"
+                           f" --output /tmp/_qlc_scene_latest.xml")
+                else:
+                    cmd = f"{LIGHTSCTL} group-template '{safe_name}' {template} --add-to-workspace"
+                result = execute_command(cmd)
+                if IS_LOCAL and WORKSPACE_PATH.exists() and result["success"]:
+                    result = _inject_and_restart(result)
+                combined_output += result.get("output", "") + "\n"
+                if not result["success"]:
+                    return result
+            return {"success": True, "output": combined_output.strip(), "error": ""}
+        elif IS_LOCAL and WORKSPACE_PATH.exists():
+            cmd = (f"{LIGHTSCTL} generate-from-template {template}"
+                   f" --workspace '{WORKSPACE_PATH}'"
+                   f" --output /tmp/_qlc_scene_latest.xml")
+            result = execute_command(cmd)
+            return _inject_and_restart(result)
+        else:
+            cmd = f"{LIGHTSCTL} generate-from-template {template} --add-to-workspace"
+            return execute_command(cmd)
+
     elif action == "generate_scene":
-        description = params.get("description")
-        cmd = f"{LIGHTSCTL} generate-scene '{description}' --add-to-workspace"
+        description = params.get("description", "")
+        groups = target_groups if target_groups else []
+        if groups:
+            combined_output = ""
+            for gname in groups:
+                cmd = _build_scene_cmd(description, group_name=gname)
+                result = execute_command(cmd)
+                result = _inject_and_restart(result)
+                combined_output += result.get("output", "") + "\n"
+                if not result["success"]:
+                    return result
+            return {"success": True, "output": combined_output.strip(), "error": ""}
+        cmd = _build_scene_cmd(description)
         result = execute_command(cmd)
-        return result
-    
+        return _inject_and_restart(result)
+
     elif action == "adjust_brightness":
-        # This would require modifying current workspace
-        # For now, generate a scene with adjusted brightness
         value = params.get("value", "+50")
-        cmd = f"{LIGHTSCTL} generate-scene 'adjust brightness by {value}' --add-to-workspace"
+        description = f"adjust brightness by {value}"
+        groups = target_groups if target_groups else []
+        if groups:
+            combined_output = ""
+            for gname in groups:
+                cmd = _build_scene_cmd(description, group_name=gname)
+                result = execute_command(cmd)
+                result = _inject_and_restart(result)
+                combined_output += result.get("output", "") + "\n"
+                if not result["success"]:
+                    return result
+            return {"success": True, "output": combined_output.strip(), "error": ""}
+        cmd = _build_scene_cmd(description)
         result = execute_command(cmd)
-        return result
-    
+        return _inject_and_restart(result)
+
     elif action == "adjust_color":
         color = params.get("color", "white")
         intensity = params.get("intensity", "200")
-        cmd = f"{LIGHTSCTL} generate-scene 'add more {color} color at intensity {intensity}' --add-to-workspace"
+        description = f"add more {color} color at intensity {intensity}"
+        groups = target_groups if target_groups else []
+        if groups:
+            combined_output = ""
+            for gname in groups:
+                cmd = _build_scene_cmd(description, group_name=gname)
+                result = execute_command(cmd)
+                result = _inject_and_restart(result)
+                combined_output += result.get("output", "") + "\n"
+                if not result["success"]:
+                    return result
+            return {"success": True, "output": combined_output.strip(), "error": ""}
+        cmd = _build_scene_cmd(description)
         result = execute_command(cmd)
-        return result
-    
+        return _inject_and_restart(result)
+
     elif action == "fade":
         duration = params.get("duration", "3")
         target = params.get("target", "0")
-        cmd = f"{LIGHTSCTL} generate-scene 'fade to brightness {target} over {duration} seconds' --add-to-workspace"
+        description = f"fade to brightness {target} over {duration} seconds"
+        groups = target_groups if target_groups else []
+        if groups:
+            combined_output = ""
+            for gname in groups:
+                cmd = _build_scene_cmd(description, group_name=gname)
+                result = execute_command(cmd)
+                result = _inject_and_restart(result)
+                combined_output += result.get("output", "") + "\n"
+                if not result["success"]:
+                    return result
+            return {"success": True, "output": combined_output.strip(), "error": ""}
+        cmd = _build_scene_cmd(description)
         result = execute_command(cmd)
-        return result
-    
+        return _inject_and_restart(result)
+
     else:
         return {
             "success": False,
@@ -383,48 +583,148 @@ def index():
 @app.route("/api/command", methods=["POST"])
 def handle_command():
     """Handle natural language command"""
+    import time as _time
+
     data = request.json
     user_input = data.get("command", "").strip()
-    
+    target_groups = data.get("groups") or None  # list of group names, or None = all fixtures
+
     if not user_input:
         return jsonify({
             "success": False,
             "error": "No command provided"
         }), 400
-    
-    # Interpret command using AI
+
+    # Interpret command using AI (with timing)
+    t0 = _time.time()
     action_data = interpret_command(user_input)
-    
+    interpret_ms = round((_time.time() - t0) * 1000)
+
     if action_data.get("action") == "error":
         return jsonify({
             "success": False,
             "error": action_data.get("explanation"),
-            "action": action_data
+            "action": action_data,
+            "debug": {
+                "interpret_ms": interpret_ms,
+                "provider": AI_PROVIDER,
+                "model": AI_MODEL,
+                "is_local": IS_LOCAL,
+            }
         }), 400
-    
-    # Execute the action
-    result = execute_lighting_action(action_data)
-    
+
+    # Execute the action (with timing)
+    t1 = _time.time()
+    result = execute_lighting_action(action_data, target_groups=target_groups)
+    execute_ms = round((_time.time() - t1) * 1000)
+
     return jsonify({
         "success": result["success"],
         "action": action_data,
+        "groups": target_groups,
         "output": result.get("output", ""),
-        "error": result.get("error", "")
+        "error": result.get("error", "") if not result["success"] else "",
+        "log": result.get("error", "") if result["success"] else "",
+        "debug": {
+            "interpret_ms": interpret_ms,
+            "execute_ms": execute_ms,
+            "total_ms": interpret_ms + execute_ms,
+            "provider": AI_PROVIDER,
+            "model": AI_MODEL,
+            "is_local": IS_LOCAL,
+        }
     })
 
 
 @app.route("/api/status", methods=["GET"])
 def get_status():
-    """Get current lighting status"""
-    # Check if QLC+ is running
-    result = execute_command(f"{LIGHTSCTL} health")
-    
+    """Get detailed multi-service health status"""
+    import time as _time
+
+    services = {}
+
+    # 1. AI Provider
+    ai_ok = False
+    ai_detail = ""
+    ai_latency = None
+    if AI_PROVIDER == "ollama":
+        try:
+            t0 = _time.time()
+            import requests as _req
+            r = _req.get("http://localhost:11434/api/tags", timeout=3)
+            ai_latency = round((_time.time() - t0) * 1000)
+            ai_ok = r.status_code == 200
+            ai_detail = "running" if ai_ok else f"HTTP {r.status_code}"
+        except Exception as e:
+            ai_detail = str(e)
+    elif AI_PROVIDER in ("openai", "anthropic"):
+        ai_ok = bool(AI_API_KEY)
+        ai_detail = "key configured" if ai_ok else "API key missing"
+    else:
+        ai_detail = f"unknown provider: {AI_PROVIDER}"
+
+    services["ai"] = {
+        "name": f"AI ({AI_PROVIDER})",
+        "ok": ai_ok,
+        "detail": ai_detail,
+        "model": AI_MODEL,
+        "latency_ms": ai_latency,
+    }
+
+    # 2. QLC+ WebSocket
+    ws_ok = qlc_websocket is not None and not getattr(qlc_websocket, "closed", True)
+    services["qlc_ws"] = {
+        "name": "QLC+ WebSocket",
+        "ok": ws_ok,
+        "detail": f"connected to {QLC_WS_URL}" if ws_ok else "disconnected",
+        "url": QLC_WS_URL,
+    }
+
+    # 3. QLC+ Service
+    qlc_running = False
+    qlc_detail = "unknown"
+    try:
+        if IS_LOCAL:
+            # Running on the Pi — check systemd directly, no SSH
+            result = execute_command(f"systemctl is-active {SERVICE_NAME}")
+            qlc_running = result["success"] and "active" in result.get("output", "").strip()
+            qlc_detail = result.get("output", "").strip() if result["success"] else "stopped"
+        else:
+            # Remote workstation — SSH via lightsctl
+            result = execute_command(f"{LIGHTSCTL} status")
+            qlc_running = result["success"] and "running" in result.get("output", "").lower()
+            qlc_detail = "running" if qlc_running else "stopped / unreachable"
+    except Exception:
+        qlc_detail = "check failed"
+
+    services["qlc_service"] = {
+        "name": "QLC+ Service",
+        "ok": qlc_running,
+        "detail": qlc_detail,
+    }
+
+    # 4. Workspace file
+    ws_exists = WORKSPACE_PATH.exists()
+    services["workspace"] = {
+        "name": "Workspace",
+        "ok": ws_exists,
+        "detail": str(WORKSPACE_PATH) if ws_exists else "file not found",
+        "path": str(WORKSPACE_PATH),
+    }
+
+    overall_ok = all(s["ok"] for s in services.values())
+
     return jsonify({
-        "qlc_running": "running" in result.get("output", "").lower(),
+        # Legacy fields for backward compat
+        "qlc_running": qlc_running,
         "workspace": str(WORKSPACE_PATH),
-        "workspace_exists": WORKSPACE_PATH.exists(),
+        "workspace_exists": ws_exists,
         "ai_provider": AI_PROVIDER,
-        "ai_model": AI_MODEL
+        "ai_model": AI_MODEL,
+        # New rich status
+        "ok": overall_ok,
+        "services": services,
+        "is_local": IS_LOCAL,
     })
 
 
@@ -483,14 +783,51 @@ def apply_group_template(group_name):
         if not template:
             return jsonify({"success": False, "error": "Template name required"}), 400
         
-        # Use lightsctl to apply template to group
-        cmd = f"{LIGHTSCTL} group-template '{group_name}' {template} --add-to-workspace"
+        safe_name = group_name.replace("'", "'\\''")
+        if IS_LOCAL and WORKSPACE_PATH.exists():
+            cmd = (f"{LIGHTSCTL} group-template '{safe_name}' {template}"
+                   f" --workspace '{WORKSPACE_PATH}'"
+                   f" --output /tmp/_qlc_scene_latest.xml")
+        else:
+            cmd = f"{LIGHTSCTL} group-template '{safe_name}' {template} --add-to-workspace"
+        
         result = execute_command(cmd)
         
+        # If local, inject and restart (mirrors _inject_and_restart in handle_command)
+        if IS_LOCAL and WORKSPACE_PATH.exists() and result["success"]:
+            scene_file = Path("/tmp/_qlc_scene_latest.xml")
+            if scene_file.exists():
+                inject_script = SCRIPT_DIR / "scripts" / "lib" / "workspace_inject.py"
+                scene_xml = scene_file.read_text()
+                try:
+                    tree = ET.parse(str(WORKSPACE_PATH))
+                    root = tree.getroot()
+                    ns = "http://www.qlcplus.org/Workspace"
+                    max_id = 0
+                    for func in root.iter(f"{{{ns}}}Function"):
+                        fid = func.get("ID")
+                        if fid and fid.isdigit():
+                            max_id = max(max_id, int(fid))
+                    next_id = max_id + 1
+                except Exception:
+                    next_id = 100
+                inject_result = execute_command(
+                    f"python3 '{inject_script}' '{WORKSPACE_PATH}' "
+                    f"'{scene_xml}' '{WORKSPACE_PATH}' {next_id}"
+                )
+                execute_command(f"sudo systemctl restart {SERVICE_NAME}")
+                scene_file.unlink(missing_ok=True)
+                result["output"] = (result.get("output", "") +
+                                    f"\nScene injected (ID {next_id}) and service restarted").strip()
+        
+        success = result["success"]
         return jsonify({
-            "success": result["success"],
+            "success": success,
+            "action": {"action": "apply_template", "explanation": f"Applied {template} to {group_name}",
+                       "parameters": {"template": template, "group": group_name}},
             "output": result.get("output", ""),
-            "error": result.get("error", "")
+            "error": result.get("error", "") if not success else "",
+            "log": result.get("error", "") if success else "",
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -573,6 +910,60 @@ def set_channel():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/channel_values", methods=["GET"])
+def get_channel_values():
+    """Get current DMX channel values from QLC+ via WebSocket"""
+    import asyncio as _asyncio
+    import websockets as _ws
+    import json as _json
+
+    async def _fetch():
+        try:
+            uri = QLC_WS_URL
+            async with _ws.connect(uri, open_timeout=3, close_timeout=2) as ws:
+                # Request channel dump
+                await ws.send("QLC+API|getChannelValues")
+                # Collect messages for up to 1 second
+                values = {}
+                import time as _t
+                deadline = _t.time() + 1.0
+                while _t.time() < deadline:
+                    try:
+                        msg = await _asyncio.wait_for(ws.recv(), timeout=0.3)
+                        if "getChannelValues" in msg:
+                            parts = msg.split("|")
+                            if len(parts) >= 3:
+                                for entry in parts[2].split(","):
+                                    if "=" in entry:
+                                        addr, val = entry.split("=", 1)
+                                        try:
+                                            values[int(addr)] = int(val)
+                                        except ValueError:
+                                            pass
+                            break
+                        elif msg.startswith("CH|"):
+                            p = msg.split("|")
+                            if len(p) >= 3:
+                                try:
+                                    values[int(p[1])] = int(p[2])
+                                except ValueError:
+                                    pass
+                    except _asyncio.TimeoutError:
+                        break
+                return values
+        except Exception:
+            return {}
+
+    try:
+        loop = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop)
+        values = loop.run_until_complete(_fetch())
+        loop.close()
+        return jsonify({"values": values})
+    except Exception as e:
+        return jsonify({"values": {}, "error": str(e)})
 
 
 if __name__ == "__main__":

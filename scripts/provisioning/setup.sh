@@ -57,7 +57,7 @@ hostnamectl set-hostname "${PI_HOSTNAME}"
 echo "[2/9] Packages"
 apt-get update
 apt-get -y upgrade
-apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpasupplicant iw
+apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpasupplicant iw jq libxml2-utils
 
 systemctl enable avahi-daemon
 systemctl start avahi-daemon

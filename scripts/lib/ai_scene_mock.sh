@@ -3,6 +3,54 @@
 
 set -euo pipefail
 
+# Python-based JSON helpers (jq-free)
+_mock_json_extract() {
+  local path="$1"
+  local default="${2:-}"
+  python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    keys = [k for k in '''${path}'''.replace(']','').replace('[','.').split('.') if k]
+    val = data
+    for k in keys:
+        if isinstance(val, list):
+            val = val[int(k)]
+        else:
+            val = val[k]
+    if val is None:
+        print('${default}')
+    else:
+        print(val if isinstance(val, str) else json.dumps(val))
+except Exception:
+    print('${default}')
+"
+}
+
+# Extract fixture IDs as newline-separated list
+_fixture_ids() {
+  python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for f in data.get('fixtures', []):
+    print(f['id'])
+"
+}
+
+# Get a field from a fixture by ID
+_fixture_field() {
+  local fid="$1"
+  local field="$2"
+  python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for f in data.get('fixtures', []):
+    if str(f['id']) == '${fid}':
+        print(f.get('${field}', ''))
+        break
+"
+}
+
 # Generate a mock scene based on description and style
 function ai_generate_mock_scene() {
   local description="$1"
@@ -53,7 +101,7 @@ function ai_generate_mock_complete() {
   
   # Extract fixture IDs
   local fixture_ids
-  fixture_ids=$(echo "$fixtures_json" | jq -r '.fixtures[].id')
+  fixture_ids=$(echo "$fixtures_json" | _fixture_ids)
   
   cat <<XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -64,9 +112,9 @@ XML
 
   for fid in $fixture_ids; do
     local channels
-    channels=$(echo "$fixtures_json" | jq -r ".fixtures[] | select(.id==$fid) | .channels")
+    channels=$(echo "$fixtures_json" | _fixture_field "$fid" "channels")
     local model
-    model=$(echo "$fixtures_json" | jq -r ".fixtures[] | select(.id==$fid) | .model")
+    model=$(echo "$fixtures_json" | _fixture_field "$fid" "model")
     
     # Generate channel values based on fixture type
     if [[ "$model" =~ "SlimPAR Pro H USB" ]]; then
@@ -104,11 +152,11 @@ function ai_generate_mock_modular() {
 XML
   
   local fixture_ids
-  fixture_ids=$(echo "$fixtures_json" | jq -r '.fixtures[].id')
+  fixture_ids=$(echo "$fixtures_json" | _fixture_ids)
   
   for fid in $fixture_ids; do
     local model
-    model=$(echo "$fixtures_json" | jq -r ".fixtures[] | select(.id==$fid) | .model")
+    model=$(echo "$fixtures_json" | _fixture_field "$fid" "model")
     
     if [[ "$model" =~ "SlimPAR Pro H USB" ]]; then
       echo "  <FixtureVal ID=\"$fid\">1,180</FixtureVal>"
@@ -155,6 +203,9 @@ XML
 }
 
 # Export functions
+export -f _mock_json_extract
+export -f _fixture_ids
+export -f _fixture_field
 export -f ai_generate_mock_scene
 export -f ai_generate_mock_complete
 export -f ai_generate_mock_modular
