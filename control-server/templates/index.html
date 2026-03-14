@@ -398,7 +398,10 @@
             </div>
 
             <div class="history">
-                <div class="section-title">Command History</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+                    <div class="section-title" style="margin-bottom:0;">Command History</div>
+                    <button id="clearHistoryBtn" onclick="clearHistory()" style="background:none;border:none;padding:0.2rem 0.5rem;font-size:0.7rem;color:#444;letter-spacing:0.05em;text-transform:uppercase;cursor:pointer;transition:color 0.15s;" onmouseover="this.style.color='#f87171'" onmouseout="this.style.color='#444'">Clear</button>
+                </div>
                 <div id="historyList"></div>
             </div>
         </div>
@@ -670,6 +673,12 @@
 
         function toggleDebug(id) { document.getElementById(`dbg-${id}`).classList.toggle('open'); }
 
+        function clearHistory() {
+            if (!confirm('Clear all command history?')) return;
+            historyList.innerHTML = '';
+            try { localStorage.removeItem(HISTORY_KEY); } catch(e) {}
+        }
+
         function escHtml(s) {
             const d = document.createElement('div');
             d.textContent = s;
@@ -787,12 +796,11 @@
         }
 
         function applyAbsoluteValues(values) {
+            // values keys are 1-based QLC+ channel numbers (address + ch_offset + 1)
             fixtureData.forEach(f => {
                 for (let ch = 0; ch < f.channels; ch++) {
-                    // workspace address is 0-based; QLC+ WS uses 1-based channel numbers
-                    // abs_addr = universe * 512 + (address + ch + 1)
-                    const absAddr = f.universe * 512 + f.address + ch + 1;
-                    const val = values[absAddr];
+                    const qlcCh = f.address + ch + 1;  // 1-based channel number
+                    const val = values[qlcCh];
                     if (val != null) {
                         const s = document.getElementById(`ch-${f.id}-${ch}`);
                         const v = document.getElementById(`cv-${f.id}-${ch}`);
@@ -808,26 +816,30 @@
             const wsUrl = `ws://${location.hostname}:9999/qlcplusWS`;
             try { qlcWs = new WebSocket(wsUrl); } catch(e) { return; }
             qlcWs.onopen = () => {
-                // Request all channels for universe 1 (1-based), starting at ch 1, count 512
+                // Universe 1 (1-based), start ch 1, fetch 512
                 qlcWs.send('QLC+API|getChannelsValues|1|1|512');
             };
             qlcWs.onmessage = (evt) => {
                 const msg = evt.data;
-                // Live single-channel update: "CH|<1based_ch>|<value>"
+                // Live update: "CH|<1based_ch>|<value>"
                 if (msg.startsWith('CH|')) {
                     const parts = msg.split('|');
-                    if (parts.length >= 3) updateSliderByAbsAddr(+parts[1], +parts[2]);
+                    if (parts.length >= 3) {
+                        const ch = parseInt(parts[1], 10);
+                        const val = parseInt(parts[2], 10);
+                        updateSliderByQlcCh(ch, val);
+                    }
                 }
-                // Bulk response: "getChannelsValues|v1,v2,v3,..."
-                // Values are for universe 0, channels 1..N (1-based)
-                if (msg.startsWith('getChannelsValues|')) {
-                    const payload = msg.slice('getChannelsValues|'.length);
-                    const vals = payload.split(',');
+                // Bulk response: "QLC+API|getChannelsValues|<uni>|<ch>|<val>|<pct.color>|<ch>|..."
+                if (msg.includes('getChannelsValues')) {
+                    const parts = msg.split('|');
                     const values = {};
-                    vals.forEach((v, i) => {
-                        const n = parseInt(v, 10);
-                        if (!isNaN(n)) values[i + 1] = n; // 1-based abs addr for universe 0
-                    });
+                    // groups of 3 starting at index 3: ch, val, pct.color
+                    for (let i = 3; i + 1 < parts.length; i += 3) {
+                        const ch = parseInt(parts[i], 10);
+                        const val = parseInt(parts[i + 1], 10);
+                        if (!isNaN(ch) && !isNaN(val)) values[ch] = val;
+                    }
                     if (Object.keys(values).length) applyAbsoluteValues(values);
                 }
             };
@@ -835,11 +847,10 @@
             qlcWs.onclose = () => {};
         }
 
-        function updateSliderByAbsAddr(absAddr, value) {
+        // Map 1-based QLC+ channel number → fixture+channel slider
+        function updateSliderByQlcCh(qlcCh, value) {
             fixtureData.forEach(f => {
-                // absAddr is 1-based; fixture.address is 0-based
-                // ch = absAddr - (universe * 512 + address + 1)
-                const ch = absAddr - (f.universe * 512 + f.address + 1);
+                const ch = qlcCh - f.address - 1;  // 0-based offset within fixture
                 if (ch >= 0 && ch < f.channels) {
                     const s = document.getElementById(`ch-${f.id}-${ch}`);
                     const v = document.getElementById(`cv-${f.id}-${ch}`);
@@ -847,6 +858,10 @@
                     if (v) v.textContent = value;
                 }
             });
+        }
+
+        function updateSliderByAbsAddr(absAddr, value) {
+            updateSliderByQlcCh(absAddr, value);
         }
 
         function getChannelNames(name, count) {

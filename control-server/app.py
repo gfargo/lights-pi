@@ -956,68 +956,61 @@ def set_channel():
 def get_channel_values():
     """Get current DMX channel values from QLC+ via WebSocket.
 
-    Uses the correct QLC+ 4.x API: QLC+API|getChannelsValues|<universe>|<start>|<count>
-    where universe and start are 1-based.  The response is:
-        getChannelsValues|<val0>,<val1>,...
-    Values are returned as a dict keyed by 1-based absolute address
-    (universe_0_based * 512 + 1-based_channel_within_universe).
+    QLC+ 4.x response format for getChannelsValues:
+        QLC+API|getChannelsValues|<universe>|<ch>|<val>|<pct>.<color>|<ch>|<val>|...
+    where universe and ch are 1-based.
+
+    Returns dict keyed by 1-based absolute channel number within universe 0:
+        { "1": 0, "4": 241, "7": 255, ... }
     """
     import asyncio as _asyncio
     import websockets as _ws
 
-    # Fetch all fixtures to know which universes/ranges to query
-    universes_to_fetch = {}  # universe_0based -> max_channel_1based_needed
+    # Determine how many channels we need (highest fixture end address)
+    max_ch = 32
     try:
         if WORKSPACE_PATH.exists():
             tree = ET.parse(str(WORKSPACE_PATH))
             root = tree.getroot()
             ns = "http://www.qlcplus.org/Workspace"
             for f in root.iter(f"{{{ns}}}Fixture"):
-                uni_el = f.find(f"{{{ns}}}Universe")
                 addr_el = f.find(f"{{{ns}}}Address")
                 chs_el = f.find(f"{{{ns}}}Channels")
-                if uni_el is None or addr_el is None or chs_el is None:
-                    continue
-                uni = int(uni_el.text)
-                addr = int(addr_el.text)   # 0-based
-                chs = int(chs_el.text)
-                # highest 1-based channel needed in this universe
-                top = addr + chs  # addr is 0-based, so addr+chs = last channel (1-based)
-                universes_to_fetch[uni] = max(universes_to_fetch.get(uni, 0), top)
+                if addr_el is not None and chs_el is not None:
+                    top = int(addr_el.text) + int(chs_el.text)
+                    max_ch = max(max_ch, top)
     except Exception:
-        # Fall back to fetching first 32 channels of universe 0
-        universes_to_fetch = {0: 32}
-
-    if not universes_to_fetch:
-        universes_to_fetch = {0: 32}
+        pass
 
     async def _fetch():
         values = {}
         try:
             async with _ws.connect(QLC_WS_URL, open_timeout=4, close_timeout=2) as ws:
-                for uni_0based, max_ch in universes_to_fetch.items():
-                    uni_1based = uni_0based + 1
-                    count = max_ch  # fetch from ch 1 up to max_ch
-                    cmd = f"QLC+API|getChannelsValues|{uni_1based}|1|{count}"
-                    await ws.send(cmd)
-                    import time as _t
-                    deadline = _t.time() + 1.5
-                    while _t.time() < deadline:
-                        try:
-                            msg = await _asyncio.wait_for(ws.recv(), timeout=0.4)
-                            if "getChannelsValues" in msg:
-                                # format: "getChannelsValues|v1,v2,v3,..."
-                                parts = msg.split("|", 1)
-                                if len(parts) == 2:
-                                    for i, v in enumerate(parts[1].split(",")):
-                                        v = v.strip()
-                                        if v.isdigit():
-                                            # absolute 1-based address
-                                            abs_addr = uni_0based * 512 + (i + 1)
-                                            values[abs_addr] = int(v)
-                                break
-                        except _asyncio.TimeoutError:
+                # Universe is 1-based in QLC+ WS API; start at ch 1
+                cmd = f"QLC+API|getChannelsValues|1|1|{max_ch}"
+                await ws.send(cmd)
+                import time as _t
+                deadline = _t.time() + 2.0
+                while _t.time() < deadline:
+                    try:
+                        msg = await _asyncio.wait_for(ws.recv(), timeout=0.5)
+                        if "getChannelsValues" in msg:
+                            # Format: QLC+API|getChannelsValues|<uni>|<ch>|<val>|<pct.color>|<ch>|...
+                            parts = msg.split("|")
+                            # parts[0]=QLC+API, parts[1]=getChannelsValues, parts[2]=universe
+                            # then repeating groups of 3: ch, value, pct.color
+                            i = 3
+                            while i + 2 <= len(parts):
+                                try:
+                                    ch = int(parts[i])
+                                    val = int(parts[i + 1])
+                                    values[ch] = val
+                                except (ValueError, IndexError):
+                                    pass
+                                i += 3
                             break
+                    except _asyncio.TimeoutError:
+                        break
         except Exception as e:
             print(f"channel_values fetch error: {e}")
         return values
