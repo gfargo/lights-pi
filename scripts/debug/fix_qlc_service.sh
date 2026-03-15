@@ -47,11 +47,11 @@ echo "=== Updating qlcplus-web.service on ${PI_USER}@${PI_HOST} ==="
 ssh "${PI_USER}@${PI_HOST}" "
   echo '${SERVICE_CONTENT}' | sudo tee /etc/systemd/system/qlcplus-web.service > /dev/null
 
-  # Ensure autostart.qxw symlink exists
+  # Ensure autostart.qxw is a real file (not symlink) — QLC+ 4.14.1 ignores symlinks
   QLCDIR=\"\$HOME/.qlcplus\"
   if [ ! -e \"\$QLCDIR/autostart.qxw\" ] && [ -f \"\$QLCDIR/default.qxw\" ]; then
-    ln -sf \"\$QLCDIR/default.qxw\" \"\$QLCDIR/autostart.qxw\"
-    echo '✓ Created autostart.qxw symlink'
+    cp \"\$QLCDIR/default.qxw\" \"\$QLCDIR/autostart.qxw\"
+    echo '✓ Created autostart.qxw (real copy)'
   else
     echo '✓ autostart.qxw already present'
   fi
@@ -59,6 +59,12 @@ ssh "${PI_USER}@${PI_HOST}" "
   sudo systemctl daemon-reload
   sudo systemctl restart qlcplus-web.service
   sleep 4
-  systemctl is-active qlcplus-web.service && echo '✓ Service is active' || echo '✗ Service failed'
+  systemctl is-active qlcplus-web.service && echo '✓ QLC+ service is active' || echo '✗ QLC+ service failed'
   systemctl status qlcplus-web.service --no-pager -l | tail -15
+
+  echo ''
+  echo '--- Restarting control server ---'
+  sudo systemctl restart lighting-control.service
+  sleep 2
+  systemctl is-active lighting-control.service && echo '✓ Control server is active' || echo '✗ Control server failed'
 "
