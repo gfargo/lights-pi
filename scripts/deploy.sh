@@ -16,11 +16,13 @@ PI_HOME="/home/${PI_USER}"
 echo "=== Deploying to ${PI_USER}@${PI_HOST} ==="
 
 echo "--- Syncing files ---"
-# Sync control-server and scripts; exclude venv, cache, .git
+# Sync control-server and scripts; exclude venv, cache, .git, and .env
+# .env lives on the Pi only (contains secrets) — never overwrite it
 rsync -avz --delete \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   --exclude='.git' \
+  --exclude='.env' \
   control-server/ "${PI_USER}@${PI_HOST}:${PI_HOME}/control-server/"
 
 rsync -avz --delete \
