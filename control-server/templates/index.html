@@ -537,7 +537,12 @@
             document.getElementById(`${tabName}-tab`).classList.add('active');
             btn.classList.add('active');
             btn.setAttribute('aria-selected','true');
-            if (tabName === 'console') loadFixtures();
+            consoleActive = (tabName === 'console');
+            if (tabName === 'console') {
+                loadFixtures();
+            } else {
+                stopConsolePolling();
+            }
         }
 
         /* ══════════════════════════════════════
@@ -760,6 +765,8 @@
            ══════════════════════════════════════ */
         let qlcWs = null;
         let fixtureData = [];
+        let consolePollInterval = null;
+        let consoleActive = false;
 
         async function loadFixtures() {
             try {
@@ -785,14 +792,31 @@
                     return `<div class="fixture-control"><div class="fixture-name">${escHtml(f.name)}</div><div class="channel-controls">${sliders}</div></div>`;
                 }).join('');
 
-                try {
-                    const vr = await fetch('/api/channel_values');
-                    const vdata = await vr.json();
-                    if (vdata.values) applyAbsoluteValues(vdata.values);
-                } catch (e) {}
-
+                await refreshChannelValues();
                 connectQlcWs();
+                startConsolePolling();
             } catch (e) { console.error('Error loading fixtures:', e); }
+        }
+
+        async function refreshChannelValues() {
+            try {
+                const vr = await fetch('/api/channel_values');
+                const vdata = await vr.json();
+                if (vdata.values) applyAbsoluteValues(vdata.values);
+            } catch (e) {}
+        }
+
+        function startConsolePolling() {
+            stopConsolePolling();
+            // Poll every 2s to catch changes made in SimpleDesk or other clients.
+            // QLC+ doesn't broadcast CH| pushes for SimpleDesk changes to other WS clients.
+            consolePollInterval = setInterval(() => {
+                if (consoleActive) refreshChannelValues();
+            }, 2000);
+        }
+
+        function stopConsolePolling() {
+            if (consolePollInterval) { clearInterval(consolePollInterval); consolePollInterval = null; }
         }
 
         function applyAbsoluteValues(values) {
@@ -816,12 +840,11 @@
             const wsUrl = `ws://${location.hostname}:9999/qlcplusWS`;
             try { qlcWs = new WebSocket(wsUrl); } catch(e) { return; }
             qlcWs.onopen = () => {
-                // Universe 1 (1-based), start ch 1, fetch 512
                 qlcWs.send('QLC+API|getChannelsValues|1|1|512');
             };
             qlcWs.onmessage = (evt) => {
                 const msg = evt.data;
-                // Live update: "CH|<1based_ch>|<value>"
+                // Live push from SimpleDesk or scene activation: "CH|<1based_ch>|<value>"
                 if (msg.startsWith('CH|')) {
                     const parts = msg.split('|');
                     if (parts.length >= 3) {
@@ -830,11 +853,10 @@
                         updateSliderByQlcCh(ch, val);
                     }
                 }
-                // Bulk response: "QLC+API|getChannelsValues|<uni>|<ch>|<val>|<pct.color>|<ch>|..."
+                // Bulk response: "QLC+API|getChannelsValues|<uni>|<ch>|<val>|<pct.color>|..."
                 if (msg.includes('getChannelsValues')) {
                     const parts = msg.split('|');
                     const values = {};
-                    // groups of 3 starting at index 3: ch, val, pct.color
                     for (let i = 3; i + 1 < parts.length; i += 3) {
                         const ch = parseInt(parts[i], 10);
                         const val = parseInt(parts[i + 1], 10);
@@ -844,7 +866,10 @@
                 }
             };
             qlcWs.onerror = () => {};
-            qlcWs.onclose = () => {};
+            // On close, attempt reconnect after 3s if console tab is still active
+            qlcWs.onclose = () => {
+                if (consoleActive) setTimeout(connectQlcWs, 3000);
+            };
         }
 
         // Map 1-based QLC+ channel number → fixture+channel slider

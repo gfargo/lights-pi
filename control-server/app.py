@@ -450,6 +450,16 @@ def execute_lighting_action(action_data, target_groups=None):
             result["success"] = False
             return result
 
+        # Keep autostart.qxw in sync so Pi reloads correctly after reboot.
+        # QLC+ 4.14.1 on Pi requires a real file (not a symlink) for autostart.
+        autostart_path = WORKSPACE_PATH.parent / "autostart.qxw"
+        try:
+            import shutil
+            shutil.copy2(str(WORKSPACE_PATH), str(autostart_path))
+        except Exception as e:
+            result["error"] = (result.get("error", "") +
+                               f"\nautostart sync warning: {e}").strip()
+
         # Restart QLC+ so it picks up the modified workspace
         restart = execute_command(f"sudo systemctl restart {SERVICE_NAME}")
         if not restart["success"]:
