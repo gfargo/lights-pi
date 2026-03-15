@@ -1005,16 +1005,16 @@ def get_channel_values():
                     try:
                         msg = await _asyncio.wait_for(ws.recv(), timeout=0.5)
                         if "getChannelsValues" in msg:
-                            # Format: QLC+API|getChannelsValues|<uni>|<ch>|<val>|<pct.color>|<ch>|...
+                            # Format: QLC+API|getChannelsValues|<ch>|<val>|<pct.color>|<ch>|<val>|...
+                            # parts[0]=QLC+API, parts[1]=getChannelsValues
+                            # then repeating groups of 3: ch, value, pct.color (starting at index 2)
                             parts = msg.split("|")
-                            # parts[0]=QLC+API, parts[1]=getChannelsValues, parts[2]=universe
-                            # then repeating groups of 3: ch, value, pct.color
-                            i = 3
+                            i = 2
                             while i + 2 <= len(parts):
                                 try:
                                     ch = int(parts[i])
                                     val = int(parts[i + 1])
-                                    values[ch] = val
+                                    values[str(ch)] = val
                                 except (ValueError, IndexError):
                                     pass
                                 i += 3

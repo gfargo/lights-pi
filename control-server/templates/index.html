@@ -820,10 +820,10 @@
         }
 
         function applyAbsoluteValues(values) {
-            // values keys are 1-based QLC+ channel numbers (address + ch_offset + 1)
+            // values keys are 1-based QLC+ channel numbers (strings from JSON)
             fixtureData.forEach(f => {
                 for (let ch = 0; ch < f.channels; ch++) {
-                    const qlcCh = f.address + ch + 1;  // 1-based channel number
+                    const qlcCh = String(f.address + ch + 1);  // JSON keys are strings
                     const val = values[qlcCh];
                     if (val != null) {
                         const s = document.getElementById(`ch-${f.id}-${ch}`);
@@ -853,14 +853,15 @@
                         updateSliderByQlcCh(ch, val);
                     }
                 }
-                // Bulk response: "QLC+API|getChannelsValues|<uni>|<ch>|<val>|<pct.color>|..."
+                // Bulk response: "QLC+API|getChannelsValues|<ch>|<val>|<pct.color>|<ch>|<val>|..."
                 if (msg.includes('getChannelsValues')) {
                     const parts = msg.split('|');
                     const values = {};
-                    for (let i = 3; i + 1 < parts.length; i += 3) {
+                    // groups of 3 starting at index 2: ch, val, color
+                    for (let i = 2; i + 1 < parts.length; i += 3) {
                         const ch = parseInt(parts[i], 10);
                         const val = parseInt(parts[i + 1], 10);
-                        if (!isNaN(ch) && !isNaN(val)) values[ch] = val;
+                        if (!isNaN(ch) && !isNaN(val)) values[String(ch)] = val;
                     }
                     if (Object.keys(values).length) applyAbsoluteValues(values);
                 }
