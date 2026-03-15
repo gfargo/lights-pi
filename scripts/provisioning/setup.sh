@@ -124,9 +124,11 @@ SERVICE_FILE="/etc/systemd/system/qlcplus-web.service"
 cat > "\${SERVICE_FILE}" <<SERVICE
 [Unit]
 Description=QLC+ Headless Web Interface
-After=network-online.target
+After=network-online.target local-fs.target
 Wants=network-online.target
-StartLimitIntervalSec=60
+# Give USB devices time to enumerate before starting
+After=dev-bus-usb.device
+StartLimitIntervalSec=120
 StartLimitBurst=5
 
 [Service]
@@ -138,9 +140,14 @@ Environment=XDG_RUNTIME_DIR=/run/qlcplus
 RuntimeDirectory=qlcplus
 RuntimeDirectoryMode=0700
 WorkingDirectory=/home/${PI_USER}
+# Brief delay so USB DMX interface is fully enumerated
+ExecStartPre=/bin/sleep 3
+# --open loads the workspace; autostart.qxw symlink is a belt-and-suspenders backup
 ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --open /home/${PI_USER}/.qlcplus/default.qxw
-Restart=always
-RestartSec=3
+Restart=on-failure
+RestartSec=5
+# Don't restart if QLC+ exits cleanly (e.g. after scene inject restart)
+SuccessExitStatus=0
 
 [Install]
 WantedBy=multi-user.target
