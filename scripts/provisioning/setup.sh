@@ -164,12 +164,16 @@ mkdir -p "\${QLCPLUS_DIR}"
 chown ${PI_USER}:${PI_USER} "\${QLCPLUS_DIR}"
 if [[ ! -e "\${QLCPLUS_DIR}/autostart.qxw" ]]; then
   if [[ -f "\${QLCPLUS_DIR}/default.qxw" ]]; then
-    ln -sf "\${QLCPLUS_DIR}/default.qxw" "\${QLCPLUS_DIR}/autostart.qxw"
-    echo "  ✓ Created autostart.qxw symlink → default.qxw"
+    cp "\${QLCPLUS_DIR}/default.qxw" "\${QLCPLUS_DIR}/autostart.qxw"
+    echo "  ✓ Created autostart.qxw (real copy of default.qxw)"
   else
     echo "  ℹ default.qxw not found yet; create it then run:"
-    echo "    ln -sf ~/.qlcplus/default.qxw ~/.qlcplus/autostart.qxw"
+    echo "    cp ~/.qlcplus/default.qxw ~/.qlcplus/autostart.qxw"
   fi
+elif [[ -L "\${QLCPLUS_DIR}/autostart.qxw" ]]; then
+  # Replace symlink with real file — QLC+ 4.14.1 doesn't follow symlinks for autostart
+  cp "\${QLCPLUS_DIR}/default.qxw" "\${QLCPLUS_DIR}/autostart.qxw"
+  echo "  ✓ Replaced symlink with real copy of default.qxw"
 else
   echo "  ✓ autostart.qxw already exists"
 fi

@@ -39,22 +39,18 @@ fi
 echo ""
 echo "--- Setting up autostart.qxw ---"
 if [ -L "$AUTOSTART" ]; then
-    TARGET=$(readlink "$AUTOSTART")
-    echo "✓ autostart.qxw already exists as symlink → $TARGET"
-    if [ "$TARGET" != "$WORKSPACE" ] && [ "$TARGET" != "default.qxw" ]; then
-        echo "  Updating symlink to point to $WORKSPACE"
-        ln -sf "$WORKSPACE" "$AUTOSTART"
-        echo "  ✓ Updated"
-    fi
-elif [ -f "$AUTOSTART" ]; then
-    echo "  autostart.qxw exists as a regular file."
-    echo "  Replacing with symlink to $WORKSPACE"
+    echo "  autostart.qxw is a symlink — replacing with real file copy"
     rm "$AUTOSTART"
-    ln -sf "$WORKSPACE" "$AUTOSTART"
-    echo "  ✓ Replaced with symlink"
+    cp "$WORKSPACE" "$AUTOSTART"
+    echo "  ✓ Replaced symlink with real copy"
+elif [ -f "$AUTOSTART" ]; then
+    echo "  ✓ autostart.qxw already exists as real file"
+    # Refresh it to match default.qxw
+    cp "$WORKSPACE" "$AUTOSTART"
+    echo "  ✓ Refreshed from default.qxw"
 else
-    echo "  Creating symlink: autostart.qxw → $WORKSPACE"
-    ln -sf "$WORKSPACE" "$AUTOSTART"
+    echo "  Creating autostart.qxw as real copy of $WORKSPACE"
+    cp "$WORKSPACE" "$AUTOSTART"
     echo "  ✓ Created"
 fi
 
