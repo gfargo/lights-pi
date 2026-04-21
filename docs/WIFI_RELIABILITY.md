@@ -103,15 +103,69 @@ ssh pi@lights.local sudo nmcli connection modify "MyNetwork" connection.autoconn
 
 ## Multi-Band Network Setup
 
-Many routers broadcast separate SSIDs for 2.4GHz and 5GHz bands (e.g., `MyNetwork-2G` and `MyNetwork-5G`). Add all variants so the Pi connects to whichever is available:
+Many routers broadcast separate SSIDs for 2.4GHz and 5GHz bands (e.g., `MyNetwork-2G` and `MyNetwork-5G`).
 
+**Important: Pi 3B is 2.4GHz only.** The BCM43438 WiFi chip on the Raspberry Pi 3 Model B does not support 5GHz. Do not add 5GHz-only SSIDs — NetworkManager will waste time trying to connect to them before falling back, adding 30-60 seconds of dead time.
+
+For Pi 3, only add the base SSID and the explicit 2.4GHz variant:
 ```bash
 ./lightsctl.sh wifi-add-network "StudioNet" "password" 50
-./lightsctl.sh wifi-add-network "StudioNet-5G" "password" 40
-./lightsctl.sh wifi-add-network "StudioNet-2G" "password" 30
+./lightsctl.sh wifi-add-network "StudioNet-2G" "password" 40
 ```
 
-5GHz is faster but has shorter range. 2.4GHz has better range but lower throughput. For lighting control, either band works fine — reliability matters more than speed.
+Pi 4 and newer have dual-band WiFi and can use both bands.
+
+Your laptop on 5GHz and the Pi on 2.4GHz will still see each other — both bands share the same LAN on the router. The only exception is if the router has "AP isolation" or "client isolation" enabled.
+
+---
+
+## Pi 3 WiFi Tuning
+
+The Pi 3's onboard BCM43438 WiFi is functional but needs tuning for reliable headless operation. These settings are applied on the Pi itself:
+
+### Disable WiFi Power Save
+
+The BCM43438 has a known issue where power save mode causes random disconnects. The chip goes to sleep and sometimes doesn't wake up properly.
+
+```bash
+# Create NetworkManager config to disable power save
+echo -e '[connection]\nwifi.powersave = 2' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave.conf
+sudo systemctl restart NetworkManager
+```
+
+Value `2` means "disable". This is the single most impactful fix for Pi 3 WiFi reliability.
+
+### Set Regulatory Domain
+
+Without a regulatory domain, the radio uses conservative power and channel settings. Setting it to your country allows full transmit power.
+
+```bash
+sudo raspi-config nonint do_wifi_country US
+```
+
+### Disable IPv6 on WiFi Connections
+
+IPv6 auto-configuration can stall connection setup on networks that don't properly support it, adding delays when switching networks.
+
+```bash
+sudo nmcli connection modify "MyNetwork" ipv6.method ignore
+```
+
+### Add Fallback DNS
+
+If the router's DHCP is slow or doesn't provide DNS servers, add fallback resolvers:
+
+```bash
+sudo nmcli connection modify "MyNetwork" ipv4.dns "1.1.1.1 8.8.8.8"
+```
+
+### Increase DHCP Timeout
+
+Studio/venue routers can be slow to hand out leases. The default timeout is too aggressive:
+
+```bash
+sudo nmcli connection modify "StudioNet" ipv4.dhcp-timeout 60
+```
 
 ---
 
