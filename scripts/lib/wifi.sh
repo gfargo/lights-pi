@@ -453,6 +453,147 @@ function wifi_connect() {
   run_sudo nmcli device status
 }
 
+# Test WiFi connectivity end-to-end
+function wifi_test() {
+  echo "=== WiFi Connectivity Test ==="
+  echo ""
+
+  # Upload test script to Pi and execute it there
+  local local_script="/tmp/wifi-test-$$.sh"
+  cat > "$local_script" << 'ENDSCRIPT'
+#!/bin/bash
+pass=0; fail=0
+
+printf '%-35s' "wlan0 interface up:"
+if ip link show wlan0 2>/dev/null | grep -q "state UP"; then echo "✓"; pass=$((pass+1)); else echo "✗ interface is DOWN"; fail=$((fail+1)); fi
+
+printf '%-35s' "IPv4 address assigned:"
+ip_addr=$(ip -4 addr show wlan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+if [ -n "$ip_addr" ]; then echo "✓ ${ip_addr}"; pass=$((pass+1)); else echo "✗ no address"; fail=$((fail+1)); fi
+
+printf '%-35s' "Connected to SSID:"
+ssid=$(nmcli -t -f active,ssid dev wifi 2>/dev/null | grep "^yes" | cut -d: -f2)
+if [ -n "$ssid" ]; then echo "✓ ${ssid}"; pass=$((pass+1)); else echo "✗ not connected"; fail=$((fail+1)); fi
+
+printf '%-35s' "Signal strength:"
+signal=$(nmcli -t -f active,signal dev wifi 2>/dev/null | grep "^yes" | cut -d: -f2)
+if [ -n "$signal" ] && [ "$signal" -gt 0 ] 2>/dev/null; then
+  if [ "$signal" -ge 70 ]; then echo "✓ ${signal}% (good)"
+  elif [ "$signal" -ge 40 ]; then echo "⚠ ${signal}% (fair)"
+  else echo "✗ ${signal}% (weak)"; fi
+  pass=$((pass+1))
+else echo "✗ unknown"; fail=$((fail+1)); fi
+
+printf '%-35s' "Default gateway reachable:"
+gw=$(ip route show default dev wlan0 2>/dev/null | awk '{print $3}' | head -1)
+if [ -n "$gw" ]; then
+  if ping -c1 -W3 "$gw" >/dev/null 2>&1; then echo "✓ ${gw}"; pass=$((pass+1)); else echo "✗ ${gw} (unreachable)"; fail=$((fail+1)); fi
+else echo "✗ no gateway"; fail=$((fail+1)); fi
+
+printf '%-35s' "DNS resolution:"
+if getent hosts google.com >/dev/null 2>&1 || host -W3 google.com >/dev/null 2>&1 || nslookup google.com >/dev/null 2>&1; then echo "✓"; pass=$((pass+1)); else echo "✗ cannot resolve"; fail=$((fail+1)); fi
+
+printf '%-35s' "Internet reachable:"
+if curl -sf --max-time 5 http://captive.apple.com/hotspot-detect.html >/dev/null 2>&1 || wget -q --timeout=5 -O /dev/null http://captive.apple.com/hotspot-detect.html 2>/dev/null; then echo "✓"; pass=$((pass+1)); else echo "✗ no internet"; fail=$((fail+1)); fi
+
+echo ""; echo "--- Result: ${pass} passed, ${fail} failed ---"
+if [ "$fail" -gt 0 ]; then
+  echo ""; echo "Suggestions:"
+  [ -z "$ip_addr" ] && echo "  • No IP — try: ./lightsctl.sh wifi-reconnect"
+  [ -n "$signal" ] && [ "$signal" -lt 40 ] 2>/dev/null && echo "  • Weak signal — move Pi closer to router"
+  echo "  • Full diagnostics: ./lightsctl.sh wifi-diagnose"
+  exit 1
+fi
+exit 0
+ENDSCRIPT
+
+  "${SCP_CMD[@]}" "$local_script" "${PI_USER}@${PI_HOST}:/tmp/wifi-test.sh" >/dev/null 2>&1
+  rm -f "$local_script"
+
+  local result rc
+  result=$("${REMOTE_CMD[@]}" "bash /tmp/wifi-test.sh" 2>&1) || true
+  rc=${PIPESTATUS[0]:-$?}
+  "${REMOTE_CMD[@]}" "rm -f /tmp/wifi-test.sh" 2>/dev/null || true
+  echo "$result"
+  return $rc
+}
+
+# Install wifi watchdog on the Pi (systemd timer that auto-recovers dropped connections)
+function wifi_watchdog_install() {
+  local watchdog_script="${SCRIPT_DIR}/scripts/services/wifi-watchdog.sh"
+  if [[ ! -f "$watchdog_script" ]]; then
+    echo "Error: wifi-watchdog.sh not found at ${watchdog_script}" >&2
+    return 1
+  fi
+
+  echo "Installing WiFi watchdog on ${PI_HOST}..."
+
+  # Upload script
+  "${SCP_CMD[@]}" "$watchdog_script" "${PI_USER}@${PI_HOST}:/tmp/wifi-watchdog.sh"
+  run_sudo mv /tmp/wifi-watchdog.sh /usr/local/bin/wifi-watchdog.sh
+  run_sudo chmod +x /usr/local/bin/wifi-watchdog.sh
+
+  # Create systemd service
+  run_sudo tee /etc/systemd/system/wifi-watchdog.service >/dev/null <<'EOF'
+[Unit]
+Description=WiFi Watchdog - auto-recover dropped connections
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wifi-watchdog.sh
+EOF
+
+  # Create systemd timer (every 2 minutes)
+  run_sudo tee /etc/systemd/system/wifi-watchdog.timer >/dev/null <<'EOF'
+[Unit]
+Description=Run WiFi watchdog every 2 minutes
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=120
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  run_sudo systemctl daemon-reload
+  run_sudo systemctl enable --now wifi-watchdog.timer
+
+  echo ""
+  echo "✓ WiFi watchdog installed and running"
+  echo "  Checks every 2 minutes, auto-reconnects on failure"
+  echo "  After 3 consecutive failures, restarts NetworkManager"
+  echo ""
+  echo "  Status:  ./lightsctl.sh wifi-watchdog-status"
+  echo "  Logs:    ./lightsctl.sh wifi-watchdog-logs"
+  echo "  Remove:  ./lightsctl.sh wifi-watchdog-uninstall"
+}
+
+# Show watchdog status
+function wifi_watchdog_status() {
+  echo "=== WiFi Watchdog Status ==="
+  run_sudo systemctl status wifi-watchdog.timer --no-pager 2>/dev/null || echo "Timer not installed"
+  echo ""
+  echo "--- Last run ---"
+  run_sudo systemctl status wifi-watchdog.service --no-pager 2>/dev/null || echo "Service not installed"
+}
+
+# Show watchdog logs
+function wifi_watchdog_logs() {
+  run_sudo journalctl -t wifi-watchdog -n 50 --no-pager
+}
+
+# Uninstall watchdog
+function wifi_watchdog_uninstall() {
+  echo "Removing WiFi watchdog..."
+  run_sudo systemctl disable --now wifi-watchdog.timer 2>/dev/null || true
+  run_sudo rm -f /etc/systemd/system/wifi-watchdog.service /etc/systemd/system/wifi-watchdog.timer /usr/local/bin/wifi-watchdog.sh
+  run_sudo systemctl daemon-reload
+  echo "✓ WiFi watchdog removed"
+}
+
 # Export functions
 export -f detect_network_manager
 export -f wifi_show_config
@@ -465,3 +606,8 @@ export -f wifi_edit_config
 export -f wifi_add_network
 export -f wifi_list
 export -f wifi_connect
+export -f wifi_test
+export -f wifi_watchdog_install
+export -f wifi_watchdog_status
+export -f wifi_watchdog_logs
+export -f wifi_watchdog_uninstall

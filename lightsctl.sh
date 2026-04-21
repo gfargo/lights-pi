@@ -43,7 +43,7 @@ SSL_CERT="${SSL_CERT:-${SCRIPT_DIR}/certs/qlc.crt}"
 SSL_KEY="${SSL_KEY:-${SCRIPT_DIR}/certs/qlc.key}"
 SSH_OPTIONS=()
 if [[ -n "$SSH_KEY" ]]; then
-  SSH_OPTIONS+=("-i" "$SSH_KEY")
+  SSH_OPTIONS+=("-i" "$SSH_KEY" "-o" "IdentitiesOnly=yes")
 fi
 REMOTE_CMD=(ssh "${SSH_OPTIONS[@]}" "${PI_USER}@${PI_HOST}")
 SCP_CMD=(scp "${SSH_OPTIONS[@]}")
@@ -96,12 +96,17 @@ Network / WiFi:
   wifi-list                     list all configured and available WiFi networks
   wifi-add-network <ssid> <pass> [priority]  add a new WiFi network (NetworkManager)
   wifi-connect <ssid>           connect to a specific WiFi network
+  wifi-test                     end-to-end connectivity test (IP, gateway, DNS, internet)
   wifi-reconf                   reload wpa_supplicant configuration
   wifi-restart                  restart wpa_supplicant service (reloads config file)
   wifi-reconnect                force disconnect and reconnect to best available network
   wifi-status                   show SSID and wlan0 address
   wifi-diagnose                 comprehensive WiFi diagnostics and troubleshooting
   wifi-edit                     edit the Wi-Fi config in \$EDITOR (defaults to nano)
+  wifi-watchdog-install         install auto-recovery watchdog (checks every 2 min)
+  wifi-watchdog-status          show watchdog timer status
+  wifi-watchdog-logs            show watchdog log history
+  wifi-watchdog-uninstall       remove the watchdog
   scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
 System:
@@ -338,6 +343,31 @@ function command_wifi_list() {
 function command_wifi_connect() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_connect "$@"
+}
+
+function command_wifi_test() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_test
+}
+
+function command_wifi_watchdog_install() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_watchdog_install
+}
+
+function command_wifi_watchdog_status() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_watchdog_status
+}
+
+function command_wifi_watchdog_logs() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_watchdog_logs
+}
+
+function command_wifi_watchdog_uninstall() {
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  wifi_watchdog_uninstall
 }
 
 function command_wifi_edit() {
@@ -1199,6 +1229,11 @@ case "$1" in
   wifi-list) command_wifi_list ;;
   wifi-add-network) shift; command_wifi_add_network "$@" ;;
   wifi-connect) shift; command_wifi_connect "$@" ;;
+  wifi-test) command_wifi_test ;;
+  wifi-watchdog-install) command_wifi_watchdog_install ;;
+  wifi-watchdog-status) command_wifi_watchdog_status ;;
+  wifi-watchdog-logs) command_wifi_watchdog_logs ;;
+  wifi-watchdog-uninstall) command_wifi_watchdog_uninstall ;;
   wifi-reconf) command_wifi_reconf ;;
   wifi-restart) command_wifi_restart ;;
   wifi-reconnect) command_wifi_reconnect ;;

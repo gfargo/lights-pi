@@ -239,10 +239,32 @@ open-web                      # Open the web UI in the default browser
 
 ```bash
 wifi                          # Dump /etc/wpa_supplicant/wpa_supplicant.conf
+wifi-list                     # List all configured and available WiFi networks
+wifi-add-network <ssid> <pass> [priority]  # Add a new WiFi network
+wifi-connect <ssid>           # Connect to a specific WiFi network
+wifi-test                     # End-to-end connectivity test (IP, gateway, DNS, internet)
 wifi-reconf                   # Run wpa_cli -i wlan0 reconfigure
 wifi-status                   # Show current SSID and wlan0 address
+wifi-diagnose                 # Comprehensive WiFi diagnostics
+wifi-reconnect                # Force disconnect and reconnect to best network
 wifi-edit                     # Edit the Wi-Fi config in $EDITOR
-scan                          # Scan network for Raspberry Pi devices (lights-*.local)
+wifi-watchdog-install         # Install auto-recovery watchdog (checks every 2 min)
+wifi-watchdog-status          # Show watchdog timer status
+wifi-watchdog-logs            # Show watchdog log history
+wifi-watchdog-uninstall       # Remove the watchdog
+scan [--deep]                 # Scan network for Raspberry Pi devices
+```
+
+**WiFi Watchdog:**
+The WiFi watchdog is a systemd timer that runs every 2 minutes on the Pi. It checks if `wlan0` has an IP and can reach the default gateway. If connectivity is lost, it automatically reconnects. After 3 consecutive failures, it restarts NetworkManager entirely. Install it once and forget about it:
+```bash
+./lightsctl.sh wifi-watchdog-install
+```
+
+**WiFi Connectivity Test:**
+Quick end-to-end test that verifies interface status, IP assignment, SSID connection, signal strength, gateway reachability, DNS resolution, and internet access:
+```bash
+./lightsctl.sh wifi-test
 ```
 
 </details>
@@ -611,7 +633,8 @@ lights-pi/
 │   │   ├── harden.sh         # Security hardening (formerly pi_harden.sh)
 │   │   └── configure_qlc_headless.sh  # Qt platform configuration
 │   └── services/             # Service-specific deployment
-│       └── landing.sh        # Landing page setup (formerly pi_landing.sh)
+│       ├── landing.sh        # Landing page setup (formerly pi_landing.sh)
+│       └── wifi-watchdog.sh  # WiFi auto-recovery watchdog (installed on Pi)
 ├── landing/                  # Landing page HTML
 ├── workspaces/               # QLC+ workspace files (.qxw)
 ├── backups/                  # QLC+ configuration backups
@@ -792,6 +815,45 @@ Ensure the Pi is powered on, connected to the same network, and that the hostnam
 </details>
 
 <details>
+<summary><b>WiFi keeps dropping or Pi unreachable at studio</b></summary>
+
+**Quick diagnosis:**
+```bash
+./lightsctl.sh wifi-test       # End-to-end connectivity check
+./lightsctl.sh wifi-diagnose   # Full WiFi diagnostics
+```
+
+**Common fixes:**
+1. **Install the WiFi watchdog** for automatic recovery:
+   ```bash
+   ./lightsctl.sh wifi-watchdog-install
+   ```
+2. **Add all network band variants** (2.4GHz and 5GHz):
+   ```bash
+   ./lightsctl.sh wifi-add-network "StudioNet-2G" "password" 30
+   ./lightsctl.sh wifi-add-network "StudioNet-5G" "password" 40
+   ```
+3. **Set connection priorities** so preferred networks connect first:
+   ```bash
+   # Higher number = higher priority
+   ssh pi@lights.local sudo nmcli connection modify "MyNetwork" connection.autoconnect-priority 100
+   ```
+4. **SSH "Too many authentication failures"** — if your SSH agent has many keys loaded, add `IdentitiesOnly yes` to `~/.ssh/config`:
+   ```
+   Host lights.local
+     User pi
+     IdentityFile ~/.ssh/id_rsa
+     IdentitiesOnly yes
+   ```
+
+**Check watchdog logs:**
+```bash
+./lightsctl.sh wifi-watchdog-logs
+```
+
+</details>
+
+<details>
 <summary><b>Lights not responding</b></summary>
 
 - Confirm universe output is enabled in QLC+ under **Inputs/Outputs**
@@ -845,6 +907,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
 - Plugin system and API access
 
 For detailed information on AI scene generation, see [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md).
+For WiFi reliability and troubleshooting, see [docs/WIFI_RELIABILITY.md](docs/WIFI_RELIABILITY.md).
 
 ---
 
