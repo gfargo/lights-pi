@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Function>
+<Function Type="Scene" Name="AI: soft white for video">
+  <Speed FadeIn="500" FadeOut="500" Duration="0"/>
+  <FixtureVal ID="0">1,220,2,255,3,255,4,255,5,0,6,0,7,0</FixtureVal>
+  <FixtureVal ID="3">1,255,2,255,3,255</FixtureVal>
+  <FixtureVal ID="4">1,255,2,255,3,255</FixtureVal>
+  <FixtureVal ID="5">1,220,2,255,3,255,4,255,5,0,6,0,7,0</FixtureVal>
+</Function>

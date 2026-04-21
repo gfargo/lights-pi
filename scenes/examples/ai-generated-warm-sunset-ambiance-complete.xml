@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Function>
+<Function Type="Scene" Name="AI: warm sunset ambiance">
+  <Speed FadeIn="500" FadeOut="500" Duration="0"/>
+  <FixtureVal ID="0">1,180,2,255,3,140,4,0,5,0,6,0,7,0</FixtureVal>
+  <FixtureVal ID="3">1,255,2,140,3,0</FixtureVal>
+  <FixtureVal ID="4">1,255,2,140,3,0</FixtureVal>
+  <FixtureVal ID="5">1,180,2,255,3,140,4,0,5,0,6,0,7,0</FixtureVal>
+</Function>
