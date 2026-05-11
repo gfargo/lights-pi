@@ -22,6 +22,7 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow 22/tcp   comment 'SSH'
 ufw allow ${QLC_PORT}/tcp comment 'QLC+ web UI'
+ufw allow 5353/udp comment 'mDNS (Avahi - lights.local)'
 ufw --force enable
 ufw status verbose
 
