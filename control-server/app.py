@@ -87,58 +87,198 @@ def _is_local():
 
 IS_LOCAL = _is_local()
 
-# Global QLC+ WebSocket connection
+# ---------------------------------------------------------------------------
+# QLC+ WebSocket — single persistent connection on a background event loop
+# ---------------------------------------------------------------------------
+# QLC+ 4.14.1 has a hard limit (~50) on concurrent WebSocket clients. Each
+# call to websockets.connect() leaves the underlying TCP socket in CLOSE_WAIT
+# when QLC+ closes its end (transport.abort() doesn't flush the FIN). Within
+# minutes the limit is exhausted and new handshakes silently time out.
+#
+# The fix: maintain ONE long-lived WebSocket on a dedicated asyncio loop in a
+# background thread. All Flask requests dispatch sends to that loop via a
+# thread-safe call. The connection auto-reconnects if QLC+ drops it.
+
+import threading
+import concurrent.futures
+
+_qlc_loop: asyncio.AbstractEventLoop = None  # type: ignore
+_qlc_loop_thread: threading.Thread = None  # type: ignore
+_qlc_ws = None  # the actual websocket connection (lives on _qlc_loop)
+_qlc_ws_lock: asyncio.Lock = None  # type: ignore
+_qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
+
+
+def _start_qlc_loop():
+    """Start the dedicated background event loop used for QLC+ comms."""
+    global _qlc_loop, _qlc_loop_thread, _qlc_ws_lock
+
+    if _qlc_loop is not None and _qlc_loop.is_running():
+        return
+
+    ready = threading.Event()
+
+    def _run_loop():
+        global _qlc_loop, _qlc_ws_lock
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _qlc_loop = loop
+        _qlc_ws_lock = asyncio.Lock()
+        ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+    _qlc_loop_thread = threading.Thread(target=_run_loop, daemon=True, name="qlc-ws-loop")
+    _qlc_loop_thread.start()
+    ready.wait(timeout=5)
+
+
+def _qlc_run(coro, timeout=10):
+    """Submit a coroutine to the QLC+ background loop and wait for the result."""
+    if _qlc_loop is None:
+        _start_qlc_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise
+
+
+async def _ensure_qlc_ws():
+    """Open the persistent WebSocket if needed. Lock-protected."""
+    global _qlc_ws
+    async with _qlc_ws_lock:
+        # Treat both "missing" and "closed" cases as needing reconnect
+        needs_connect = _qlc_ws is None
+        if not needs_connect:
+            try:
+                # websockets >=10 exposes .closed; older uses .open
+                if getattr(_qlc_ws, "closed", False):
+                    needs_connect = True
+            except Exception:
+                needs_connect = True
+        if needs_connect:
+            # Make sure the previous connection (if any) is fully torn down
+            # before opening a new one — otherwise the old TCP socket sits in
+            # CLOSE_WAIT until garbage collection runs, eventually exhausting
+            # QLC+'s connection slot pool.
+            old_ws = _qlc_ws
+            _qlc_ws = None
+            if old_ws is not None:
+                try:
+                    await asyncio.wait_for(old_ws.close(), timeout=1.0)
+                except Exception:
+                    pass
+            try:
+                _qlc_ws = await websockets.connect(
+                    QLC_WS_URL,
+                    open_timeout=3,
+                    close_timeout=1,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    max_size=2 ** 20,
+                )
+                # Start a background reader so QLC+ pushes don't fill the recv buffer
+                asyncio.create_task(_qlc_reader(_qlc_ws))
+                print(f"✓ QLC+ WebSocket connected at {QLC_WS_URL}")
+            except Exception as e:
+                _qlc_ws = None
+                print(f"✗ QLC+ WebSocket connect failed: {type(e).__name__}: {e}")
+                raise
+        return _qlc_ws
+
+
+async def _qlc_reader(ws):
+    """Continuously drain incoming messages, dispatching API replies to waiters.
+
+    Takes the websocket as an explicit argument so we don't race against
+    reassignment of the global. When the connection drops, we explicitly close
+    it to avoid leaking the underlying TCP socket into CLOSE_WAIT.
+    """
+    global _qlc_ws
+    try:
+        async for msg in ws:
+            # Dispatch QLC+API responses to any pending request waiting on it
+            for key, fut in list(_qlc_pending_responses.items()):
+                if key in msg and not fut.done():
+                    fut.set_result(msg)
+                    _qlc_pending_responses.pop(key, None)
+                    break
+    except Exception as e:
+        print(f"QLC+ WebSocket reader exited: {type(e).__name__}: {e}")
+    finally:
+        # Drop the global reference so the next caller reconnects, and
+        # explicitly close the underlying connection so the OS frees the FD
+        # and QLC+ reclaims the slot — without this, sockets pile up in
+        # CLOSE_WAIT for ~minutes until Python GC runs the destructor.
+        try:
+            await asyncio.wait_for(ws.close(), timeout=1.0)
+        except Exception:
+            pass
+        if _qlc_ws is ws:
+            _qlc_ws = None
+
+
+async def _qlc_send_commands(commands):
+    """Send one or more raw QLC+ commands over the persistent WebSocket."""
+    ws = await _ensure_qlc_ws()
+    async with _qlc_ws_lock:
+        for command in commands:
+            await ws.send(command)
+
+
+async def _qlc_request_reply(command, response_marker, timeout=2.0):
+    """Send a command and wait for a response containing response_marker."""
+    ws = await _ensure_qlc_ws()
+    fut = asyncio.get_running_loop().create_future()
+    _qlc_pending_responses[response_marker] = fut
+    try:
+        async with _qlc_ws_lock:
+            await ws.send(command)
+        return await asyncio.wait_for(fut, timeout=timeout)
+    finally:
+        _qlc_pending_responses.pop(response_marker, None)
+
+
+# ---------------------------------------------------------------------------
+# Public API used by the rest of app.py
+# ---------------------------------------------------------------------------
+
+# Global QLC+ WebSocket connection (legacy reference — no longer used directly,
+# kept for any external code that imports it)
 qlc_websocket = None
 
 
 async def connect_to_qlc():
-    """Connect to QLC+ WebSocket"""
-    global qlc_websocket
+    """Legacy stub kept for compatibility — uses the persistent connection."""
     try:
-        qlc_websocket = await websockets.connect(QLC_WS_URL)
-        print(f"✓ Connected to QLC+ WebSocket at {QLC_WS_URL}")
+        await _ensure_qlc_ws()
         return True
-    except Exception as e:
-        print(f"✗ Failed to connect to QLC+: {e}")
-        qlc_websocket = None
+    except Exception:
         return False
 
 
 async def send_qlc_command(command):
-    """Send command to QLC+ WebSocket"""
-    global qlc_websocket
+    """Send a single command to QLC+ via the persistent WebSocket."""
     try:
-        if qlc_websocket is None or qlc_websocket.closed:
-            await connect_to_qlc()
-        
-        if qlc_websocket:
-            await qlc_websocket.send(command)
-            return True
+        await _qlc_send_commands([command])
+        return True
     except Exception as e:
-        print(f"Error sending QLC+ command: {e}")
-        qlc_websocket = None
-    return False
+        print(f"send_qlc_command error: {e}")
+        return False
 
 
 def set_channel_value(universe, address, value):
-    """
-    Set DMX channel value via QLC+ Simple Desk
-    
-    Args:
-        universe: Universe index (0-based)
-        address: DMX address within universe (1-512)
-        value: DMX value (0-255)
-    """
-    # Calculate absolute DMX address
-    # Universe 0: addresses 1-512
-    # Universe 1: addresses 513-1024, etc.
+    """Set a single DMX channel via QLC+."""
     absolute_address = (universe * 512) + address
-    
     return set_channel_values([(absolute_address, value)])
 
 
 def _run_async(coro):
-    """Run a coroutine from Flask's sync request handlers."""
+    """Compatibility shim. New code should use _qlc_run() for QLC+ work."""
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -148,26 +288,17 @@ def _run_async(coro):
 
 
 async def send_qlc_commands(commands):
-    """Send one or more QLC+ WebSocket commands over a single connection."""
-    ws = None
+    """Send one or more QLC+ commands. Uses the persistent connection."""
     try:
-        ws = await websockets.connect(QLC_WS_URL, open_timeout=2, close_timeout=0.1)
-        for command in commands:
-            await ws.send(command)
-        await asyncio.sleep(0.02)
+        await _qlc_send_commands(commands)
         return True
     except Exception as e:
-        print(f"Error sending QLC+ commands: {e}")
+        print(f"send_qlc_commands error: {e}")
         return False
-    finally:
-        if ws is not None:
-            transport = getattr(ws, "transport", None)
-            if transport is not None:
-                transport.abort()
 
 
 def set_channel_values(channel_values):
-    """Set absolute QLC+ channel values.
+    """Set absolute QLC+ channel values via the persistent WebSocket.
 
     Args:
         channel_values: iterable of (absolute_channel, value), both 1-based / 0-255
@@ -183,7 +314,12 @@ def set_channel_values(channel_values):
             commands.append(f"CH|{ch}|{val}")
     if not commands:
         return True
-    return _run_async(send_qlc_commands(commands))
+    try:
+        _qlc_run(_qlc_send_commands(commands), timeout=5)
+        return True
+    except Exception as e:
+        print(f"set_channel_values error: {e}")
+        return False
 
 
 def _workspace_root():
@@ -373,33 +509,26 @@ def apply_existing_scene_live(scene_id_or_name):
 
 
 async def _fetch_channel_values(max_ch):
+    """Fetch live channel values via the persistent QLC+ WebSocket."""
     values = {}
-    ws = None
     try:
-        ws = await websockets.connect(QLC_WS_URL, open_timeout=2, close_timeout=0.1)
-        await ws.send(f"QLC+API|getChannelsValues|1|1|{max_ch}")
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
-            except asyncio.TimeoutError:
-                break
-            if "getChannelsValues" not in msg:
-                continue
-            parts = msg.split("|")
-            # QLC+ 4.14.1 live response starts channel/value groups at index 2:
-            # QLC+API|getChannelsValues|1|0||2|0||...
-            for i in range(2, len(parts) - 1, 3):
-                try:
-                    values[int(parts[i])] = int(parts[i + 1])
-                except (ValueError, IndexError):
-                    continue
-            break
-    finally:
-        if ws is not None:
-            transport = getattr(ws, "transport", None)
-            if transport is not None:
-                transport.abort()
+        msg = await _qlc_request_reply(
+            f"QLC+API|getChannelsValues|1|1|{max_ch}",
+            response_marker="getChannelsValues",
+            timeout=2.0,
+        )
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"channel_values fetch error: {e}")
+        return values
+
+    parts = msg.split("|")
+    # QLC+ 4.14.1 live response starts channel/value groups at index 2:
+    # QLC+API|getChannelsValues|1|0||2|0||...
+    for i in range(2, len(parts) - 1, 3):
+        try:
+            values[int(parts[i])] = int(parts[i + 1])
+        except (ValueError, IndexError):
+            continue
     return values
 
 
@@ -409,7 +538,7 @@ def get_current_channel_values(max_ch=None):
         for fixture in get_workspace_fixtures():
             max_ch = max(max_ch, fixture["universe"] * 512 + fixture["address"] + fixture["channels"])
     try:
-        return _run_async(_fetch_channel_values(max_ch))
+        return _qlc_run(_fetch_channel_values(max_ch), timeout=4)
     except Exception as e:
         print(f"channel_values fetch error: {e}")
         return {}
@@ -675,27 +804,24 @@ def apply_color_live(color, intensity=None, target_groups=None):
 
 
 async def _fade_brightness_async(channels, target_value, seconds, steps):
-    """Run a multi-step fade over a single WebSocket connection."""
-    ws = None
+    """Run a multi-step fade over the persistent QLC+ WebSocket."""
+    ws = await _ensure_qlc_ws()
     try:
-        ws = await websockets.connect(QLC_WS_URL, open_timeout=2, close_timeout=0.1)
         for step in range(1, steps + 1):
             ratio = step / steps
+            commands = []
             for channel, start in channels:
                 val = max(0, min(255, round(start + (target_value - start) * ratio)))
-                await ws.send(f"CH|{channel}|{val}")
+                commands.append(f"CH|{channel}|{val}")
+            async with _qlc_ws_lock:
+                for cmd in commands:
+                    await ws.send(cmd)
             if step < steps and seconds > 0:
                 await asyncio.sleep(seconds / steps)
-        await asyncio.sleep(0.02)
         return True
     except Exception as e:
         print(f"Fade WebSocket error: {e}")
         return False
-    finally:
-        if ws is not None:
-            transport = getattr(ws, "transport", None)
-            if transport is not None:
-                transport.abort()
 
 
 def fade_brightness_live(target, duration, target_groups=None):
@@ -715,7 +841,14 @@ def fade_brightness_live(target, duration, target_groups=None):
     steps = max(1, min(30, math.ceil(seconds * 10)))
     target_value = _parse_level(target, default=0)
 
-    success = _run_async(_fade_brightness_async(channels, target_value, seconds, steps))
+    try:
+        success = _qlc_run(
+            _fade_brightness_async(channels, target_value, seconds, steps),
+            timeout=seconds + 5,
+        )
+    except Exception as e:
+        print(f"fade error: {e}")
+        success = False
 
     return {
         "success": success,
@@ -1184,16 +1317,22 @@ def get_status():
         "latency_ms": ai_latency,
     }
 
-    # 2. QLC+ WebSocket port. Do a TCP reachability probe instead of holding a
-    # status WebSocket open; QLC+ 4.14.1 is sensitive to excess WS clients.
+    # 2. QLC+ WebSocket health. Inspect our persistent connection rather than
+    # opening a fresh TCP probe — under load, QLC+ may not accept new TCP
+    # connections within a tight timeout even though the existing WebSocket
+    # is fully functional. Report the persistent connection's live state.
     ws_ok = False
-    ws_detail = "unreachable"
+    ws_detail = "unknown"
     try:
-        with socket.create_connection((QLC_HOST, QLC_PORT), timeout=1):
+        if _qlc_ws is None:
+            ws_detail = "not connected (will reconnect on next command)"
+        elif getattr(_qlc_ws, "closed", False):
+            ws_detail = "closed (will reconnect on next command)"
+        else:
             ws_ok = True
-            ws_detail = f"reachable at {QLC_WS_URL}"
+            ws_detail = f"connected at {QLC_WS_URL}"
     except Exception as e:
-        ws_detail = str(e)
+        ws_detail = f"check failed: {e}"
     services["qlc_ws"] = {
         "name": "QLC+ WebSocket",
         "ok": ws_ok,
@@ -1505,10 +1644,13 @@ if __name__ == "__main__":
         print(f"Error: lightsctl.sh not found at {LIGHTSCTL}")
         sys.exit(1)
 
-    # NOTE: We no longer open a persistent QLC+ WebSocket on startup.
-    # Each request opens its own short-lived connection and aborts the
-    # transport immediately after sending. This avoids exhausting QLC+'s
-    # limited WebSocket slots (which caused handshake timeouts).
+    # Start the dedicated QLC+ WebSocket loop in a background thread.
+    # All QLC+ comms go through this one persistent connection.
+    _start_qlc_loop()
+    try:
+        _qlc_run(_ensure_qlc_ws(), timeout=5)
+    except Exception as e:
+        print(f"Warning: initial QLC+ connect failed (will retry on demand): {e}")
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections)
     port = int(os.getenv("CONTROL_PORT", "5000"))
