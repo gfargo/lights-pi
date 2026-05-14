@@ -824,16 +824,27 @@
                 }
                 fixtureData = data.fixtures;
                 list.innerHTML = data.fixtures.map(f => {
-                    const chNames = getChannelNames(f);
-                    const sliders = chNames.map((name, i) => `
-                        <div class="channel-control">
-                            <div class="channel-label">${name}</div>
+                    // Prefer authoritative .qxf-derived channel info from the API.
+                    // Fall back to the JS heuristic for older deployments.
+                    const channels = (f.channel_info && f.channel_info.length)
+                        ? f.channel_info.map(ch => ({
+                            name: ch.name || `Ch ${ch.offset + 1}`,
+                            role: ch.role || null,
+                          }))
+                        : getChannelNames(f).map(n => ({ name: n, role: null }));
+                    const sliders = channels.map((ch, i) => {
+                        const roleAttr = ch.role ? ` data-role="${ch.role}"` : '';
+                        const titleAttr = ch.role ? ` title="${ch.role}"` : '';
+                        return `
+                        <div class="channel-control"${roleAttr}>
+                            <div class="channel-label"${titleAttr}>${escHtml(ch.name)}</div>
                             <input type="range" class="channel-slider" min="0" max="255" value="0"
                                    id="ch-${f.id}-${i}" data-fixture="${f.id}" data-channel="${i}"
                                    oninput="updateChannel(${f.id},${i},this.value);document.getElementById('cv-${f.id}-${i}').textContent=this.value"
-                                   aria-label="${name} for ${f.name}">
+                                   aria-label="${escHtml(ch.name)} for ${escHtml(f.name)}">
                             <div class="channel-value" id="cv-${f.id}-${i}">0</div>
-                        </div>`).join('');
+                        </div>`;
+                    }).join('');
                     return `<div class="fixture-control"><div class="fixture-name">${escHtml(f.name)}</div><div class="channel-controls">${sliders}</div></div>`;
                 }).join('');
 
@@ -899,8 +910,10 @@
         function getChannelNames(fixture) {
             const count = fixture.channels;
             const n = `${fixture.manufacturer || ''} ${fixture.model || ''} ${fixture.name || ''}`.toLowerCase();
-            if (n.includes('pro w') && count >= 9) return ['Dimmer','Red','Green','Blue','Color Macros','White','Strobe','Auto Program','Auto Speed'];
-            if (n.includes('pro h') && count >= 7) return ['Dimmer','Red','Green','Blue','Color Macros','Amber','Strobe'];
+            // Chauvet SlimPAR Pro W (9-Channel mode) — Warm/Cool/Amber LED, no RGB
+            if (n.includes('pro w') && count >= 9) return ['Dimmer','Warm White','Cool White','Amber','Color Macro','Strobe','Auto Programs','Auto Speed','Dimmer Speed Mode'];
+            // Chauvet SlimPAR Pro H — RGBA
+            if (n.includes('pro h') && count >= 7) return ['Dimmer','Red','Green','Blue','Amber','Color Macro','Strobe'];
             if ((n.includes('par') || n.includes('rgb')) && count === 3) return ['Red','Green','Blue'];
             if (count === 1) return ['Dimmer'];
             return Array.from({length: count}, (_, i) => `Ch ${i + 1}`);

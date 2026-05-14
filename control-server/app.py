@@ -17,12 +17,17 @@ import time
 import tempfile
 import websockets
 from pathlib import Path
+from typing import Dict
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Local QLC+ fixture definition parser (.qxf)
+sys.path.insert(0, str(Path(__file__).parent))
+import fixture_definitions
 
 app = Flask(__name__)
 CORS(app)
@@ -410,28 +415,124 @@ def get_current_channel_values(max_ch=None):
         return {}
 
 
+def _fixture_channels_info(fixture):
+    """Return resolved channel info for a fixture, sourced from .qxf when available.
+
+    Returns a list of dicts with keys: offset, name, role, preset, group, colour.
+    Falls back to a synthetic list (Ch 1, Ch 2, ...) when no definition is found.
+    """
+    manufacturer = fixture.get("manufacturer", "") or ""
+    model = fixture.get("model", "") or ""
+    mode_name = fixture.get("mode", "") or ""
+
+    mode = fixture_definitions.get_mode(manufacturer, model, mode_name)
+    if mode is None or not mode.channels:
+        # Fall back: synthesize generic channel info from the heuristic roles
+        roles = _fixture_roles_heuristic(fixture)
+        offset_to_role: Dict[int, str] = {}
+        for role, val in roles.items():
+            if role == "brightness":
+                continue
+            if isinstance(val, int):
+                offset_to_role[val] = role
+        info = []
+        for offset in range(int(fixture.get("channels", 0))):
+            role = offset_to_role.get(offset)
+            info.append({
+                "offset": offset,
+                "name": role.title() if role else f"Ch {offset + 1}",
+                "role": role,
+                "preset": None,
+                "group": None,
+                "colour": None,
+            })
+        return info
+
+    return [ch.to_dict() for ch in mode.channels]
+
+
 def _fixture_roles(fixture):
-    """Infer common color/intensity offsets for the fixtures used here."""
+    """Resolve role offsets for a fixture using its .qxf definition.
+
+    Returns a dict like:
+        {"dimmer": 0, "warm": 1, "cool": 2, "amber": 3, "brightness": [0]}
+
+    If the .qxf is missing or doesn't cover this mode, falls back to the
+    legacy heuristic that inspects fixture name + channel count.
+    """
+    manufacturer = fixture.get("manufacturer", "") or ""
+    model = fixture.get("model", "") or ""
+    mode_name = fixture.get("mode", "") or ""
+
+    mode = fixture_definitions.get_mode(manufacturer, model, mode_name)
+    if mode is not None and mode.channels:
+        return mode.role_offsets()
+
+    return _fixture_roles_heuristic(fixture)
+
+
+def _fixture_roles_heuristic(fixture):
+    """Legacy heuristic-based role inference. Used only when no .qxf is found.
+
+    Channel offsets are 0-based within the fixture's DMX footprint.
+    Returns a dict keyed by role name. "brightness" is a list of offsets
+    that should track overall intensity (used by adjust_brightness/fade).
+    """
     channels = fixture["channels"]
     name = f"{fixture.get('manufacturer', '')} {fixture.get('model', '')} {fixture.get('name', '')}".lower()
 
+    # Generic 3-channel RGB par (e.g. SlimPAR 56 in 3-Ch mode)
     if channels == 3:
         return {"red": 0, "green": 1, "blue": 2, "brightness": [0, 1, 2]}
 
-    if channels >= 7:
-        roles = {
+    # Chauvet SlimPAR Pro W (9-Channel mode): dimmer + WWA + macros/strobe/programs
+    # CH1 Master Dimmer, CH2 Warm, CH3 Cool, CH4 Amber, CH5 Macro, CH6 Strobe,
+    # CH7 Auto Programs, CH8 Auto Speed, CH9 Dimmer Speed Mode
+    if "pro w" in name and channels >= 9:
+        return {
+            "dimmer": 0,
+            "warm": 1,
+            "cool": 2,
+            "amber": 3,
+            "macro": 4,
+            "strobe": 5,
+            "brightness": [0],
+        }
+
+    # Chauvet SlimPAR Pro H (7-Channel mode): dimmer + RGBA + macro + strobe
+    if "pro h" in name and channels >= 7:
+        return {
             "dimmer": 0,
             "red": 1,
             "green": 2,
             "blue": 3,
+            "amber": 4,
+            "macro": 5,
+            "strobe": 6,
             "brightness": [0],
         }
-        if "pro h" in name or "amber" in name or channels == 7:
-            roles["amber"] = 5
-        if "pro w" in name or "white" in name or channels >= 9:
-            roles["white"] = 5
-            roles["warm"] = 5
-        return roles
+
+    # Generic 7-channel RGBA par fallback
+    if channels == 7:
+        return {
+            "dimmer": 0,
+            "red": 1,
+            "green": 2,
+            "blue": 3,
+            "amber": 4,
+            "brightness": [0],
+        }
+
+    # Generic 8+ channel RGBW par fallback (only used when Pro W/Pro H didn't match)
+    if channels >= 7:
+        return {
+            "dimmer": 0,
+            "red": 1,
+            "green": 2,
+            "blue": 3,
+            "white": 4,
+            "brightness": [0],
+        }
 
     return {"dimmer": 0, "brightness": [0]}
 
@@ -503,16 +604,17 @@ def apply_brightness_live(value, target_groups=None):
 
 
 COLOR_PRESETS = {
-    "red": {"red": 255, "green": 0, "blue": 0},
-    "green": {"red": 0, "green": 255, "blue": 0},
-    "blue": {"red": 0, "green": 0, "blue": 255},
-    "purple": {"red": 200, "green": 0, "blue": 255},
-    "magenta": {"red": 255, "green": 0, "blue": 255},
-    "cyan": {"red": 0, "green": 255, "blue": 255},
-    "white": {"red": 220, "green": 220, "blue": 220, "white": 120, "amber": 0},
-    "cool": {"red": 180, "green": 220, "blue": 255, "white": 180, "amber": 0},
-    "warm": {"red": 255, "green": 170, "blue": 80, "white": 80, "amber": 180},
-    "amber": {"red": 255, "green": 120, "blue": 0, "amber": 180},
+    "red":     {"red": 255, "green": 0,   "blue": 0,   "amber": 0,   "warm": 0,   "cool": 0},
+    "green":   {"red": 0,   "green": 255, "blue": 0,   "amber": 0,   "warm": 0,   "cool": 0},
+    "blue":    {"red": 0,   "green": 0,   "blue": 255, "amber": 0,   "warm": 0,   "cool": 0},
+    "purple":  {"red": 200, "green": 0,   "blue": 255, "amber": 0,   "warm": 0,   "cool": 80},
+    "magenta": {"red": 255, "green": 0,   "blue": 255, "amber": 0,   "warm": 0,   "cool": 0},
+    "cyan":    {"red": 0,   "green": 255, "blue": 255, "amber": 0,   "warm": 0,   "cool": 200},
+    # Pro W has no white channel — it produces white via warm+cool together
+    "white":   {"red": 220, "green": 220, "blue": 220, "white": 200, "amber": 0,   "warm": 200, "cool": 200},
+    "cool":    {"red": 180, "green": 220, "blue": 255, "white": 180, "amber": 0,   "warm": 0,   "cool": 255},
+    "warm":    {"red": 255, "green": 170, "blue": 80,  "white": 80,  "amber": 180, "warm": 255, "cool": 0},
+    "amber":   {"red": 255, "green": 120, "blue": 0,   "amber": 255, "warm": 120, "cool": 0},
 }
 
 
@@ -523,6 +625,12 @@ def apply_color_live(color, intensity=None, target_groups=None):
     fixtures = _target_fixtures(target_groups)
     current = get_current_channel_values()
     updates = []
+
+    # Roles whose values we set explicitly from the color preset
+    color_roles = {"red", "green", "blue", "white", "warm", "cool", "amber",
+                   "uv", "cyan", "magenta", "yellow", "indigo", "lime"}
+    # Roles we leave alone: dimmer (set explicitly above), pan/tilt (motion)
+    keep_alone_roles = {"dimmer", "pan", "tilt"}
 
     for fixture in fixtures:
         roles = _fixture_roles(fixture)
@@ -540,12 +648,54 @@ def apply_color_live(color, intensity=None, target_groups=None):
                 value = round(base * scale)
             updates.append((absolute, value))
 
+        # Zero non-color, non-dimmer, non-motion control channels on absolute
+        # color sets so leftover macro/strobe/program/speed values don't bleed
+        # through from previously applied scenes.
+        if not relative:
+            color_offsets = {
+                roles[r] for r in color_roles
+                if r in roles and isinstance(roles[r], int)
+            }
+            keep_offsets = {
+                roles[r] for r in keep_alone_roles
+                if r in roles and isinstance(roles[r], int)
+            }
+            channel_count = int(fixture.get("channels", 0))
+            for offset in range(channel_count):
+                if offset in color_offsets or offset in keep_offsets:
+                    continue
+                updates.append((_absolute_channel(fixture, offset), 0))
+
     success = set_channel_values(updates)
     return {
         "success": success,
         "output": f"Applied {color_key} to {len(updates)} channels live via WebSocket",
         "error": "" if success else f"Failed to apply {color_key} via WebSocket",
     }
+
+
+async def _fade_brightness_async(channels, target_value, seconds, steps):
+    """Run a multi-step fade over a single WebSocket connection."""
+    ws = None
+    try:
+        ws = await websockets.connect(QLC_WS_URL, open_timeout=2, close_timeout=0.1)
+        for step in range(1, steps + 1):
+            ratio = step / steps
+            for channel, start in channels:
+                val = max(0, min(255, round(start + (target_value - start) * ratio)))
+                await ws.send(f"CH|{channel}|{val}")
+            if step < steps and seconds > 0:
+                await asyncio.sleep(seconds / steps)
+        await asyncio.sleep(0.02)
+        return True
+    except Exception as e:
+        print(f"Fade WebSocket error: {e}")
+        return False
+    finally:
+        if ws is not None:
+            transport = getattr(ws, "transport", None)
+            if transport is not None:
+                transport.abort()
 
 
 def fade_brightness_live(target, duration, target_groups=None):
@@ -565,20 +715,12 @@ def fade_brightness_live(target, duration, target_groups=None):
     steps = max(1, min(30, math.ceil(seconds * 10)))
     target_value = _parse_level(target, default=0)
 
-    for step in range(1, steps + 1):
-        ratio = step / steps
-        updates = [
-            (channel, round(start + (target_value - start) * ratio))
-            for channel, start in channels
-        ]
-        set_channel_values(updates)
-        if step < steps and seconds > 0:
-            time.sleep(seconds / steps)
+    success = _run_async(_fade_brightness_async(channels, target_value, seconds, steps))
 
     return {
-        "success": True,
+        "success": success,
         "output": f"Faded {len(channels)} brightness channels to {target_value} over {seconds:g}s",
-        "error": "",
+        "error": "" if success else "Fade WebSocket connection failed",
     }
 
 
@@ -1233,11 +1375,57 @@ def apply_group_template(group_name):
 
 @app.route("/api/fixtures", methods=["GET"])
 def list_fixtures():
-    """List all fixtures from workspace"""
+    """List all fixtures from workspace, with resolved per-channel info.
+
+    Each fixture now includes a `channel_info` array with the channel's
+    name, offset, role, preset, group, and colour metadata sourced from
+    the QLC+ .qxf fixture definitions when available.
+    """
     try:
-        return jsonify({"fixtures": get_workspace_fixtures()})
+        fixtures = get_workspace_fixtures()
+        for fixture in fixtures:
+            fixture["channel_info"] = _fixture_channels_info(fixture)
+        return jsonify({"fixtures": fixtures})
     except Exception as e:
         return jsonify({"error": str(e), "fixtures": []}), 500
+
+
+@app.route("/api/fixture_channels/<int:fixture_id>", methods=["GET"])
+def fixture_channels(fixture_id):
+    """Return resolved channel info for a single fixture.
+
+    Reads the fixture's .qxf definition (manufacturer + model + mode) and
+    returns each channel's offset, name, role, preset, group, and colour.
+    Useful for the UI to render correct labels and color hints.
+    """
+    try:
+        fixtures = get_workspace_fixtures()
+        match = next((f for f in fixtures if str(f["id"]) == str(fixture_id)), None)
+        if match is None:
+            return jsonify({"error": f"Fixture {fixture_id} not found"}), 404
+        return jsonify({
+            "fixture": {
+                "id": match["id"],
+                "name": match["name"],
+                "manufacturer": match["manufacturer"],
+                "model": match["model"],
+                "mode": match["mode"],
+                "channels": match["channels"],
+            },
+            "channel_info": _fixture_channels_info(match),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/fixture_definitions/reload", methods=["POST"])
+def reload_fixture_definitions():
+    """Force reload of cached .qxf fixture definitions from disk."""
+    try:
+        count = fixture_definitions.reload_definitions()
+        return jsonify({"success": True, "indexed": count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/channel", methods=["POST"])
@@ -1316,20 +1504,12 @@ if __name__ == "__main__":
     if not LIGHTSCTL.exists():
         print(f"Error: lightsctl.sh not found at {LIGHTSCTL}")
         sys.exit(1)
-    
-    # Connect to QLC+ on startup
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(connect_to_qlc())
-    except Exception as e:
-        print(f"Warning: Could not connect to QLC+ on startup: {e}")
-    finally:
-        try:
-            loop.close()
-        except:
-            pass
-    
-    # Run server with SocketIO
+
+    # NOTE: We no longer open a persistent QLC+ WebSocket on startup.
+    # Each request opens its own short-lived connection and aborts the
+    # transport immediately after sending. This avoids exhausting QLC+'s
+    # limited WebSocket slots (which caused handshake timeouts).
+
+    # Run server with SocketIO (debug=False to avoid stat reloader doubling connections)
     port = int(os.getenv("CONTROL_PORT", "5000"))
-    socketio.run(app, host="0.0.0.0", port=port, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
