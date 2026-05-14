@@ -1,8 +1,11 @@
 # Raspberry Pi Studio Lighting Controller
 
-> Headless Raspberry Pi lighting controller for studio environments. Control DMX fixtures from any device on your network via QLC+ web interface.
+> Headless Raspberry Pi lighting controller for studio environments. Control
+> DMX fixtures from any device on your network via QLC+'s web interface, the
+> custom Virtual Console at port `5000`, or natural-language voice/chat
+> commands powered by OpenAI / Anthropic / Ollama.
 
-**Core Stack:** QLC+ • ENTTEC DMX USB Pro • Raspberry Pi OS Lite
+**Core Stack:** QLC+ • ENTTEC DMX USB Pro • Raspberry Pi OS • Flask Control Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -18,6 +21,10 @@
 - [Configuration](#-configuration)
 - [Project Structure](#-project-structure)
 - [Troubleshooting](#-troubleshooting)
+
+For the deeper internals of the natural-language control layer and the
+single-WebSocket QLC+ bridge, see
+[docs/CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md).
 
 ---
 
@@ -88,39 +95,52 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ## 🏗️ System Architecture
 
 ```
-Phones / Tablets / Laptops
-            │
-            │  WiFi / HTTPS
-            ▼
-     Raspberry Pi
-     (nginx + QLC+ Web Server)
-            │
-            │ USB
-            ▼
-   ENTTEC DMX USB Pro
-            │
-            │ DMX
-            ▼
-  DMX Interface / Transmitter
-   (wired or wireless)
-            │
-            ▼
-      DMX Fixtures
+   Browser / phone / voice           ┌─────────── AI providers ──────────┐
+              │                      │  OpenAI • Anthropic • Ollama (local) │
+              │  WiFi / HTTPS        └─────────────┬─────────────────────┘
+              ▼                                    │
+       Raspberry Pi                                │
+   ┌─────────────────────────────┐                 │
+   │ nginx (80/443, optional)    │                 │
+   │ landing page + reverse proxy│                 │
+   └──────────┬──────────────────┘                 │
+              │                                    │
+   ┌──────────▼──────────────┐    HTTP+WebSocket   │
+   │ Flask control server    │◄────────────────────┘
+   │ (port 5000)             │
+   │  • AI chat → DMX        │
+   │  • Live virtual console │
+   │  • Fixture groups       │
+   │  • .qxf-aware channels  │
+   └──────────┬──────────────┘
+              │ persistent WebSocket
+              ▼
+   ┌──────────────────────────┐
+   │ QLC+ headless (port 9999)│
+   │  + .qxf fixture defs     │
+   └──────────┬───────────────┘
+              │ USB
+              ▼
+       ENTTEC DMX USB Pro
+              │  DMX
+              ▼
+        DMX Fixtures (rig)
 ```
 
 <details>
 <summary><b>Software Stack</b></summary>
 
-| Software             | Purpose                          |
-| -------------------- | -------------------------------- |
-| Raspberry Pi OS Lite | Lightweight OS                   |
-| QLC+                 | Lighting control engine          |
-| Avahi                | mDNS (`lights.local`)            |
-| nginx                | Landing page + SSL reverse proxy |
-| stunnel (optional)   | SSL/TLS termination              |
-| mkcert (optional)    | Locally-trusted certificates     |
-| systemd              | Autostart services               |
-| wpa_supplicant       | WiFi management                  |
+| Software | Purpose |
+| -------- | ------- |
+| Raspberry Pi OS (Bookworm) | Lightweight OS |
+| QLC+ 4.14.x | Lighting control engine + DMX output |
+| `lighting-control` (Flask + Flask-SocketIO) | Custom control server (port 5000): AI chat, live UI, group/fixture API, `.qxf`-derived channel labels |
+| `websockets` (Python) | Single persistent QLC+ WebSocket on a dedicated asyncio loop — see [CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md) |
+| Avahi | mDNS (`lights.local`) |
+| nginx | Landing page + SSL reverse proxy |
+| stunnel4 (optional) | SSL/TLS termination alternative |
+| ufw | Firewall |
+| systemd | Service management (`qlcplus-web.service`, `lighting-control.service`) |
 
 </details>
 

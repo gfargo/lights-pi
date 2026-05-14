@@ -107,15 +107,30 @@ if not any(m['name'].startswith('$AI_MODEL') for m in models):
 }
 
 # Extract fixture inventory from QLC+ workspace XML
-# Extract fixture inventory from QLC+ workspace XML (Python-based, no xmllint needed)
+# Uses the .qxf-aware Python parser when available so the AI gets the
+# authoritative per-channel layout (name, role, preset, group, colour).
 function ai_extract_fixtures() {
   local workspace_file="$1"
-  
+
   if [[ ! -f "$workspace_file" ]]; then
     echo "Error: Workspace file not found: $workspace_file" >&2
     return 1
   fi
-  
+
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local extract_py="${script_dir}/extract_fixtures.py"
+
+  if [[ -f "$extract_py" ]]; then
+    if python3 "$extract_py" "$workspace_file"; then
+      return 0
+    fi
+    echo "Warning: extract_fixtures.py failed, falling back to inline extractor" >&2
+  fi
+
+  # Fallback: legacy heuristic inline extractor (kept for safety when the
+  # Python parser is missing — e.g. on a remote that doesn't have the new
+  # control-server/ tree).
   python3 -c "
 import sys, json
 import xml.etree.ElementTree as ET
@@ -130,19 +145,13 @@ def determine_capabilities(model, channels):
     ch = int(channels) if channels else 0
     if any(x in model for x in ['Moving', 'Spot', 'Wash']):
         return ['rgb', 'dimmer', 'pan_tilt', 'gobo', 'color_wheel']
+    if 'Pro W' in model:
+        return ['warm_cool_amber', 'dimmer']
     if 'Pro H' in model or ch >= 5:
         return ['rgb', 'amber', 'white', 'dimmer']
     if 'RGB' in model or 'Par' in model or ch >= 3:
         return ['rgb', 'dimmer']
     return ['dimmer']
-
-def build_channel_map(model, mode):
-    if model == 'SlimPAR 56' and mode == '3-Ch':
-        return {'1': 'Red', '2': 'Green', '3': 'Blue'}
-    if model == 'SlimPAR Pro H USB' and mode == '7 Channel':
-        return {'1': 'Dimmer', '2': 'Red', '3': 'Green', '4': 'Blue',
-                '5': 'Color Macros', '6': 'Amber', '7': 'Strobe'}
-    return {}
 
 try:
     tree = ET.parse(workspace)
@@ -150,7 +159,7 @@ try:
     ns_prefix = ''
     if root.tag.startswith('{'):
         ns_prefix = root.tag[:root.tag.index('}')+1]
-    
+
     fixtures = []
     for fix in root.iter(ns_prefix + 'Fixture'):
         fid_el = fix.find(ns_prefix + 'ID')
@@ -169,7 +178,7 @@ try:
             'model': model, 'mode': mode, 'universe': universe,
             'address': address, 'channels': channels,
             'capabilities': determine_capabilities(model, channels),
-            'channel_map': build_channel_map(model, mode)
+            'channel_info': []
         })
     print(json.dumps({'fixtures': fixtures}))
 except Exception as e:
@@ -231,39 +240,65 @@ function ai_build_channel_map() {
 # Build system prompt for AI
 function ai_build_system_prompt() {
   local style="$1"
-  
+
   cat <<'PROMPT'
-You are a professional lighting designer with expertise in DMX control and QLC+.
-Your task is to generate scene configurations based on user descriptions.
+You are a professional lighting designer with deep expertise in DMX control and
+QLC+ scene programming. Your task is to generate scene XML for the user's exact
+fixture rig.
 
-CRITICAL: You must output ONLY valid QLC+ scene XML. No explanations, no markdown, no extra text.
+CRITICAL OUTPUT RULES:
+- Output ONLY valid QLC+ scene XML. No prose, no markdown, no commentary.
+- Use ONLY the fixture IDs from the inventory you are given.
+- Use ONLY the channel offsets that exist on each fixture (see channel_info).
+- Channel offsets in <FixtureVal> are 1-based for QLC+ generated scenes.
+- DMX values are integers 0-255.
 
-You will receive:
-1. A natural language description of the desired scene
-2. A complete fixture inventory with capabilities
-3. A style profile (complete, modular, timeline, or reactive)
+CHANNEL SEMANTICS (read this carefully):
+Each fixture in the inventory comes with a `channel_info` array. Each entry has:
+  - offset:  0-based offset within the fixture's DMX footprint
+  - name:    manufacturer's channel name
+  - role:    semantic role (one of: dimmer, red, green, blue, white, warm,
+             cool, amber, uv, cyan, magenta, yellow, lime, indigo, macro,
+             strobe, pan, tilt, or null when the channel is a configuration
+             knob with no semantic role)
+  - preset:  QLC+ preset constant when present (e.g. IntensityWhite)
+  - group:   QLC+ channel group (Intensity / Colour / Shutter / Speed / etc.)
+  - colour:  the colour subtag for color channels (Red, Green, Blue,
+             White, Amber, ...)
 
-You must output valid QLC+ scene XML that:
-- Uses ONLY the provided fixture IDs (do not invent fixture IDs)
-- Sets appropriate DMX values (0-255)
-- Considers fixture capabilities
-- Matches the described mood/effect
-- Follows the specified style profile
+WHEN BUILDING A SCENE:
+1. Look at each fixture's `channel_info` and pick channels by ROLE, not by
+   guessing position. The same offset means different things on different
+   fixtures.
+2. NEVER write to a channel whose role is null (those are config-only —
+   strobe speed, dimmer curve, sound-active mode, etc).
+3. To set brightness, write to the channel whose role is "dimmer" if it
+   exists, otherwise drive the color channels themselves.
+4. To set color:
+   - Fixtures with role "red"/"green"/"blue": use RGB.
+   - Fixtures with role "warm"/"cool"/"amber" (no RGB, e.g. SlimPAR Pro W):
+     mix warm/cool/amber to achieve the requested temperature.
+       * Warm white  → warm=255, cool=0,   amber=80-150
+       * Neutral     → warm=180, cool=180, amber=60
+       * Cool white  → warm=0,   cool=255, amber=0
+       * "soft warm" → warm=200, cool=20,  amber=100, dimmer=120-180
+   - Fixtures with role "white": use it as a complementary lift on top of RGB.
+   - Fixtures with role "amber": adds warm/orange tint, useful for sunset.
+   - Fixtures with role "uv":   only use for blacklight effects, otherwise 0.
+5. ALWAYS set roles "macro", "strobe", "programs"/null-role-effect channels
+   to 0 for static colored scenes — leaving them non-zero will trigger
+   strobing or auto-pattern modes that override your color.
+6. Match intensity to mood:
+   - dim / soft / ambient: dimmer 60-130 (24-50%)
+   - normal               : dimmer 180-220 (70-86%)
+   - full / bright        : dimmer 240-255
 
-DMX Value Guidelines:
-- Dimmer: 0=off, 255=full brightness
-- RGB: 0-255 per channel
-- Pan/Tilt: 0-255 (fixture-specific range)
-- Color Wheel: Discrete positions (check fixture manual)
-- Gobo: Discrete positions (check fixture manual)
-
-Lighting Design Principles:
-- Warm colors: High red, medium green, low blue
-- Cool colors: Low red, medium green, high blue
-- Sunset: Orange/red gradient, 60-80% intensity
-- Concert: High intensity, saturated colors, movement
-- Ambient: Low intensity, soft colors
-- Dramatic: High contrast, focused beams
+CONCRETE EXAMPLE — a "soft dim warm light" scene on a SlimPAR Pro W (9 Ch
+warm/cool/amber, no RGB):
+  channel_info offsets are 0-based, so the FixtureVal channels (1-based) are:
+    CH1 dimmer=140, CH2 warm=240, CH3 cool=20, CH4 amber=120,
+    CH5 macro=0, CH6 strobe=0, CH7=0, CH8=0, CH9=0
+  → FixtureVal text: "1,140,2,240,3,20,4,120,5,0,6,0,7,0,8,0,9,0"
 
 OUTPUT FORMAT:
 <?xml version="1.0" encoding="UTF-8"?>
@@ -273,7 +308,7 @@ OUTPUT FORMAT:
   <FixtureVal ID="fixture_id">channel,value,channel,value,...</FixtureVal>
 </Function>
 
-IMPORTANT: Output ONLY the XML above. No explanations before or after.
+Output ONLY this XML. No explanations before or after.
 PROMPT
 
   case "$style" in
