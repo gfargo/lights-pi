@@ -228,20 +228,37 @@ function qlc_set_default_workspace() {
   # Upload workspace to default location
   "${SCP_CMD[@]}" "$workspace" "${PI_USER}@${PI_HOST}:${remote_path}"
   echo "Uploaded ${filename} → ${remote_path}"
+  "${SCP_CMD[@]}" "$workspace" "${PI_USER}@${PI_HOST}:/home/${PI_USER}/.qlcplus/autostart.qxw"
+  echo "Uploaded ${filename} → /home/${PI_USER}/.qlcplus/autostart.qxw"
   
   # Fix ownership
   run chown "${PI_USER}:${PI_USER}" "$remote_path"
   run chmod 644 "$remote_path"
+  run chown "${PI_USER}:${PI_USER}" "/home/${PI_USER}/.qlcplus/autostart.qxw"
+  run chmod 644 "/home/${PI_USER}/.qlcplus/autostart.qxw"
   
-  # Update service to auto-load workspace on startup
-  run_sudo sed -i "s|ExecStart=.*qlcplus.*|ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --open ${remote_path}|" "$service_file"
+  # Update service to auto-load workspace on startup. Use one quoted remote
+  # command because raw sed expressions with spaces/pipes are fragile over SSH.
+  "${REMOTE_CMD[@]}" "sudo python3 - <<'PY'
+from pathlib import Path
+service_file = Path('${service_file}')
+exec_start = 'ExecStart=/usr/bin/qlcplus --nogui --web --web-port ${QLC_PORT} --open ${remote_path}'
+lines = service_file.read_text().splitlines()
+for i, line in enumerate(lines):
+    if line.startswith('ExecStart=') and 'qlcplus' in line:
+        lines[i] = exec_start
+        break
+else:
+    raise SystemExit('ExecStart for qlcplus not found')
+service_file.write_text('\n'.join(lines) + '\n')
+PY"
   run_sudo systemctl daemon-reload
   run_sudo systemctl restart "${SERVICE}"
   
   echo ""
   echo "✓ Default workspace configured"
   echo "  Location: ${remote_path}"
-  echo "  Auto-loads: Yes (on every boot)"
+  echo "  Auto-loads: Yes (default.qxw + autostart.qxw)"
   echo ""
   echo "All users accessing http://${PI_HOST}:${QLC_PORT} will see this workspace"
 }
@@ -254,6 +271,12 @@ function qlc_pull_workspace() {
   # Get the current workspace path from the service file
   local remote_workspace
   remote_workspace=$(run_sudo grep "ExecStart=" "$service_file" | sed -n 's/.*--workspace \([^ ]*\).*/\1/p')
+  if [[ -z "$remote_workspace" ]]; then
+    remote_workspace=$(run_sudo grep "ExecStart=" "$service_file" | sed -n 's/.*--open \([^ ]*\).*/\1/p')
+  fi
+  if [[ -z "$remote_workspace" ]]; then
+    remote_workspace="/home/${PI_USER}/.qlcplus/default.qxw"
+  fi
   
   if [[ -z "$remote_workspace" ]]; then
     echo "No workspace configured in service file" >&2

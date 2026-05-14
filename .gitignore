@@ -7,7 +7,10 @@ certs/
 scenes/*.xml
 
 # Marketing site (separate git repo)
-marketing-site/
+.www/
 
 # Python files
 __pycache__/
+
+# Codex
+.codex

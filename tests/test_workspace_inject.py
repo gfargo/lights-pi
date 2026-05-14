@@ -61,8 +61,7 @@ class TestWorkspaceInject(unittest.TestCase):
             
             # Check new function name
             new_function = functions[1]
-            name_elem = new_function.find('{http://www.qlcplus.org/Workspace}Name')
-            self.assertEqual(name_elem.text, "Test Scene")
+            self.assertEqual(new_function.get("Name"), "Test Scene")
             
         finally:
             Path(output_file.name).unlink(missing_ok=True)

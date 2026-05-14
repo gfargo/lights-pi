@@ -15,6 +15,20 @@ PI_HOST="${PI_HOST:-lights.local}"
 QLC_PORT="${QLC_PORT:-9999}"
 WORKSPACE="studio.qxw"
 
+if [ -f ".env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+SSH_OPTIONS=()
+if [ -n "${SSH_KEY:-}" ]; then
+  SSH_OPTIONS+=("-i" "$SSH_KEY" "-o" "IdentitiesOnly=yes")
+fi
+SSH_CMD=(ssh "${SSH_OPTIONS[@]}")
+SCP_CMD=(scp "${SSH_OPTIONS[@]}")
+
 if [ ! -f "$WORKSPACE" ]; then
   echo "✗ $WORKSPACE not found. Run from repo root."
   exit 1
@@ -25,12 +39,12 @@ echo ""
 
 # Copy as both default.qxw and autostart.qxw (real copies, not symlinks)
 echo "--- Copying workspace files ---"
-scp "$WORKSPACE" "${PI_USER}@${PI_HOST}:~/.qlcplus/default.qxw"
-scp "$WORKSPACE" "${PI_USER}@${PI_HOST}:~/.qlcplus/autostart.qxw"
+"${SCP_CMD[@]}" "$WORKSPACE" "${PI_USER}@${PI_HOST}:~/.qlcplus/default.qxw"
+"${SCP_CMD[@]}" "$WORKSPACE" "${PI_USER}@${PI_HOST}:~/.qlcplus/autostart.qxw"
 echo "✓ Copied as default.qxw and autostart.qxw"
 
 # Verify on Pi
-ssh "${PI_USER}@${PI_HOST}" "
+"${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "
   echo ''
   echo '--- Files on Pi ---'
   ls -la ~/.qlcplus/*.qxw

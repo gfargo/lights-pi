@@ -214,6 +214,13 @@
             border-radius: 0; font-size: 0.85rem; color: #999; cursor: pointer; transition: all 0.2s;
         }
         .chip:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
+        .scene-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
+        .scene-btn {
+            background: #111; border: 1px solid #2a2a2a; padding: 0.5rem 0.875rem;
+            border-radius: 0; font-size: 0.8rem; color: #aaa; cursor: pointer; transition: all 0.2s;
+            max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .scene-btn:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
 
         /* ── Target Groups (AI tab) ── */
         .target-groups-row {
@@ -385,6 +392,9 @@
                 <span class="chip" data-command="add more blue">More Blue</span>
                 <span class="chip" data-command="fade to black">Fade Out</span>
             </div>
+
+            <div class="section-title">Scenes</div>
+            <div class="scene-grid" id="sceneGrid"></div>
 
             <div id="targetGroupsRow" class="target-groups-row" style="display:none;">
                 <span class="target-label">Target</span>
@@ -761,6 +771,41 @@
         }
 
         /* ══════════════════════════════════════
+           Existing Scenes
+           ══════════════════════════════════════ */
+        let allScenesData = [];
+
+        async function loadScenes() {
+            try {
+                const r = await fetch('/api/scenes');
+                const data = await r.json();
+                const grid = document.getElementById('sceneGrid');
+                allScenesData = data.scenes || [];
+                grid.innerHTML = allScenesData.map(s =>
+                    `<button class="scene-btn" onclick="activateScene(${s.id})" title="${escHtml(s.path || s.name)}">${escHtml(s.name)}</button>`
+                ).join('');
+            } catch (e) { console.error('Error loading scenes:', e); }
+        }
+
+        async function activateScene(sceneId) {
+            const scene = allScenesData.find(s => s.id === sceneId);
+            const sceneName = scene ? scene.name : String(sceneId);
+            loading.classList.add('active');
+            const label = `Scene → ${sceneName}`;
+            const pendingId = addPendingToHistory(label);
+            try {
+                const r = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}/activate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await r.json();
+                resolvePendingHistory(pendingId, label, data);
+            } catch (e) {
+                resolvePendingHistory(pendingId, label, { success: false, error: e.message });
+            } finally { loading.classList.remove('active'); }
+        }
+
+        /* ══════════════════════════════════════
            Virtual Console
            ══════════════════════════════════════ */
         let qlcWs = null;
@@ -779,7 +824,7 @@
                 }
                 fixtureData = data.fixtures;
                 list.innerHTML = data.fixtures.map(f => {
-                    const chNames = getChannelNames(f.name, f.channels);
+                    const chNames = getChannelNames(f);
                     const sliders = chNames.map((name, i) => `
                         <div class="channel-control">
                             <div class="channel-label">${name}</div>
@@ -793,7 +838,6 @@
                 }).join('');
 
                 await refreshChannelValues();
-                connectQlcWs();
                 startConsolePolling();
             } catch (e) { console.error('Error loading fixtures:', e); }
         }
@@ -835,44 +879,6 @@
             });
         }
 
-        function connectQlcWs() {
-            if (qlcWs && qlcWs.readyState < 2) return;
-            const wsUrl = `ws://${location.hostname}:9999/qlcplusWS`;
-            try { qlcWs = new WebSocket(wsUrl); } catch(e) { return; }
-            qlcWs.onopen = () => {
-                qlcWs.send('QLC+API|getChannelsValues|1|1|512');
-            };
-            qlcWs.onmessage = (evt) => {
-                const msg = evt.data;
-                // Live push from SimpleDesk or scene activation: "CH|<1based_ch>|<value>"
-                if (msg.startsWith('CH|')) {
-                    const parts = msg.split('|');
-                    if (parts.length >= 3) {
-                        const ch = parseInt(parts[1], 10);
-                        const val = parseInt(parts[2], 10);
-                        updateSliderByQlcCh(ch, val);
-                    }
-                }
-                // Bulk response: "QLC+API|getChannelsValues|<ch>|<val>|<pct.color>|<ch>|<val>|..."
-                if (msg.includes('getChannelsValues')) {
-                    const parts = msg.split('|');
-                    const values = {};
-                    // groups of 3 starting at index 2: ch, val, color
-                    for (let i = 2; i + 1 < parts.length; i += 3) {
-                        const ch = parseInt(parts[i], 10);
-                        const val = parseInt(parts[i + 1], 10);
-                        if (!isNaN(ch) && !isNaN(val)) values[String(ch)] = val;
-                    }
-                    if (Object.keys(values).length) applyAbsoluteValues(values);
-                }
-            };
-            qlcWs.onerror = () => {};
-            // On close, attempt reconnect after 3s if console tab is still active
-            qlcWs.onclose = () => {
-                if (consoleActive) setTimeout(connectQlcWs, 3000);
-            };
-        }
-
         // Map 1-based QLC+ channel number → fixture+channel slider
         function updateSliderByQlcCh(qlcCh, value) {
             fixtureData.forEach(f => {
@@ -890,10 +896,12 @@
             updateSliderByQlcCh(absAddr, value);
         }
 
-        function getChannelNames(name, count) {
-            const n = name.toLowerCase();
+        function getChannelNames(fixture) {
+            const count = fixture.channels;
+            const n = `${fixture.manufacturer || ''} ${fixture.model || ''} ${fixture.name || ''}`.toLowerCase();
+            if (n.includes('pro w') && count >= 9) return ['Dimmer','Red','Green','Blue','Color Macros','White','Strobe','Auto Program','Auto Speed'];
             if (n.includes('pro h') && count >= 7) return ['Dimmer','Red','Green','Blue','Color Macros','Amber','Strobe'];
-            if ((n.includes('par') || n.includes('rgb')) && count >= 3) return ['Red','Green','Blue','Dimmer'].slice(0, count);
+            if ((n.includes('par') || n.includes('rgb')) && count === 3) return ['Red','Green','Blue'];
             if (count === 1) return ['Dimmer'];
             return Array.from({length: count}, (_, i) => `Ch ${i + 1}`);
         }
@@ -926,6 +934,7 @@
         /* ── Boot ── */
         loadPersistedHistory();
         loadGroups();
+        loadScenes();
         checkStatus();
         setInterval(checkStatus, 15000);
     </script>

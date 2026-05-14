@@ -42,10 +42,10 @@ QLC+API|getChannelsValues|1|1|32
 ### Response
 
 ```
-QLC+API|getChannelsValues|<universe>|<ch>|<value>|<pct.color>|<ch>|<value>|<pct.color>|...
+QLC+API|getChannelsValues|<ch>|<value>|<pct.color>|<ch>|<value>|<pct.color>|...
 ```
 
-Pipe-delimited, repeating groups of **3 fields** starting at index 3:
+Pipe-delimited, repeating groups of **3 fields** starting at index 2:
 - `ch` — 1-based channel number
 - `value` — DMX value 0–255
 - `pct.color` — percentage and color hint (e.g. `0.#FF0000`), may be empty when no scene is active
@@ -64,8 +64,8 @@ QLC+API|getChannelsValues|1|1|0||2|0||3|0||4|0||...
 
 ```python
 parts = msg.split("|")
-# parts[0] = "QLC+API", parts[1] = "getChannelsValues", parts[2] = universe
-i = 3
+# parts[0] = "QLC+API", parts[1] = "getChannelsValues"
+i = 2
 while i + 1 < len(parts):
     ch = int(parts[i])       # 1-based channel number
     val = int(parts[i + 1])  # DMX value 0-255
@@ -79,7 +79,7 @@ while i + 1 < len(parts):
 ```js
 const parts = msg.split('|');
 const values = {};
-for (let i = 3; i + 1 < parts.length; i += 3) {
+for (let i = 2; i + 1 < parts.length; i += 3) {
     const ch = parseInt(parts[i], 10);
     const val = parseInt(parts[i + 1], 10);
     if (!isNaN(ch) && !isNaN(val)) values[ch] = val;
@@ -126,6 +126,11 @@ Example — start scene with ID 42:
 ```
 QLC+API|setFunctionStatus|42|1
 ```
+
+On the current Pi/QLC+ 4.14.1 setup, function-list/status probes return empty
+or `Undefined`, so the control server does not depend on this command for
+runtime scene application. It parses the workspace scene's `FixtureVal` entries
+and applies their channel values through `CH|<channel>|<value>` instead.
 
 ---
 

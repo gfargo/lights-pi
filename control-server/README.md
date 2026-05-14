@@ -88,8 +88,8 @@ python3 app.py
 
 1. **Input**: User types or speaks a command
 2. **Interpretation**: AI converts natural language to structured action
-3. **Execution**: Server calls `lightsctl.sh` to modify workspace
-4. **Deployment**: Changes are deployed to QLC+ in real-time
+3. **Execution**: Server applies direct channel updates through the QLC+ WebSocket
+4. **Persistence**: Generated scenes can be saved later; runtime commands do not restart QLC+
 
 ## API Endpoints
 
@@ -144,6 +144,12 @@ Response:
   ]
 }
 ```
+
+### GET /api/scenes
+List scene functions from the loaded workspace.
+
+### POST /api/scenes/&lt;id&gt;/activate
+Apply an existing workspace scene immediately through WebSocket channel updates.
 
 ## Configuration
 

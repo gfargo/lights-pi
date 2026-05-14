@@ -12,6 +12,9 @@ import socket
 import subprocess
 import xml.etree.ElementTree as ET
 import asyncio
+import math
+import time
+import tempfile
 import websockets
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify
@@ -126,23 +129,457 @@ def set_channel_value(universe, address, value):
     # Universe 1: addresses 513-1024, etc.
     absolute_address = (universe * 512) + address
     
-    # QLC+ Simple Desk command format: CH|<absolute_address>|<value>
-    command = f"CH|{absolute_address}|{value}"
-    
-    # Send via asyncio - create new event loop for each call
+    return set_channel_values([(absolute_address, value)])
+
+
+def _run_async(coro):
+    """Run a coroutine from Flask's sync request handlers."""
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        success = loop.run_until_complete(send_qlc_command(command))
-        return success
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+async def send_qlc_commands(commands):
+    """Send one or more QLC+ WebSocket commands over a single connection."""
+    ws = None
+    try:
+        ws = await websockets.connect(QLC_WS_URL, open_timeout=2, close_timeout=0.1)
+        for command in commands:
+            await ws.send(command)
+        await asyncio.sleep(0.02)
+        return True
     except Exception as e:
-        print(f"Error in set_channel_value: {e}")
+        print(f"Error sending QLC+ commands: {e}")
         return False
     finally:
+        if ws is not None:
+            transport = getattr(ws, "transport", None)
+            if transport is not None:
+                transport.abort()
+
+
+def set_channel_values(channel_values):
+    """Set absolute QLC+ channel values.
+
+    Args:
+        channel_values: iterable of (absolute_channel, value), both 1-based / 0-255
+    """
+    commands = []
+    for channel, value in channel_values:
         try:
-            loop.close()
-        except:
-            pass
+            ch = int(channel)
+            val = max(0, min(255, int(value)))
+        except (TypeError, ValueError):
+            continue
+        if ch > 0:
+            commands.append(f"CH|{ch}|{val}")
+    if not commands:
+        return True
+    return _run_async(send_qlc_commands(commands))
+
+
+def _workspace_root():
+    tree = ET.parse(WORKSPACE_PATH)
+    return tree.getroot()
+
+
+def _fixture_elements(root):
+    ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
+    return root.findall(".//qlc:Fixture", ns)
+
+
+def _fixture_to_dict(fixture):
+    ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
+    def text(tag, default=""):
+        elem = fixture.find(f"qlc:{tag}", ns)
+        return elem.text if elem is not None and elem.text is not None else default
+
+    return {
+        "id": int(text("ID", "0")),
+        "name": text("Name"),
+        "universe": int(text("Universe", "0")),
+        "address": int(text("Address", "0")),
+        "channels": int(text("Channels", "1")),
+        "manufacturer": text("Manufacturer"),
+        "model": text("Model"),
+        "mode": text("Mode"),
+    }
+
+
+def get_workspace_fixtures():
+    """Return fixture metadata from the configured workspace."""
+    if not WORKSPACE_PATH.exists():
+        return []
+    root = _workspace_root()
+    return [_fixture_to_dict(f) for f in _fixture_elements(root)]
+
+
+def _engine_element(root):
+    ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
+    engine = root.find("qlc:Engine", ns)
+    if engine is not None:
+        return engine
+    return root.find("Engine")
+
+
+def get_workspace_scenes():
+    """Return real Engine scene functions, excluding Virtual Console references."""
+    if not WORKSPACE_PATH.exists():
+        return []
+    root = _workspace_root()
+    engine = _engine_element(root)
+    if engine is None:
+        return []
+
+    ns = "http://www.qlcplus.org/Workspace"
+    scenes = []
+    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+        if func.get("Type") != "Scene":
+            continue
+        fid = func.get("ID")
+        if not fid or not fid.isdigit():
+            continue
+        scenes.append({
+            "id": int(fid),
+            "name": func.get("Name", f"Scene {fid}"),
+            "path": func.get("Path", ""),
+            "fixture_values": len(_find_children(func, "FixtureVal")),
+        })
+    return scenes
+
+
+def get_next_scene_id():
+    """Return next available scene/function ID from Engine functions only."""
+    scenes = get_workspace_scenes()
+    if not scenes:
+        return 0
+    return max(scene["id"] for scene in scenes) + 1
+
+
+def _find_children(element, tag):
+    ns = "http://www.qlcplus.org/Workspace"
+    return element.findall(f"{{{ns}}}{tag}") + element.findall(tag)
+
+
+def _find_scene_element(scene_id_or_name):
+    root = _workspace_root()
+    engine = _engine_element(root)
+    if engine is None:
+        return None
+    needle = str(scene_id_or_name).strip().lower()
+    ns = "http://www.qlcplus.org/Workspace"
+    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+        if func.get("Type") != "Scene":
+            continue
+        fid = func.get("ID", "")
+        name = func.get("Name", "")
+        if fid == str(scene_id_or_name) or name.lower() == needle:
+            return func
+    return None
+
+
+def _scene_root_from_xml(scene_xml):
+    scene_xml = scene_xml.strip()
+    if not scene_xml:
+        raise ValueError("Empty scene XML")
+    return ET.fromstring(scene_xml)
+
+
+def scene_to_channel_values(scene_root):
+    """Convert a QLC+ scene Function element to absolute channel/value pairs.
+
+    Existing QLC+ workspace scenes use zero-based FixtureVal channels, while
+    generated scenes in this project use one-based channels. Detect either form
+    per fixture by checking whether channel 0 appears.
+    """
+    fixtures = {str(f["id"]): f for f in get_workspace_fixtures()}
+    updates = []
+
+    for fixture_val in _find_children(scene_root, "FixtureVal"):
+        fixture_id = fixture_val.get("ID")
+        fixture = fixtures.get(str(fixture_id))
+        if not fixture or not fixture_val.text:
+            continue
+
+        raw_parts = [p.strip() for p in fixture_val.text.split(",") if p.strip() != ""]
+        pairs = []
+        for i in range(0, len(raw_parts) - 1, 2):
+            try:
+                pairs.append((int(raw_parts[i]), int(raw_parts[i + 1])))
+            except ValueError:
+                continue
+        if not pairs:
+            continue
+
+        zero_based = any(channel == 0 for channel, _ in pairs)
+        for channel, value in pairs:
+            offset = channel if zero_based else channel - 1
+            if offset < 0 or offset >= fixture["channels"]:
+                continue
+            absolute_channel = fixture["universe"] * 512 + fixture["address"] + offset + 1
+            updates.append((absolute_channel, value))
+
+    return updates
+
+
+def apply_scene_xml_live(scene_xml):
+    """Apply generated scene XML immediately via WebSocket channel updates."""
+    scene_root = _scene_root_from_xml(scene_xml)
+    updates = scene_to_channel_values(scene_root)
+    if not updates:
+        return {
+            "success": False,
+            "output": "",
+            "error": "Scene has no applicable FixtureVal channel values",
+        }
+    success = set_channel_values(updates)
+    return {
+        "success": success,
+        "output": f"Applied {len(updates)} channel values live via WebSocket",
+        "error": "" if success else "Failed to apply channel values via WebSocket",
+    }
+
+
+def apply_existing_scene_live(scene_id_or_name):
+    scene = _find_scene_element(scene_id_or_name)
+    if scene is None:
+        return {
+            "success": False,
+            "output": "",
+            "error": f"Scene not found: {scene_id_or_name}",
+        }
+    updates = scene_to_channel_values(scene)
+    if not updates:
+        return {
+            "success": False,
+            "output": "",
+            "error": f"Scene has no applicable channel values: {scene.get('Name', scene_id_or_name)}",
+        }
+    success = set_channel_values(updates)
+    scene_name = scene.get("Name", str(scene_id_or_name))
+    return {
+        "success": success,
+        "output": f"Applied scene '{scene_name}' live via WebSocket ({len(updates)} channel values)",
+        "error": "" if success else f"Failed to apply scene '{scene_name}' via WebSocket",
+    }
+
+
+async def _fetch_channel_values(max_ch):
+    values = {}
+    ws = None
+    try:
+        ws = await websockets.connect(QLC_WS_URL, open_timeout=2, close_timeout=0.1)
+        await ws.send(f"QLC+API|getChannelsValues|1|1|{max_ch}")
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
+            except asyncio.TimeoutError:
+                break
+            if "getChannelsValues" not in msg:
+                continue
+            parts = msg.split("|")
+            # QLC+ 4.14.1 live response starts channel/value groups at index 2:
+            # QLC+API|getChannelsValues|1|0||2|0||...
+            for i in range(2, len(parts) - 1, 3):
+                try:
+                    values[int(parts[i])] = int(parts[i + 1])
+                except (ValueError, IndexError):
+                    continue
+            break
+    finally:
+        if ws is not None:
+            transport = getattr(ws, "transport", None)
+            if transport is not None:
+                transport.abort()
+    return values
+
+
+def get_current_channel_values(max_ch=None):
+    if max_ch is None:
+        max_ch = 32
+        for fixture in get_workspace_fixtures():
+            max_ch = max(max_ch, fixture["universe"] * 512 + fixture["address"] + fixture["channels"])
+    try:
+        return _run_async(_fetch_channel_values(max_ch))
+    except Exception as e:
+        print(f"channel_values fetch error: {e}")
+        return {}
+
+
+def _fixture_roles(fixture):
+    """Infer common color/intensity offsets for the fixtures used here."""
+    channels = fixture["channels"]
+    name = f"{fixture.get('manufacturer', '')} {fixture.get('model', '')} {fixture.get('name', '')}".lower()
+
+    if channels == 3:
+        return {"red": 0, "green": 1, "blue": 2, "brightness": [0, 1, 2]}
+
+    if channels >= 7:
+        roles = {
+            "dimmer": 0,
+            "red": 1,
+            "green": 2,
+            "blue": 3,
+            "brightness": [0],
+        }
+        if "pro h" in name or "amber" in name or channels == 7:
+            roles["amber"] = 5
+        if "pro w" in name or "white" in name or channels >= 9:
+            roles["white"] = 5
+            roles["warm"] = 5
+        return roles
+
+    return {"dimmer": 0, "brightness": [0]}
+
+
+def _absolute_channel(fixture, offset):
+    return fixture["universe"] * 512 + fixture["address"] + offset + 1
+
+
+def _parse_level(value, current=None, default=200):
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    if text.endswith("%"):
+        try:
+            return round(max(0, min(100, float(text[:-1]))) * 255 / 100)
+        except ValueError:
+            return default
+    try:
+        if text[0] in "+-" and current is not None:
+            return max(0, min(255, int(current) + int(float(text))))
+        return max(0, min(255, int(float(text))))
+    except ValueError:
+        return default
+
+
+def _group_fixture_ids(target_groups):
+    if not target_groups:
+        return None
+    if not GROUPS_FILE.exists():
+        return set()
+    try:
+        groups_data = json.loads(GROUPS_FILE.read_text())
+    except Exception:
+        return set()
+    groups_dict = groups_data.get("groups", groups_data)
+    fixture_ids = set()
+    for group_name in target_groups:
+        group = groups_dict.get(group_name)
+        if group:
+            fixture_ids.update(str(fid) for fid in group.get("fixtures", []))
+    return fixture_ids
+
+
+def _target_fixtures(target_groups=None):
+    fixtures = get_workspace_fixtures()
+    fixture_ids = _group_fixture_ids(target_groups)
+    if fixture_ids is None:
+        return fixtures
+    return [fixture for fixture in fixtures if str(fixture["id"]) in fixture_ids]
+
+
+def apply_brightness_live(value, target_groups=None):
+    fixtures = _target_fixtures(target_groups)
+    current = get_current_channel_values()
+    updates = []
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        for offset in roles.get("brightness", []):
+            absolute = _absolute_channel(fixture, offset)
+            updates.append((absolute, _parse_level(value, current.get(absolute), default=200)))
+    success = set_channel_values(updates)
+    return {
+        "success": success,
+        "output": f"Applied brightness to {len(updates)} channels live via WebSocket",
+        "error": "" if success else "Failed to apply brightness via WebSocket",
+    }
+
+
+COLOR_PRESETS = {
+    "red": {"red": 255, "green": 0, "blue": 0},
+    "green": {"red": 0, "green": 255, "blue": 0},
+    "blue": {"red": 0, "green": 0, "blue": 255},
+    "purple": {"red": 200, "green": 0, "blue": 255},
+    "magenta": {"red": 255, "green": 0, "blue": 255},
+    "cyan": {"red": 0, "green": 255, "blue": 255},
+    "white": {"red": 220, "green": 220, "blue": 220, "white": 120, "amber": 0},
+    "cool": {"red": 180, "green": 220, "blue": 255, "white": 180, "amber": 0},
+    "warm": {"red": 255, "green": 170, "blue": 80, "white": 80, "amber": 180},
+    "amber": {"red": 255, "green": 120, "blue": 0, "amber": 180},
+}
+
+
+def apply_color_live(color, intensity=None, target_groups=None):
+    color_key = str(color or "white").strip().lower()
+    preset = COLOR_PRESETS.get(color_key, COLOR_PRESETS["white"])
+    relative = str(intensity or "").strip().startswith(("+", "-"))
+    fixtures = _target_fixtures(target_groups)
+    current = get_current_channel_values()
+    updates = []
+
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        if "dimmer" in roles and not relative:
+            updates.append((_absolute_channel(fixture, roles["dimmer"]), _parse_level(intensity, default=220)))
+
+        for role, base in preset.items():
+            if role not in roles:
+                continue
+            absolute = _absolute_channel(fixture, roles[role])
+            if relative:
+                value = _parse_level(intensity, current.get(absolute), default=current.get(absolute, 0))
+            else:
+                scale = _parse_level(intensity, default=255) / 255
+                value = round(base * scale)
+            updates.append((absolute, value))
+
+    success = set_channel_values(updates)
+    return {
+        "success": success,
+        "output": f"Applied {color_key} to {len(updates)} channels live via WebSocket",
+        "error": "" if success else f"Failed to apply {color_key} via WebSocket",
+    }
+
+
+def fade_brightness_live(target, duration, target_groups=None):
+    fixtures = _target_fixtures(target_groups)
+    current = get_current_channel_values()
+    channels = []
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        for offset in roles.get("brightness", []):
+            absolute = _absolute_channel(fixture, offset)
+            channels.append((absolute, current.get(absolute, 0)))
+
+    try:
+        seconds = max(0, float(duration))
+    except (TypeError, ValueError):
+        seconds = 3
+    steps = max(1, min(30, math.ceil(seconds * 10)))
+    target_value = _parse_level(target, default=0)
+
+    for step in range(1, steps + 1):
+        ratio = step / steps
+        updates = [
+            (channel, round(start + (target_value - start) * ratio))
+            for channel, start in channels
+        ]
+        set_channel_values(updates)
+        if step < steps and seconds > 0:
+            time.sleep(seconds / steps)
+
+    return {
+        "success": True,
+        "output": f"Faded {len(channels)} brightness channels to {target_value} over {seconds:g}s",
+        "error": "",
+    }
 
 
 def execute_command(command):
@@ -216,6 +653,7 @@ Available actions:
 3. apply_template: Use a template (template: youtube-studio/party/ambient/spotlight/work-light/warm-white/cool-white)
 4. generate_scene: Create new scene from description (description: text)
 5. fade: Fade to black or specific level (duration: seconds, target: 0-255)
+6. activate_scene: Apply an existing named scene (scene: Red/Blue/Green/Lights ON/Lights OFF/Work Light/Purple/Warm Amber/Spotlight/etc)
 
 Respond ONLY with valid JSON in this format:
 {
@@ -241,7 +679,10 @@ Input: "warm sunset ambiance"
 Output: {"action": "generate_scene", "parameters": {"description": "warm sunset ambiance"}, "explanation": "Generating warm sunset scene"}
 
 Input: "fade to black over 5 seconds"
-Output: {"action": "fade", "parameters": {"duration": "5", "target": "0"}, "explanation": "Fading to black over 5 seconds"}"""
+Output: {"action": "fade", "parameters": {"duration": "5", "target": "0"}, "explanation": "Fading to black over 5 seconds"}
+
+Input: "turn on red scene"
+Output: {"action": "activate_scene", "parameters": {"scene": "Red"}, "explanation": "Applying the Red scene"}"""
 
     user_prompt = f"Convert this command: {user_input}"
     
@@ -371,9 +812,10 @@ def call_ollama(system_prompt, user_prompt):
 def execute_lighting_action(action_data, target_groups=None):
     """Execute the interpreted lighting action.
 
-    When running locally on the Pi (IS_LOCAL=True) we generate scenes using
-    the local workspace file and inject + restart directly, avoiding SSH
-    round-trips that would fail without a key.
+    When running locally on the Pi (IS_LOCAL=True), generated scenes are
+    rendered to a temporary XML file and applied immediately through QLC+
+    WebSocket channel updates. The workspace is not modified for runtime
+    commands.
 
     If target_groups is a non-empty list, the action is applied to each named
     group in sequence using group-scene / group-template instead of the
@@ -382,7 +824,7 @@ def execute_lighting_action(action_data, target_groups=None):
     action = action_data.get("action")
     params = action_data.get("parameters", {})
 
-    def _build_scene_cmd(description, group_name=None):
+    def _build_scene_cmd(description, output_file, group_name=None):
         safe_desc = description.replace("'", "'\\''")
         if group_name:
             safe_group = group_name.replace("'", "'\\''")
@@ -390,7 +832,7 @@ def execute_lighting_action(action_data, target_groups=None):
                 return (
                     f"{LIGHTSCTL} group-scene '{safe_group}' '{safe_desc}'"
                     f" --workspace '{WORKSPACE_PATH}'"
-                    f" --output /tmp/_qlc_scene_latest.xml"
+                    f" --output '{output_file}'"
                 )
             else:
                 return f"{LIGHTSCTL} group-scene '{safe_group}' '{safe_desc}' --add-to-workspace"
@@ -399,118 +841,36 @@ def execute_lighting_action(action_data, target_groups=None):
                 return (
                     f"{LIGHTSCTL} generate-scene '{safe_desc}'"
                     f" --workspace '{WORKSPACE_PATH}'"
-                    f" --output /tmp/_qlc_scene_latest.xml"
+                    f" --output '{output_file}'"
                 )
             else:
                 return f"{LIGHTSCTL} generate-scene '{safe_desc}' --add-to-workspace"
 
-    def _inject_and_restart(result):
-        """After a local scene generation, inject the XML into the workspace,
-        restart the QLC+ service, then activate the scene via WebSocket."""
-        if not IS_LOCAL or not result["success"]:
-            return result
+    def _temp_scene_file():
+        fh = tempfile.NamedTemporaryFile(prefix="qlc-scene-", suffix=".xml", delete=False)
+        path = fh.name
+        fh.close()
+        return Path(path)
 
-        scene_file = Path("/tmp/_qlc_scene_latest.xml")
-        if not scene_file.exists():
-            result["error"] = (result.get("error", "") +
-                               "\nScene file not created").strip()
+    def _generate_and_apply_live(cmd, scene_file):
+        result = execute_command(cmd)
+        if not IS_LOCAL or not WORKSPACE_PATH.exists():
+            return result
+        if not result["success"]:
+            scene_file.unlink(missing_ok=True)
+            return result
+        if not scene_file.exists() or not scene_file.read_text().strip():
             result["success"] = False
+            result["error"] = "Scene file not created"
             return result
-
-        scene_xml = scene_file.read_text()
-
-        # Inject via the Python helper
-        inject_script = SCRIPT_DIR / "scripts" / "lib" / "workspace_inject.py"
-        if not inject_script.exists():
-            result["error"] = "workspace_inject.py not found"
-            result["success"] = False
-            return result
-
-        # Calculate next function ID
         try:
-            tree = ET.parse(str(WORKSPACE_PATH))
-            root = tree.getroot()
-            ns = "http://www.qlcplus.org/Workspace"
-            max_id = 0
-            for func in root.iter(f"{{{ns}}}Function"):
-                fid = func.get("ID")
-                if fid and fid.isdigit():
-                    max_id = max(max_id, int(fid))
-            next_id = max_id + 1
-        except Exception:
-            next_id = 100
-
-        inject_result = execute_command(
-            f"python3 '{inject_script}' '{WORKSPACE_PATH}' "
-            f"'{scene_xml}' '{WORKSPACE_PATH}' {next_id}"
-        )
-        if not inject_result["success"]:
-            result["error"] = (result.get("error", "") +
-                               f"\nInject failed: {inject_result.get('error', '')}").strip()
-            result["success"] = False
-            return result
-
-        # Keep autostart.qxw in sync so Pi reloads correctly after reboot.
-        # QLC+ 4.14.1 on Pi requires a real file (not a symlink) for autostart.
-        autostart_path = WORKSPACE_PATH.parent / "autostart.qxw"
-        try:
-            import shutil
-            shutil.copy2(str(WORKSPACE_PATH), str(autostart_path))
-        except Exception as e:
-            result["error"] = (result.get("error", "") +
-                               f"\nautostart sync warning: {e}").strip()
-
-        # Restart QLC+ so it picks up the modified workspace
-        restart = execute_command(f"sudo systemctl restart {SERVICE_NAME}")
-        if not restart["success"]:
-            result["error"] = (result.get("error", "") +
-                               f"\nRestart warning: {restart.get('error', '')}").strip()
-
-        result["output"] = (result.get("output", "") +
-                            f"\nScene injected (ID {next_id}) and service restarted").strip()
-        scene_file.unlink(missing_ok=True)
-
-        # Activate the scene via WebSocket after QLC+ comes back up
-        _activate_scene_ws(next_id, result)
+            apply_result = apply_scene_xml_live(scene_file.read_text())
+        finally:
+            scene_file.unlink(missing_ok=True)
+        result["success"] = apply_result["success"]
+        result["output"] = (result.get("output", "") + "\n" + apply_result["output"]).strip()
+        result["error"] = apply_result["error"] if not apply_result["success"] else result.get("error", "")
         return result
-
-    def _activate_scene_ws(scene_id, result, retries=6, delay=2.0):
-        """Wait for QLC+ to restart then activate the scene via WebSocket API."""
-        import time as _t
-
-        async def _do_activate():
-            for attempt in range(retries):
-                try:
-                    async with websockets.connect(
-                        QLC_WS_URL, open_timeout=3, close_timeout=2
-                    ) as ws:
-                        # Start the scene function
-                        await ws.send(f"QLC+API|setFunctionStatus|{scene_id}|1")
-                        # Brief wait to confirm it was received
-                        try:
-                            await asyncio.wait_for(ws.recv(), timeout=0.5)
-                        except asyncio.TimeoutError:
-                            pass
-                        return True
-                except Exception:
-                    if attempt < retries - 1:
-                        _t.sleep(delay)
-            return False
-
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            activated = loop.run_until_complete(_do_activate())
-            loop.close()
-            if activated:
-                result["output"] = (result.get("output", "") +
-                                    f"\nScene {scene_id} activated").strip()
-            else:
-                result["output"] = (result.get("output", "") +
-                                    f"\nScene {scene_id} injected (activation timed out — QLC+ may still be starting)").strip()
-        except Exception as e:
-            result["output"] = (result.get("output", "") +
-                                f"\nActivation warning: {e}").strip()
 
     if action == "apply_template":
         template = params.get("template")
@@ -520,25 +880,24 @@ def execute_lighting_action(action_data, target_groups=None):
             combined_output = ""
             for gname in groups:
                 safe_name = gname.replace("'", "'\\''")
+                scene_file = _temp_scene_file()
                 if IS_LOCAL and WORKSPACE_PATH.exists():
                     cmd = (f"{LIGHTSCTL} group-template '{safe_name}' {template}"
                            f" --workspace '{WORKSPACE_PATH}'"
-                           f" --output /tmp/_qlc_scene_latest.xml")
+                           f" --output '{scene_file}'")
                 else:
                     cmd = f"{LIGHTSCTL} group-template '{safe_name}' {template} --add-to-workspace"
-                result = execute_command(cmd)
-                if IS_LOCAL and WORKSPACE_PATH.exists() and result["success"]:
-                    result = _inject_and_restart(result)
+                result = _generate_and_apply_live(cmd, scene_file)
                 combined_output += result.get("output", "") + "\n"
                 if not result["success"]:
                     return result
             return {"success": True, "output": combined_output.strip(), "error": ""}
         elif IS_LOCAL and WORKSPACE_PATH.exists():
+            scene_file = _temp_scene_file()
             cmd = (f"{LIGHTSCTL} generate-from-template {template}"
                    f" --workspace '{WORKSPACE_PATH}'"
-                   f" --output /tmp/_qlc_scene_latest.xml")
-            result = execute_command(cmd)
-            return _inject_and_restart(result)
+                   f" --output '{scene_file}'")
+            return _generate_and_apply_live(cmd, scene_file)
         else:
             cmd = f"{LIGHTSCTL} generate-from-template {template} --add-to-workspace"
             return execute_command(cmd)
@@ -549,72 +908,34 @@ def execute_lighting_action(action_data, target_groups=None):
         if groups:
             combined_output = ""
             for gname in groups:
-                cmd = _build_scene_cmd(description, group_name=gname)
-                result = execute_command(cmd)
-                result = _inject_and_restart(result)
+                scene_file = _temp_scene_file()
+                cmd = _build_scene_cmd(description, scene_file, group_name=gname)
+                result = _generate_and_apply_live(cmd, scene_file)
                 combined_output += result.get("output", "") + "\n"
                 if not result["success"]:
                     return result
             return {"success": True, "output": combined_output.strip(), "error": ""}
-        cmd = _build_scene_cmd(description)
-        result = execute_command(cmd)
-        return _inject_and_restart(result)
+        scene_file = _temp_scene_file()
+        cmd = _build_scene_cmd(description, scene_file)
+        return _generate_and_apply_live(cmd, scene_file)
 
     elif action == "adjust_brightness":
         value = params.get("value", "+50")
-        description = f"adjust brightness by {value}"
-        groups = target_groups if target_groups else []
-        if groups:
-            combined_output = ""
-            for gname in groups:
-                cmd = _build_scene_cmd(description, group_name=gname)
-                result = execute_command(cmd)
-                result = _inject_and_restart(result)
-                combined_output += result.get("output", "") + "\n"
-                if not result["success"]:
-                    return result
-            return {"success": True, "output": combined_output.strip(), "error": ""}
-        cmd = _build_scene_cmd(description)
-        result = execute_command(cmd)
-        return _inject_and_restart(result)
+        return apply_brightness_live(value, target_groups=target_groups)
 
     elif action == "adjust_color":
         color = params.get("color", "white")
         intensity = params.get("intensity", "200")
-        description = f"add more {color} color at intensity {intensity}"
-        groups = target_groups if target_groups else []
-        if groups:
-            combined_output = ""
-            for gname in groups:
-                cmd = _build_scene_cmd(description, group_name=gname)
-                result = execute_command(cmd)
-                result = _inject_and_restart(result)
-                combined_output += result.get("output", "") + "\n"
-                if not result["success"]:
-                    return result
-            return {"success": True, "output": combined_output.strip(), "error": ""}
-        cmd = _build_scene_cmd(description)
-        result = execute_command(cmd)
-        return _inject_and_restart(result)
+        return apply_color_live(color, intensity, target_groups=target_groups)
 
     elif action == "fade":
         duration = params.get("duration", "3")
         target = params.get("target", "0")
-        description = f"fade to brightness {target} over {duration} seconds"
-        groups = target_groups if target_groups else []
-        if groups:
-            combined_output = ""
-            for gname in groups:
-                cmd = _build_scene_cmd(description, group_name=gname)
-                result = execute_command(cmd)
-                result = _inject_and_restart(result)
-                combined_output += result.get("output", "") + "\n"
-                if not result["success"]:
-                    return result
-            return {"success": True, "output": combined_output.strip(), "error": ""}
-        cmd = _build_scene_cmd(description)
-        result = execute_command(cmd)
-        return _inject_and_restart(result)
+        return fade_brightness_live(target, duration, target_groups=target_groups)
+
+    elif action == "activate_scene":
+        scene = params.get("scene") or params.get("name") or params.get("id")
+        return apply_existing_scene_live(scene)
 
     else:
         return {
@@ -721,12 +1042,20 @@ def get_status():
         "latency_ms": ai_latency,
     }
 
-    # 2. QLC+ WebSocket
-    ws_ok = qlc_websocket is not None and not getattr(qlc_websocket, "closed", True)
+    # 2. QLC+ WebSocket port. Do a TCP reachability probe instead of holding a
+    # status WebSocket open; QLC+ 4.14.1 is sensitive to excess WS clients.
+    ws_ok = False
+    ws_detail = "unreachable"
+    try:
+        with socket.create_connection((QLC_HOST, QLC_PORT), timeout=1):
+            ws_ok = True
+            ws_detail = f"reachable at {QLC_WS_URL}"
+    except Exception as e:
+        ws_detail = str(e)
     services["qlc_ws"] = {
         "name": "QLC+ WebSocket",
         "ok": ws_ok,
-        "detail": f"connected to {QLC_WS_URL}" if ws_ok else "disconnected",
+        "detail": ws_detail,
         "url": QLC_WS_URL,
     }
 
@@ -794,6 +1123,35 @@ def list_templates():
     return jsonify({"templates": templates})
 
 
+@app.route("/api/scenes", methods=["GET"])
+def list_scenes():
+    """List existing scene functions from the loaded workspace."""
+    try:
+        return jsonify({"scenes": get_workspace_scenes()})
+    except Exception as e:
+        return jsonify({"error": str(e), "scenes": []}), 500
+
+
+@app.route("/api/scenes/<scene_id>/activate", methods=["POST"])
+def activate_scene(scene_id):
+    """Apply an existing workspace scene live via WebSocket channel updates."""
+    try:
+        result = apply_existing_scene_live(scene_id)
+        status = 200 if result["success"] else 404
+        return jsonify({
+            "success": result["success"],
+            "action": {
+                "action": "activate_scene",
+                "parameters": {"scene": scene_id},
+                "explanation": result["output"] if result["success"] else result["error"],
+            },
+            "output": result.get("output", ""),
+            "error": result.get("error", "") if not result["success"] else "",
+        }), status
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/groups", methods=["GET"])
 def list_groups():
     """List fixture groups"""
@@ -834,41 +1192,31 @@ def apply_group_template(group_name):
             return jsonify({"success": False, "error": "Template name required"}), 400
         
         safe_name = group_name.replace("'", "'\\''")
+        scene_file = tempfile.NamedTemporaryFile(prefix="qlc-group-template-", suffix=".xml", delete=False)
+        scene_path = Path(scene_file.name)
+        scene_file.close()
         if IS_LOCAL and WORKSPACE_PATH.exists():
             cmd = (f"{LIGHTSCTL} group-template '{safe_name}' {template}"
                    f" --workspace '{WORKSPACE_PATH}'"
-                   f" --output /tmp/_qlc_scene_latest.xml")
+                   f" --output '{scene_path}'")
         else:
             cmd = f"{LIGHTSCTL} group-template '{safe_name}' {template} --add-to-workspace"
         
         result = execute_command(cmd)
         
-        # If local, inject and restart (mirrors _inject_and_restart in handle_command)
+        # If local, apply the generated template scene immediately with no QLC+ restart.
         if IS_LOCAL and WORKSPACE_PATH.exists() and result["success"]:
-            scene_file = Path("/tmp/_qlc_scene_latest.xml")
-            if scene_file.exists():
-                inject_script = SCRIPT_DIR / "scripts" / "lib" / "workspace_inject.py"
-                scene_xml = scene_file.read_text()
-                try:
-                    tree = ET.parse(str(WORKSPACE_PATH))
-                    root = tree.getroot()
-                    ns = "http://www.qlcplus.org/Workspace"
-                    max_id = 0
-                    for func in root.iter(f"{{{ns}}}Function"):
-                        fid = func.get("ID")
-                        if fid and fid.isdigit():
-                            max_id = max(max_id, int(fid))
-                    next_id = max_id + 1
-                except Exception:
-                    next_id = 100
-                inject_result = execute_command(
-                    f"python3 '{inject_script}' '{WORKSPACE_PATH}' "
-                    f"'{scene_xml}' '{WORKSPACE_PATH}' {next_id}"
-                )
-                execute_command(f"sudo systemctl restart {SERVICE_NAME}")
-                scene_file.unlink(missing_ok=True)
+            if scene_path.exists() and scene_path.read_text().strip():
+                apply_result = apply_scene_xml_live(scene_path.read_text())
+                result["success"] = apply_result["success"]
                 result["output"] = (result.get("output", "") +
-                                    f"\nScene injected (ID {next_id}) and service restarted").strip()
+                                    f"\n{apply_result['output']}").strip()
+                if not apply_result["success"]:
+                    result["error"] = apply_result["error"]
+            else:
+                result["success"] = False
+                result["error"] = "Scene file not created"
+        scene_path.unlink(missing_ok=True)
         
         success = result["success"]
         return jsonify({
@@ -887,33 +1235,7 @@ def apply_group_template(group_name):
 def list_fixtures():
     """List all fixtures from workspace"""
     try:
-        if not WORKSPACE_PATH.exists():
-            return jsonify({"fixtures": []})
-        
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        
-        # Handle QLC+ namespace
-        ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
-        
-        fixtures = []
-        for fixture in root.findall(".//qlc:Fixture", ns):
-            fixture_id = fixture.find("qlc:ID", ns)
-            fixture_name = fixture.find("qlc:Name", ns)
-            fixture_universe = fixture.find("qlc:Universe", ns)
-            fixture_address = fixture.find("qlc:Address", ns)
-            fixture_channels = fixture.find("qlc:Channels", ns)
-            
-            if fixture_id is not None and fixture_name is not None:
-                fixtures.append({
-                    "id": int(fixture_id.text),
-                    "name": fixture_name.text,
-                    "universe": int(fixture_universe.text) if fixture_universe is not None else 0,
-                    "address": int(fixture_address.text) if fixture_address is not None else 0,
-                    "channels": int(fixture_channels.text) if fixture_channels is not None else 1
-                })
-        
-        return jsonify({"fixtures": fixtures})
+        return jsonify({"fixtures": get_workspace_fixtures()})
     except Exception as e:
         return jsonify({"error": str(e), "fixtures": []}), 500
 
@@ -973,63 +1295,17 @@ def get_channel_values():
     Returns dict keyed by 1-based absolute channel number within universe 0:
         { "1": 0, "4": 241, "7": 255, ... }
     """
-    import asyncio as _asyncio
-    import websockets as _ws
-
     # Determine how many channels we need (highest fixture end address)
     max_ch = 32
     try:
-        if WORKSPACE_PATH.exists():
-            tree = ET.parse(str(WORKSPACE_PATH))
-            root = tree.getroot()
-            ns = "http://www.qlcplus.org/Workspace"
-            for f in root.iter(f"{{{ns}}}Fixture"):
-                addr_el = f.find(f"{{{ns}}}Address")
-                chs_el = f.find(f"{{{ns}}}Channels")
-                if addr_el is not None and chs_el is not None:
-                    top = int(addr_el.text) + int(chs_el.text)
-                    max_ch = max(max_ch, top)
+        for fixture in get_workspace_fixtures():
+            top = fixture["universe"] * 512 + fixture["address"] + fixture["channels"]
+            max_ch = max(max_ch, top)
     except Exception:
         pass
 
-    async def _fetch():
-        values = {}
-        try:
-            async with _ws.connect(QLC_WS_URL, open_timeout=4, close_timeout=2) as ws:
-                # Universe is 1-based in QLC+ WS API; start at ch 1
-                cmd = f"QLC+API|getChannelsValues|1|1|{max_ch}"
-                await ws.send(cmd)
-                import time as _t
-                deadline = _t.time() + 2.0
-                while _t.time() < deadline:
-                    try:
-                        msg = await _asyncio.wait_for(ws.recv(), timeout=0.5)
-                        if "getChannelsValues" in msg:
-                            # Format: QLC+API|getChannelsValues|<ch>|<val>|<pct.color>|<ch>|<val>|...
-                            # parts[0]=QLC+API, parts[1]=getChannelsValues
-                            # then repeating groups of 3: ch, value, pct.color (starting at index 2)
-                            parts = msg.split("|")
-                            i = 2
-                            while i + 2 <= len(parts):
-                                try:
-                                    ch = int(parts[i])
-                                    val = int(parts[i + 1])
-                                    values[str(ch)] = val
-                                except (ValueError, IndexError):
-                                    pass
-                                i += 3
-                            break
-                    except _asyncio.TimeoutError:
-                        break
-        except Exception as e:
-            print(f"channel_values fetch error: {e}")
-        return values
-
     try:
-        loop = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop)
-        values = loop.run_until_complete(_fetch())
-        loop.close()
+        values = {str(k): v for k, v in get_current_channel_values(max_ch).items()}
         return jsonify({"values": values})
     except Exception as e:
         return jsonify({"values": {}, "error": str(e)})

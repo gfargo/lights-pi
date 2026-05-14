@@ -567,6 +567,7 @@ function command_landing_deploy() {
   
   # Set defaults for landing page variables
   local qlc_url="${QLC_URL:-http://${PI_HOST}:${QLC_PORT}}"
+  local control_url="${CONTROL_URL:-http://${PI_HOST}:${CONTROL_PORT:-5000}}"
   local landing_title="${LANDING_TITLE:-Lighting Controller}"
   local landing_studio_name="${LANDING_STUDIO_NAME:-Your Studio}"
   local landing_subtitle="${LANDING_SUBTITLE:-Lighting Controller}"
@@ -579,6 +580,7 @@ function command_landing_deploy() {
   
   # Substitute all placeholders
   sed -e "s|__QLC_URL__|${qlc_url}|g" \
+      -e "s|__CONTROL_URL__|${control_url}|g" \
       -e "s|__LANDING_TITLE__|${landing_title}|g" \
       -e "s|__LANDING_STUDIO_NAME__|${landing_studio_name}|g" \
       -e "s|__LANDING_SUBTITLE__|${landing_subtitle}|g" \
@@ -596,7 +598,8 @@ function command_landing_deploy() {
   echo "  Studio: ${landing_studio_name}"
   echo "  Subtitle: ${landing_subtitle}"
   echo "  Button: ${landing_button_text}"
-  echo "  Button URL: ${qlc_url}"
+  echo "  Control URL: ${control_url}"
+  echo "  QLC+ URL: ${qlc_url}"
   echo "  Footer: ${landing_footer_text}"
 }
 

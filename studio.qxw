@@ -8,7 +8,7 @@
  </Creator>
  <Engine>
   <InputOutputMap>
-   <BeatGenerator BeatType="Audio" BPM="4"/>
+   <BeatGenerator BeatType="Audio" BPM="117"/>
    <Universe Name="Universe 1" ID="0">
     <Output Plugin="DMX USB" UID="None" Line="0"/>
    </Universe>
@@ -288,7 +288,7 @@
    <Grid Width="5" Height="3" Depth="5" Units="0" POV="1"/>
    <StageItem>0</StageItem>
    <FxItem ID="0" XPos="3746.32" YPos="2272.85" ZPos="952.638"/>
-   <FxItem ID="1" XPos="0" YPos="0" ZPos="0"/>
+   <FxItem ID="1" XPos="2473" YPos="0" ZPos="883.071"/>
    <FxItem ID="3" XPos="2894.59" YPos="2272.85" ZPos="966.413"/>
    <FxItem ID="4" XPos="1890.48" YPos="2272.85" ZPos="976.35"/>
    <FxItem ID="5" XPos="992.615" YPos="2272.85" ZPos="949.817"/>
