@@ -4,6 +4,9 @@ certs/
 .vscode/
 # docs/ intentionally tracked
 
+# Wiki (cloned separately, not tracked in main repo)
+.wiki/
+
 scenes/*.xml
 
 # Marketing site (separate git repo)
