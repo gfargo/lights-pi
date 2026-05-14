@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE Workspace>
-<Workspace xmlns="http://www.qlcplus.org/Workspace" CurrentWindow="VC">
+<Workspace xmlns="http://www.qlcplus.org/Workspace" CurrentWindow="FIXANDFUNC">
  <Creator>
   <Name>Q Light Controller Plus</Name>
   <Version>5.2.0</Version>
@@ -8,9 +8,9 @@
  </Creator>
  <Engine>
   <InputOutputMap>
-   <BeatGenerator BeatType="Audio" BPM="5"/>
+   <BeatGenerator BeatType="Audio" BPM="4"/>
    <Universe Name="Universe 1" ID="0">
-    <Output Plugin="DMX USB" UID="DMX USB PRO - DMX Output 1 - (S/N: 2329120)" Line="0"/>
+    <Output Plugin="DMX USB" UID="None" Line="0"/>
    </Universe>
    <Universe Name="Universe 2" ID="1"/>
    <Universe Name="Universe 3" ID="2"/>
@@ -25,6 +25,16 @@
    <Universe>0</Universe>
    <Address>0</Address>
    <Channels>7</Channels>
+  </Fixture>
+  <Fixture>
+   <Manufacturer>Chauvet</Manufacturer>
+   <Model>SlimPAR Pro W USB</Model>
+   <Mode>9 Channel</Mode>
+   <ID>1</ID>
+   <Name>SlimPAR Pro W USB [2]</Name>
+   <Universe>0</Universe>
+   <Address>20</Address>
+   <Channels>9</Channels>
   </Fixture>
   <Fixture>
    <Manufacturer>Chauvet</Manufacturer>
@@ -278,6 +288,7 @@
    <Grid Width="5" Height="3" Depth="5" Units="0" POV="1"/>
    <StageItem>0</StageItem>
    <FxItem ID="0" XPos="3746.32" YPos="2272.85" ZPos="952.638"/>
+   <FxItem ID="1" XPos="0" YPos="0" ZPos="0"/>
    <FxItem ID="3" XPos="2894.59" YPos="2272.85" ZPos="966.413"/>
    <FxItem ID="4" XPos="1890.48" YPos="2272.85" ZPos="976.35"/>
    <FxItem ID="5" XPos="992.615" YPos="2272.85" ZPos="949.817"/>
@@ -294,23 +305,14 @@
    <ShowEnableButton>True</ShowEnableButton>
    <Collapsed>False</Collapsed>
    <Disabled>False</Disabled>
-   <Slider Caption="Lights ON" ID="22" WidgetStyle="Slider" InvertedAppearance="false">
-    <WindowState Visible="True" X="654" Y="30" Width="106" Height="426"/>
+   <Button Caption="BLACKOUT - INSTANT" ID="0">
+    <WindowState Visible="True" X="15" Y="15" Width="380" Height="91"/>
     <Appearance>
      <BackgroundColor>4282664004</BackgroundColor>
     </Appearance>
-    <SliderMode ValueDisplayStyle="Exact">Adjust</SliderMode>
-    <Level LowLimit="0" HighLimit="255" Value="130"/>
-    <Adjust Attribute="0" Function="1"/>
-   </Slider>
-   <Slider Caption="Slider 24" ID="23" WidgetStyle="Slider" InvertedAppearance="false">
-    <WindowState Visible="True" X="944" Y="30" Width="106" Height="426"/>
-    <Appearance>
-     <BackgroundColor>4282664004</BackgroundColor>
-    </Appearance>
-    <SliderMode ValueDisplayStyle="Percentage">GrandMaster</SliderMode>
-    <Level LowLimit="0" HighLimit="255" Value="234"/>
-   </Slider>
+    <Function ID="4294967295"/>
+    <Action>Blackout</Action>
+   </Button>
    <Label Caption="Curtain Call - Bright lights back up" ID="62">
     <WindowState Visible="True" X="1249" Y="533" Width="228" Height="182"/>
    </Label>
@@ -320,14 +322,6 @@
      <ForegroundColor>4294941183</ForegroundColor>
     </Appearance>
    </Label>
-   <Button Caption="BLACKOUT - INSTANT" ID="0">
-    <WindowState Visible="True" X="15" Y="15" Width="380" Height="91"/>
-    <Appearance>
-     <BackgroundColor>4282664004</BackgroundColor>
-    </Appearance>
-    <Function ID="4294967295"/>
-    <Action>Blackout</Action>
-   </Button>
    <SoloFrame Caption="Main Switch" ID="14">
     <WindowState Visible="True" X="761" Y="30" Width="182" Height="426"/>
     <AllowResize>True</AllowResize>
@@ -368,70 +362,6 @@
      <Action>Toggle</Action>
     </Button>
    </SoloFrame>
-   <SoloFrame Caption="Solo Frame 18" ID="17">
-    <WindowState Visible="True" X="15" Y="121" Width="594" Height="91"/>
-    <AllowResize>True</AllowResize>
-    <ShowHeader>False</ShowHeader>
-    <ShowEnableButton>True</ShowEnableButton>
-    <Collapsed>False</Collapsed>
-    <Disabled>False</Disabled>
-    <Button Caption="Blue" ID="6">
-     <WindowState Visible="True" X="274" Y="0" Width="76" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4281545727</BackgroundColor>
-     </Appearance>
-     <Function ID="2"/>
-     <Action>Toggle</Action>
-    </Button>
-    <Button Caption="White - Warm" ID="5">
-     <WindowState Visible="True" X="91" Y="0" Width="91" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4282664004</BackgroundColor>
-     </Appearance>
-     <Function ID="1"/>
-     <Action>Toggle</Action>
-    </Button>
-    <Button Caption="White - Cool " ID="4">
-     <WindowState Visible="True" X="0" Y="0" Width="91" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4282992969</BackgroundColor>
-     </Appearance>
-     <Function ID="3"/>
-     <Action>Toggle</Action>
-    </Button>
-    <Button Caption="Red" ID="3">
-     <WindowState Visible="True" X="198" Y="0" Width="76" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4294914867</BackgroundColor>
-     </Appearance>
-     <Function ID="0"/>
-     <Action>Toggle</Action>
-    </Button>
-    <Button Caption="Green" ID="10">
-     <WindowState Visible="True" X="350" Y="0" Width="76" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4281597747</BackgroundColor>
-     </Appearance>
-     <Function ID="4"/>
-     <Action>Toggle</Action>
-    </Button>
-    <Button Caption="Warm Amber" ID="19">
-     <WindowState Visible="True" X="426" Y="0" Width="91" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4294940928</BackgroundColor>
-     </Appearance>
-     <Function ID="9"/>
-     <Action>Toggle</Action>
-    </Button>
-    <Button Caption="Purple" ID="18">
-     <WindowState Visible="True" X="517" Y="0" Width="76" Height="91"/>
-     <Appearance>
-      <BackgroundColor>4288217343</BackgroundColor>
-     </Appearance>
-     <Function ID="8"/>
-     <Action>Toggle</Action>
-    </Button>
-   </SoloFrame>
    <SoloFrame Caption="Solo Frame 8" ID="7">
     <WindowState Visible="True" X="0" Y="502" Width="1233" Height="411"/>
     <AllowResize>True</AllowResize>
@@ -439,81 +369,6 @@
     <ShowEnableButton>True</ShowEnableButton>
     <Collapsed>False</Collapsed>
     <Disabled>False</Disabled>
-    <Label Caption="Blackout / Lights Up" ID="1">
-     <WindowState Visible="True" X="609" Y="243" Width="91" Height="60"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="56">
-     <WindowState Visible="True" X="944" Y="167" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="Lights Up Entrance" ID="24">
-     <WindowState Visible="True" X="868" Y="167" Width="76" Height="76"/>
-    </Label>
-    <Label Caption="Lights Up Entrance" ID="25">
-     <WindowState Visible="True" X="182" Y="167" Width="76" Height="76"/>
-    </Label>
-    <Label Caption="Worklight" ID="59">
-     <WindowState Visible="True" X="1035" Y="258" Width="76" Height="40"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="41">
-     <WindowState Visible="True" X="776" Y="167" Width="91" Height="60"/>
-    </Label>
-    <Label Caption="Blackout Entrance" ID="47">
-     <WindowState Visible="True" X="91" Y="167" Width="76" Height="60"/>
-    </Label>
-    <Label Caption="Squat for ready" ID="52">
-     <WindowState Visible="True" X="350" Y="228" Width="76" Height="45"/>
-    </Label>
-    <Label Caption="Lights Up" ID="58">
-     <WindowState Visible="True" X="1035" Y="167" Width="76" Height="45"/>
-    </Label>
-    <Label Caption="Blackout on Music End" ID="50">
-     <WindowState Visible="True" X="700" Y="228" Width="76" Height="76"/>
-    </Label>
-    <Label Caption="Blackout" ID="55">
-     <WindowState Visible="True" X="0" Y="243" Width="76" Height="45"/>
-    </Label>
-    <Label Caption="Blackout" ID="27">
-     <WindowState Visible="True" X="426" Y="258" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="Blackout" ID="53">
-     <WindowState Visible="True" X="350" Y="274" Width="76" Height="45"/>
-    </Label>
-    <Label Caption="Blackout" ID="57">
-     <WindowState Visible="True" X="944" Y="258" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="49">
-     <WindowState Visible="True" X="700" Y="167" Width="76" Height="60"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="26">
-     <WindowState Visible="True" X="426" Y="167" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="Blackout" ID="42">
-     <WindowState Visible="True" X="776" Y="228" Width="91" Height="60"/>
-    </Label>
-    <Label Caption="Blackout" ID="48">
-     <WindowState Visible="True" X="91" Y="258" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="39">
-     <WindowState Visible="True" X="609" Y="167" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="LIghts Up Entrance" ID="54">
-     <WindowState Visible="True" X="0" Y="167" Width="91" Height="60"/>
-    </Label>
-    <Label Caption="Walk Off then Worklight" ID="40">
-     <WindowState Visible="True" X="868" Y="243" Width="76" Height="60"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="51">
-     <WindowState Visible="True" X="350" Y="167" Width="76" Height="60"/>
-    </Label>
-    <Label Caption="Blackout" ID="61">
-     <WindowState Visible="True" X="1111" Y="258" Width="91" Height="45"/>
-    </Label>
-    <Label Caption="Lights Up Entrance" ID="43">
-     <WindowState Visible="True" X="517" Y="167" Width="91" Height="76"/>
-    </Label>
-    <Label Caption="Worklight Entrance" ID="60">
-     <WindowState Visible="True" X="1111" Y="167" Width="91" Height="60"/>
-    </Label>
     <Button Caption="3 - Charlie" ID="11">
      <WindowState Visible="True" X="177" Y="5" Width="86" Height="86"/>
      <Appearance>
@@ -642,12 +497,151 @@
      <Function ID="17"/>
      <Action>Toggle</Action>
     </Button>
-    <Label Caption="Blackout in final hold" ID="2">
-     <WindowState Visible="True" X="258" Y="228" Width="76" Height="76"/>
+    <Label Caption="Worklight Entrance" ID="49">
+     <WindowState Visible="True" X="700" Y="167" Width="76" Height="60"/>
+    </Label>
+    <Label Caption="Blackout" ID="57">
+     <WindowState Visible="True" X="944" Y="258" Width="91" Height="45"/>
+    </Label>
+    <Label Caption="Blackout" ID="53">
+     <WindowState Visible="True" X="350" Y="274" Width="76" Height="45"/>
     </Label>
     <Label Caption="Walk off then Worklight" ID="44">
      <WindowState Visible="True" X="517" Y="243" Width="91" Height="60"/>
     </Label>
+    <Label Caption="Blackout in final hold" ID="2">
+     <WindowState Visible="True" X="258" Y="228" Width="76" Height="76"/>
+    </Label>
+    <Label Caption="Worklight Entrance" ID="60">
+     <WindowState Visible="True" X="1111" Y="167" Width="91" Height="60"/>
+    </Label>
+    <Label Caption="Lights Up Entrance" ID="43">
+     <WindowState Visible="True" X="517" Y="167" Width="91" Height="76"/>
+    </Label>
+    <Label Caption="Walk Off then Worklight" ID="40">
+     <WindowState Visible="True" X="868" Y="243" Width="76" Height="60"/>
+    </Label>
+    <Label Caption="Worklight Entrance" ID="51">
+     <WindowState Visible="True" X="350" Y="167" Width="76" Height="60"/>
+    </Label>
+    <Label Caption="Blackout" ID="61">
+     <WindowState Visible="True" X="1111" Y="258" Width="91" Height="45"/>
+    </Label>
+    <Label Caption="LIghts Up Entrance" ID="54">
+     <WindowState Visible="True" X="0" Y="167" Width="91" Height="60"/>
+    </Label>
+    <Label Caption="Blackout" ID="48">
+     <WindowState Visible="True" X="91" Y="258" Width="91" Height="45"/>
+    </Label>
+    <Label Caption="Worklight Entrance" ID="39">
+     <WindowState Visible="True" X="609" Y="167" Width="91" Height="45"/>
+    </Label>
+    <Label Caption="Worklight Entrance" ID="26">
+     <WindowState Visible="True" X="426" Y="167" Width="91" Height="45"/>
+    </Label>
+    <Label Caption="Blackout" ID="42">
+     <WindowState Visible="True" X="776" Y="228" Width="91" Height="60"/>
+    </Label>
+    <Label Caption="Squat for ready" ID="52">
+     <WindowState Visible="True" X="350" Y="228" Width="76" Height="45"/>
+    </Label>
+    <Label Caption="Blackout Entrance" ID="47">
+     <WindowState Visible="True" X="91" Y="167" Width="76" Height="60"/>
+    </Label>
+    <Label Caption="Worklight Entrance" ID="41">
+     <WindowState Visible="True" X="776" Y="167" Width="91" Height="60"/>
+    </Label>
+    <Label Caption="Worklight" ID="59">
+     <WindowState Visible="True" X="1035" Y="258" Width="76" Height="40"/>
+    </Label>
+    <Label Caption="Lights Up Entrance" ID="25">
+     <WindowState Visible="True" X="182" Y="167" Width="76" Height="76"/>
+    </Label>
+    <Label Caption="Lights Up" ID="58">
+     <WindowState Visible="True" X="1035" Y="167" Width="76" Height="45"/>
+    </Label>
+    <Label Caption="Blackout" ID="55">
+     <WindowState Visible="True" X="0" Y="243" Width="76" Height="45"/>
+    </Label>
+    <Label Caption="Blackout on Music End" ID="50">
+     <WindowState Visible="True" X="700" Y="228" Width="76" Height="76"/>
+    </Label>
+    <Label Caption="Lights Up Entrance" ID="24">
+     <WindowState Visible="True" X="868" Y="167" Width="76" Height="76"/>
+    </Label>
+    <Label Caption="Blackout / Lights Up" ID="1">
+     <WindowState Visible="True" X="609" Y="243" Width="91" Height="60"/>
+    </Label>
+    <Label Caption="Worklight Entrance" ID="56">
+     <WindowState Visible="True" X="944" Y="167" Width="91" Height="45"/>
+    </Label>
+    <Label Caption="Blackout" ID="27">
+     <WindowState Visible="True" X="426" Y="258" Width="91" Height="45"/>
+    </Label>
+   </SoloFrame>
+   <SoloFrame Caption="Solo Frame 18" ID="17">
+    <WindowState Visible="True" X="15" Y="121" Width="594" Height="91"/>
+    <AllowResize>True</AllowResize>
+    <ShowHeader>False</ShowHeader>
+    <ShowEnableButton>True</ShowEnableButton>
+    <Collapsed>False</Collapsed>
+    <Disabled>False</Disabled>
+    <Button Caption="Blue" ID="6">
+     <WindowState Visible="True" X="274" Y="0" Width="76" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4281545727</BackgroundColor>
+     </Appearance>
+     <Function ID="2"/>
+     <Action>Toggle</Action>
+    </Button>
+    <Button Caption="White - Warm" ID="5">
+     <WindowState Visible="True" X="91" Y="0" Width="91" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4282664004</BackgroundColor>
+     </Appearance>
+     <Function ID="1"/>
+     <Action>Toggle</Action>
+    </Button>
+    <Button Caption="White - Cool " ID="4">
+     <WindowState Visible="True" X="0" Y="0" Width="91" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4282992969</BackgroundColor>
+     </Appearance>
+     <Function ID="3"/>
+     <Action>Toggle</Action>
+    </Button>
+    <Button Caption="Red" ID="3">
+     <WindowState Visible="True" X="198" Y="0" Width="76" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4294914867</BackgroundColor>
+     </Appearance>
+     <Function ID="0"/>
+     <Action>Toggle</Action>
+    </Button>
+    <Button Caption="Green" ID="10">
+     <WindowState Visible="True" X="350" Y="0" Width="76" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4281597747</BackgroundColor>
+     </Appearance>
+     <Function ID="4"/>
+     <Action>Toggle</Action>
+    </Button>
+    <Button Caption="Warm Amber" ID="19">
+     <WindowState Visible="True" X="426" Y="0" Width="91" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4294940928</BackgroundColor>
+     </Appearance>
+     <Function ID="9"/>
+     <Action>Toggle</Action>
+    </Button>
+    <Button Caption="Purple" ID="18">
+     <WindowState Visible="True" X="517" Y="0" Width="76" Height="91"/>
+     <Appearance>
+      <BackgroundColor>4288217343</BackgroundColor>
+     </Appearance>
+     <Function ID="8"/>
+     <Action>Toggle</Action>
+    </Button>
    </SoloFrame>
    <AudioTriggers BarsNumber="16" Caption="Audio Trigger 39" ID="38">
     <WindowState Visible="True" X="1066" Y="30" Width="253" Height="253"/>
@@ -658,6 +652,23 @@
      <DMXChannels>0,0,5,0</DMXChannels>
     </Bar>
    </AudioTriggers>
+   <Slider Caption="Lights ON" ID="22" WidgetStyle="Slider" InvertedAppearance="false">
+    <WindowState Visible="True" X="654" Y="30" Width="106" Height="426"/>
+    <Appearance>
+     <BackgroundColor>4282664004</BackgroundColor>
+    </Appearance>
+    <SliderMode ValueDisplayStyle="Exact">Adjust</SliderMode>
+    <Level LowLimit="0" HighLimit="255" Value="130"/>
+    <Adjust Attribute="0" Function="1"/>
+   </Slider>
+   <Slider Caption="Slider 24" ID="23" WidgetStyle="Slider" InvertedAppearance="false">
+    <WindowState Visible="True" X="944" Y="30" Width="106" Height="426"/>
+    <Appearance>
+     <BackgroundColor>4282664004</BackgroundColor>
+    </Appearance>
+    <SliderMode ValueDisplayStyle="Percentage">GrandMaster</SliderMode>
+    <Level LowLimit="0" HighLimit="255" Value="234"/>
+   </Slider>
   </Frame>
   <Frame Caption="Page 2" ID="1">
    <Appearance>
