@@ -502,7 +502,7 @@ cp .env.example .env
 | Variable                | Default                  | Description                          |
 | ----------------------- | ------------------------ | ------------------------------------ |
 | `PI_HOST`               | `lights.local`           | Pi hostname or IP                    |
-| `PI_USER`               | `pi`                     | SSH username                         |
+| `PI_USER`               | `pi`                     | SSH username (customize per rig)     |
 | `PI_HOSTNAME`           | `lights`                 | mDNS hostname set on the Pi          |
 | `QLC_PORT`              | `9999`                   | QLC+ web UI port                     |
 | `SSH_KEY`               | _(none)_                 | Path to SSH private key              |
@@ -515,6 +515,13 @@ cp .env.example .env
 | `LANDING_SUBTITLE`      | `Lighting Controller`    | Subtitle text on landing page        |
 | `LANDING_BUTTON_TEXT`   | `Lighting Control`       | Button text on landing page          |
 | `LANDING_FOOTER_TEXT`   | `lights.local`           | Footer text on landing page          |
+| `AI_PROVIDER`           | `openai`                 | AI backend: `openai`, `anthropic`, or `ollama` |
+| `AI_API_KEY`            | _(none)_                 | API key (not needed for ollama)      |
+| `AI_MODEL`              | `gpt-4.1`               | Model name for the chosen provider   |
+| `AI_SCENE_STYLE`        | `complete`               | Default scene style                  |
+| `AI_SCENE_VARIATIONS`   | `1`                      | Default number of variations         |
+
+> **Note:** Use `PI_HOSTNAME`, not `HOSTNAME` — the latter is a macOS shell builtin that will silently override your value.
 
 </details>
 
@@ -635,53 +642,44 @@ Backups include `.config/qlcplus` and `.qlcplus` directories from the Pi.
 
 ## 📁 Project Structure
 
-The project uses a modular architecture for maintainability and clear separation of concerns:
-
 ```
 lights-pi/
-├── lightsctl.sh              # Main CLI interface
+├── lightsctl.sh              # Main CLI interface (all Pi management commands)
+├── Makefile                  # Convenience shortcuts
+├── .env                      # Local configuration (gitignored)
+├── control-server/           # Flask control server (deployed to Pi at port 5000)
+│   ├── app.py                # Routes, persistent QLC+ WebSocket, AI dispatch
+│   ├── fixture_definitions.py # .qxf parser → authoritative channel roles
+│   ├── templates/index.html  # Live control UI (AI chat, virtual console, groups)
+│   └── requirements.txt      # Python dependencies
 ├── scripts/
 │   ├── lib/                  # Utility libraries (sourced by lightsctl.sh)
+│   │   ├── ai_scene.sh       # AI scene-generation prompts and API calls
+│   │   ├── ai_scene_mock.sh  # Mock generator for offline testing
 │   │   ├── backup.sh         # Backup/restore and system updates
+│   │   ├── extract_fixtures.py # Enriched fixture JSON for AI prompts (.qxf-aware)
+│   │   ├── fixture_groups.sh  # Group CRUD + group-scoped scene generation
 │   │   ├── network.sh        # Network scanning and Pi discovery
 │   │   ├── qlc.sh            # QLC+ operations (workspace, fixtures, DMX)
+│   │   ├── scene_templates.sh # Pre-defined template generation
 │   │   ├── system.sh         # System monitoring and diagnostics
 │   │   ├── tls.sh            # Certificate generation and SSL proxy
-│   │   └── wifi.sh           # WiFi configuration management
-│   ├── provisioning/         # One-time setup scripts
-│   │   ├── setup.sh          # Base installation (formerly pi_lights_setup.sh)
-│   │   ├── harden.sh         # Security hardening (formerly pi_harden.sh)
-│   │   └── configure_qlc_headless.sh  # Qt platform configuration
-│   └── services/             # Service-specific deployment
-│       ├── landing.sh        # Landing page setup (formerly pi_landing.sh)
-│       └── wifi-watchdog.sh  # WiFi auto-recovery watchdog (installed on Pi)
-├── landing/                  # Landing page HTML
-├── workspaces/               # QLC+ workspace files (.qxw)
-├── backups/                  # QLC+ configuration backups
-└── .env                      # Environment configuration
+│   │   ├── wifi.sh           # WiFi configuration management
+│   │   └── workspace.sh      # Inject/extract scenes from .qxw workspaces
+│   ├── provisioning/         # One-time setup scripts (run on Pi)
+│   │   ├── setup.sh          # Base installation
+│   │   └── harden.sh         # Security hardening
+│   ├── services/             # Service deployment scripts
+│   │   ├── control_server.sh # Control server installer
+│   │   ├── landing.sh        # Landing page setup
+│   │   └── wifi-watchdog.sh  # WiFi auto-recovery watchdog
+│   └── debug/                # One-off diagnostic scripts
+├── landing/                  # Landing page HTML (deployed to nginx)
+├── scenes/examples/          # Reference AI-generated scene XML
+├── docs/                     # Architecture and feature documentation
+├── backups/                  # QLC+ configuration backups (gitignored)
+└── certs/                    # TLS certificates (gitignored)
 ```
-
-### Script Organization
-
-**Utility Libraries (`scripts/lib/`):**
-- Contain reusable functions sourced by `lightsctl.sh`
-- Each module focuses on a single domain (networking, QLC+, system, etc.)
-- Functions are exported for cross-module use
-
-**Provisioning Scripts (`scripts/provisioning/`):**
-- Large, standalone scripts for initial Pi setup
-- Run once during initial provisioning or updates
-- Called by `lightsctl.sh` provisioning commands
-
-**Service Scripts (`scripts/services/`):**
-- Service-specific deployment and configuration
-- Currently contains landing page setup
-
-This modular structure makes it easy to:
-- Locate and modify specific functionality
-- Add new features without touching unrelated code
-- Test individual components independently
-- Understand the codebase quickly
 
 ---
 
@@ -913,13 +911,16 @@ sudo systemctl restart dhcpcd5
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
 
-**Immediate priorities:**
-- ✅ Auto-load default workspace (v1.1)
-- Marketing website with interactive demo (v1.2)
-- AI scene generation with modular/complete styles (v1.2)
-- Scene library and marketplace (v1.3)
+**Completed:**
+- ✅ Auto-load default workspace
+- ✅ AI scene generation with complete/modular styles
+- ✅ Natural language control server (port 5000)
+- ✅ Fixture groups/zones with per-group scene targeting
+- ✅ `.qxf`-aware fixture channel parsing (no more guessing RGB vs warm/cool)
+- ✅ Persistent WebSocket architecture (no CLOSE_WAIT leaks)
+- ✅ WiFi watchdog for auto-recovery
 
-**Planned features:**
+**Planned:**
 - Multi-device fleet management
 - Studio ecosystem integration (camera, video, audio)
 - Advanced AI features (scene evolution, video analysis)
@@ -927,6 +928,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
 - Plugin system and API access
 
 For detailed information on AI scene generation, see [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md).
+For the control server architecture, see [docs/CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md).
 For WiFi reliability and troubleshooting, see [docs/WIFI_RELIABILITY.md](docs/WIFI_RELIABILITY.md).
 
 ---
