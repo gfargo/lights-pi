@@ -1875,6 +1875,643 @@ def get_channel_values():
         return jsonify({"values": {}, "error": str(e)})
 
 
+# =============================================================================
+# Tier 1 endpoints — group CRUD, scene management, identify, blackout, batch
+# =============================================================================
+#
+# These extend the API surface without changing existing behavior. Each block
+# is bracketed with a short rationale so it's easy to find later.
+
+
+# ----------------------------------------------------------------------------
+# Group CRUD
+# ----------------------------------------------------------------------------
+# Storage: ~/.qlcplus/fixture_groups.json. The on-disk format is
+#     {"groups": {<name>: {"fixtures": [<id>...], "description": "..."}}}
+# Some legacy files store the inner dict directly without the "groups" key —
+# _load_groups handles both, _save_groups always writes the wrapped form.
+
+def _load_groups() -> dict:
+    """Return the groups dict in {name: {fixtures, description}} form.
+
+    Tolerates the legacy unwrapped format. Returns an empty dict if the file
+    doesn't exist yet.
+    """
+    if not GROUPS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(GROUPS_FILE.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], dict):
+        return data["groups"]
+    return data if isinstance(data, dict) else {}
+
+
+def _save_groups(groups: dict) -> None:
+    """Persist the groups dict in the canonical wrapped format."""
+    GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    GROUPS_FILE.write_text(json.dumps({"groups": groups}, indent=2))
+
+
+def _existing_fixture_ids() -> set:
+    """Set of int fixture IDs declared in the current workspace."""
+    return {int(f["id"]) for f in get_workspace_fixtures()}
+
+
+def _normalize_fixture_ids(raw):
+    """Coerce a fixture_ids input into a deduped list of ints.
+
+    Accepts list of ints / numeric strings, drops anything unparseable.
+    """
+    result = []
+    seen = set()
+    for v in raw or []:
+        try:
+            fid = int(v)
+        except (TypeError, ValueError):
+            continue
+        if fid not in seen:
+            seen.add(fid)
+            result.append(fid)
+    return result
+
+
+@app.route("/api/groups", methods=["POST"])
+def create_group():
+    """Create a new fixture group.
+
+    Body:
+        {
+          "name": "key-lights",
+          "fixtures": [0, 3, 4],
+          "description": "Front key wash"   # optional
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "name is required"}), 400
+
+    groups = _load_groups()
+    if name in groups:
+        return jsonify({"success": False, "error": f"Group '{name}' already exists"}), 409
+
+    fixture_ids = _normalize_fixture_ids(data.get("fixtures"))
+    valid_ids = _existing_fixture_ids()
+    unknown = [fid for fid in fixture_ids if fid not in valid_ids]
+    if unknown:
+        return jsonify({
+            "success": False,
+            "error": f"Unknown fixture IDs: {unknown}",
+            "valid_fixture_ids": sorted(valid_ids),
+        }), 400
+
+    groups[name] = {
+        "fixtures": fixture_ids,
+        "description": (data.get("description") or "").strip(),
+    }
+    _save_groups(groups)
+    return jsonify({
+        "success": True,
+        "group": {
+            "name": name,
+            "fixtures": fixture_ids,
+            "description": groups[name]["description"],
+        },
+    })
+
+
+@app.route("/api/groups/<group_name>", methods=["DELETE"])
+def delete_group(group_name):
+    """Remove a fixture group. Idempotent: returns 404 if missing."""
+    groups = _load_groups()
+    if group_name not in groups:
+        return jsonify({"success": False, "error": f"Group '{group_name}' not found"}), 404
+    del groups[group_name]
+    _save_groups(groups)
+    return jsonify({"success": True})
+
+
+@app.route("/api/groups/<group_name>", methods=["PATCH"])
+def update_group(group_name):
+    """Rename a group or update its description / fixture list.
+
+    Body (all fields optional):
+        {
+          "name": "new-name",
+          "description": "...",
+          "fixtures": [0, 3, 4]   # replaces the full list
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    groups = _load_groups()
+    if group_name not in groups:
+        return jsonify({"success": False, "error": f"Group '{group_name}' not found"}), 404
+
+    group = groups[group_name]
+    new_name = (data.get("name") or "").strip()
+    if new_name and new_name != group_name:
+        if new_name in groups:
+            return jsonify({
+                "success": False,
+                "error": f"Group '{new_name}' already exists"
+            }), 409
+        groups[new_name] = group
+        del groups[group_name]
+        group_name = new_name
+
+    if "description" in data:
+        groups[group_name]["description"] = (data.get("description") or "").strip()
+
+    if "fixtures" in data:
+        fixture_ids = _normalize_fixture_ids(data.get("fixtures"))
+        valid_ids = _existing_fixture_ids()
+        unknown = [fid for fid in fixture_ids if fid not in valid_ids]
+        if unknown:
+            return jsonify({
+                "success": False,
+                "error": f"Unknown fixture IDs: {unknown}"
+            }), 400
+        groups[group_name]["fixtures"] = fixture_ids
+
+    _save_groups(groups)
+    return jsonify({
+        "success": True,
+        "group": {
+            "name": group_name,
+            "fixtures": groups[group_name].get("fixtures", []),
+            "description": groups[group_name].get("description", ""),
+        },
+    })
+
+
+@app.route("/api/groups/<group_name>/fixtures", methods=["POST"])
+def add_fixtures_to_group(group_name):
+    """Append fixture IDs to a group (preserving existing members).
+
+    Body: { "fixtures": [0, 3, 4] }
+    """
+    data = request.get_json(silent=True) or {}
+    groups = _load_groups()
+    if group_name not in groups:
+        return jsonify({"success": False, "error": f"Group '{group_name}' not found"}), 404
+
+    to_add = _normalize_fixture_ids(data.get("fixtures"))
+    valid_ids = _existing_fixture_ids()
+    unknown = [fid for fid in to_add if fid not in valid_ids]
+    if unknown:
+        return jsonify({
+            "success": False,
+            "error": f"Unknown fixture IDs: {unknown}"
+        }), 400
+
+    current = list(groups[group_name].get("fixtures") or [])
+    seen = set(current)
+    for fid in to_add:
+        if fid not in seen:
+            current.append(fid)
+            seen.add(fid)
+    groups[group_name]["fixtures"] = current
+    _save_groups(groups)
+
+    return jsonify({
+        "success": True,
+        "group": {
+            "name": group_name,
+            "fixtures": current,
+            "description": groups[group_name].get("description", ""),
+        },
+    })
+
+
+@app.route("/api/groups/<group_name>/fixtures", methods=["DELETE"])
+def remove_fixtures_from_group(group_name):
+    """Remove fixture IDs from a group. Missing IDs are ignored silently.
+
+    Body: { "fixtures": [3, 4] }
+    """
+    data = request.get_json(silent=True) or {}
+    groups = _load_groups()
+    if group_name not in groups:
+        return jsonify({"success": False, "error": f"Group '{group_name}' not found"}), 404
+
+    to_remove = set(_normalize_fixture_ids(data.get("fixtures")))
+    current = [fid for fid in (groups[group_name].get("fixtures") or []) if fid not in to_remove]
+    groups[group_name]["fixtures"] = current
+    _save_groups(groups)
+
+    return jsonify({
+        "success": True,
+        "group": {
+            "name": group_name,
+            "fixtures": current,
+            "description": groups[group_name].get("description", ""),
+        },
+    })
+
+
+# ----------------------------------------------------------------------------
+# Scene management — describe / delete / rename / duplicate
+# ----------------------------------------------------------------------------
+
+def _scene_value_breakdown(scene_root) -> list:
+    """Convert a scene <Function> element to a fixture-keyed value breakdown.
+
+    Returns a list of dicts:
+        [{ "fixture_id": 0, "fixture_name": "SlimPAR Pro",
+           "channels": [{ "offset": 0, "name": "Dimmer", "value": 200 }, ...] }, ...]
+
+    The channel name comes from the .qxf parser when available.
+    """
+    fixtures_by_id = {str(f["id"]): f for f in get_workspace_fixtures()}
+    out = []
+    for fixture_val in _find_children(scene_root, "FixtureVal"):
+        fid = fixture_val.get("ID")
+        fixture = fixtures_by_id.get(str(fid))
+        if not fixture or not fixture_val.text:
+            continue
+
+        raw_parts = [p.strip() for p in fixture_val.text.split(",") if p.strip() != ""]
+        pairs = []
+        for i in range(0, len(raw_parts) - 1, 2):
+            try:
+                pairs.append((int(raw_parts[i]), int(raw_parts[i + 1])))
+            except ValueError:
+                continue
+        if not pairs:
+            continue
+
+        # Detect 0-based vs 1-based channel numbering (same logic as
+        # scene_to_channel_values) so the offsets we report are 0-based.
+        zero_based = any(channel == 0 for channel, _ in pairs)
+
+        channel_info = _fixture_channels_info(fixture)
+        info_by_offset = {ci["offset"]: ci for ci in channel_info}
+
+        channels = []
+        for raw_ch, value in pairs:
+            offset = raw_ch if zero_based else raw_ch - 1
+            ci = info_by_offset.get(offset, {})
+            channels.append({
+                "offset": offset,
+                "name": ci.get("name", f"Ch {offset + 1}"),
+                "role": ci.get("role"),
+                "value": value,
+            })
+
+        out.append({
+            "fixture_id": int(fid),
+            "fixture_name": fixture.get("name", ""),
+            "channels": channels,
+        })
+    return out
+
+
+@app.route("/api/scenes/<scene_id>", methods=["GET"])
+def describe_scene(scene_id):
+    """Return the contents of a saved scene: fixture/channel/value breakdown."""
+    scene = _find_scene_element(scene_id)
+    if scene is None:
+        return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+    return jsonify({
+        "success": True,
+        "scene": {
+            "id": int(scene.get("ID", "0")) if (scene.get("ID") or "").isdigit() else scene.get("ID"),
+            "name": scene.get("Name", ""),
+            "path": scene.get("Path", ""),
+        },
+        "fixtures": _scene_value_breakdown(scene),
+    })
+
+
+@app.route("/api/scenes/<scene_id>", methods=["DELETE"])
+def delete_scene(scene_id):
+    """Delete a saved scene from the workspace permanently."""
+    try:
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(scene_id).strip().lower()
+        ns = "http://www.qlcplus.org/Workspace"
+        target = None
+        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+            if func.get("Type") != "Scene":
+                continue
+            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                target = func
+                break
+        if target is None:
+            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+
+        engine.remove(target)
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return jsonify({
+            "success": True,
+            "deleted": {"id": target.get("ID"), "name": target.get("Name")},
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/scenes/<scene_id>", methods=["PATCH"])
+def rename_scene(scene_id):
+    """Rename a scene. Body: { "name": "New Name", "path": "AI Generated" }"""
+    data = request.get_json(silent=True) or {}
+    new_name = (data.get("name") or "").strip()
+    new_path = data.get("path")
+    if not new_name and new_path is None:
+        return jsonify({"success": False, "error": "Provide name and/or path"}), 400
+
+    try:
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(scene_id).strip().lower()
+        ns = "http://www.qlcplus.org/Workspace"
+        target = None
+        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+            if func.get("Type") != "Scene":
+                continue
+            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                target = func
+                break
+        if target is None:
+            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+
+        if new_name:
+            target.set("Name", new_name)
+        if new_path is not None:
+            target.set("Path", new_path)
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return jsonify({
+            "success": True,
+            "scene": {
+                "id": target.get("ID"),
+                "name": target.get("Name"),
+                "path": target.get("Path", ""),
+            },
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/scenes/<scene_id>/duplicate", methods=["POST"])
+def duplicate_scene(scene_id):
+    """Duplicate an existing scene under a new name. Body: { "name": "..." }"""
+    data = request.get_json(silent=True) or {}
+    new_name = (data.get("name") or "").strip()
+    if not new_name:
+        return jsonify({"success": False, "error": "name is required"}), 400
+
+    try:
+        import copy as _copy
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(scene_id).strip().lower()
+        ns = "http://www.qlcplus.org/Workspace"
+        source = None
+        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+            if func.get("Type") != "Scene":
+                continue
+            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                source = func
+                break
+        if source is None:
+            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+
+        clone = _copy.deepcopy(source)
+        clone.set("Name", new_name)
+        new_id = get_next_scene_id()
+        clone.set("ID", str(new_id))
+        engine.append(clone)
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return jsonify({
+            "success": True,
+            "scene": {
+                "id": new_id,
+                "name": new_name,
+                "source_id": source.get("ID"),
+                "source_name": source.get("Name"),
+            },
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ----------------------------------------------------------------------------
+# identify_fixture — visual ping
+# ----------------------------------------------------------------------------
+
+async def _identify_fixture_async(fixture, duration=2.0, pulses=4):
+    """Flash a fixture's dimmer/brightness channels on-off-on-off then restore.
+
+    Uses the persistent QLC+ WebSocket. Total pattern time ≈ `duration`
+    seconds spread across `pulses` on-off cycles, then a final restore frame.
+    """
+    ws = await _ensure_qlc_ws()
+    roles = _fixture_roles(fixture)
+    brightness_offsets = roles.get("brightness", [])
+    if not brightness_offsets:
+        # Fall back to channel 0 if we can't find a brightness channel
+        brightness_offsets = [0]
+
+    # Read current values so we can restore them when done
+    max_ch = fixture["universe"] * 512 + fixture["address"] + fixture["channels"]
+    current = await _fetch_channel_values(max_ch)
+
+    abs_channels = [_absolute_channel(fixture, offset) for offset in brightness_offsets]
+    half_period = duration / (pulses * 2) if pulses > 0 else 0.25
+
+    async def _send(value):
+        commands = [f"CH|{ch}|{value}" for ch in abs_channels]
+        async with _qlc_ws_lock:
+            for cmd in commands:
+                await ws.send(cmd)
+
+    try:
+        for _ in range(pulses):
+            await _send(255)
+            await asyncio.sleep(half_period)
+            await _send(0)
+            await asyncio.sleep(half_period)
+        # Restore previous values
+        restore_commands = [f"CH|{ch}|{int(current.get(ch, 0))}" for ch in abs_channels]
+        async with _qlc_ws_lock:
+            for cmd in restore_commands:
+                await ws.send(cmd)
+        return True
+    except Exception as e:
+        print(f"identify_fixture error: {e}")
+        return False
+
+
+@app.route("/api/fixtures/<int:fixture_id>/identify", methods=["POST"])
+def identify_fixture(fixture_id):
+    """Pulse a single fixture so the user can visually identify which is which.
+
+    Body (optional):
+        { "duration": 2.0, "pulses": 4 }
+    """
+    fixtures = get_workspace_fixtures()
+    match = next((f for f in fixtures if int(f["id"]) == int(fixture_id)), None)
+    if match is None:
+        return jsonify({"success": False, "error": f"Fixture {fixture_id} not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    try:
+        duration = max(0.5, min(10.0, float(data.get("duration", 2.0))))
+    except (TypeError, ValueError):
+        duration = 2.0
+    try:
+        pulses = max(1, min(10, int(data.get("pulses", 4))))
+    except (TypeError, ValueError):
+        pulses = 4
+
+    try:
+        success = _qlc_run(
+            _identify_fixture_async(match, duration=duration, pulses=pulses),
+            timeout=duration + 5,
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({
+        "success": success,
+        "fixture": {
+            "id": match["id"],
+            "name": match["name"],
+        },
+        "duration": duration,
+        "pulses": pulses,
+    })
+
+
+# ----------------------------------------------------------------------------
+# blackout — instant zero on all (or grouped) fixtures
+# ----------------------------------------------------------------------------
+
+@app.route("/api/blackout", methods=["POST"])
+def blackout():
+    """Instantly drive every channel of the targeted fixtures to 0.
+
+    Body (optional): { "groups": ["key-lights"] }  # defaults to all fixtures
+
+    Distinct from fade(target:0, duration:0) because it writes EVERY channel
+    on the fixture (not just brightness-role channels), so any active strobe,
+    macro, or color state is also cleared. Use for "kill it all" moments.
+    """
+    data = request.get_json(silent=True) or {}
+    target_groups = data.get("groups") or None
+    fixtures = _target_fixtures(target_groups)
+
+    updates = []
+    for fixture in fixtures:
+        for offset in range(int(fixture.get("channels", 0))):
+            updates.append((_absolute_channel(fixture, offset), 0))
+
+    success = set_channel_values(updates) if updates else True
+    return jsonify({
+        "success": success,
+        "fixtures": len(fixtures),
+        "channels_zeroed": len(updates),
+        "groups": target_groups,
+    })
+
+
+# ----------------------------------------------------------------------------
+# batch_action — dispatch multiple actions in a single HTTP round trip
+# ----------------------------------------------------------------------------
+
+@app.route("/api/batch", methods=["POST"])
+def batch_action():
+    """Execute an ordered list of actions in one request.
+
+    Body:
+        {
+          "actions": [
+            { "action": "adjust_color", "parameters": {"color": "warm"}, "groups": ["key-lights"] },
+            { "action": "adjust_color", "parameters": {"color": "cool"}, "groups": ["fill-lights"] },
+            { "action": "fade", "parameters": {"target": "0", "duration": "5"} }
+          ]
+        }
+
+    Returns a per-action result array plus an aggregate success flag.
+    Stops on first failure and reports which step broke; remaining
+    actions are skipped (stop_on_error: true by default).
+    """
+    import time as _time
+    data = request.get_json(silent=True) or {}
+    actions = data.get("actions") or []
+    stop_on_error = data.get("stop_on_error", True)
+
+    if not isinstance(actions, list) or not actions:
+        return jsonify({"success": False, "error": "Provide non-empty 'actions' array"}), 400
+
+    results = []
+    overall_success = True
+    t0 = _time.time()
+
+    for i, step in enumerate(actions):
+        if not isinstance(step, dict):
+            results.append({"index": i, "success": False, "error": "step must be an object"})
+            overall_success = False
+            if stop_on_error:
+                break
+            continue
+
+        action_data = {
+            "action": step.get("action"),
+            "parameters": step.get("parameters", {}) or {},
+            "explanation": step.get("explanation", ""),
+        }
+        groups = step.get("groups") or None
+
+        try:
+            result = execute_lighting_action(action_data, target_groups=groups)
+            results.append({
+                "index": i,
+                "action": action_data["action"],
+                "success": result["success"],
+                "output": result.get("output", ""),
+                "error": result.get("error", "") if not result["success"] else "",
+            })
+            if not result["success"]:
+                overall_success = False
+                if stop_on_error:
+                    break
+        except Exception as e:
+            results.append({
+                "index": i,
+                "action": action_data["action"],
+                "success": False,
+                "error": str(e),
+            })
+            overall_success = False
+            if stop_on_error:
+                break
+
+    return jsonify({
+        "success": overall_success,
+        "executed": len(results),
+        "total_requested": len(actions),
+        "results": results,
+        "debug": {
+            "total_ms": round((_time.time() - t0) * 1000),
+        },
+    })
+
+
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():
