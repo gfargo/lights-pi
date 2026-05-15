@@ -156,6 +156,13 @@ Natural Language Control:
   control-restart             restart control server
   env-sync                    sync local .env file to Pi and restart services
 
+MCP Server (LLM agent access):
+  mcp-install                 install MCP server (Streamable HTTP @ :5001/mcp)
+  mcp-uninstall               uninstall MCP server
+  mcp-status                  show MCP server status
+  mcp-logs                    show MCP server logs
+  mcp-restart                 restart MCP server
+
 Fixture Groups/Zones:
   group-list                  list all fixture groups
   group-create <name> <ids> [desc]  create new group (ids: comma-separated)
@@ -990,6 +997,32 @@ function command_control_restart() {
   restart_control_server
 }
 
+# MCP Server commands
+function command_mcp_install() {
+  source "${SCRIPT_DIR}/scripts/services/mcp_server.sh"
+  install_mcp_server
+}
+
+function command_mcp_uninstall() {
+  source "${SCRIPT_DIR}/scripts/services/mcp_server.sh"
+  uninstall_mcp_server
+}
+
+function command_mcp_status() {
+  source "${SCRIPT_DIR}/scripts/services/mcp_server.sh"
+  status_mcp_server
+}
+
+function command_mcp_logs() {
+  source "${SCRIPT_DIR}/scripts/services/mcp_server.sh"
+  logs_mcp_server
+}
+
+function command_mcp_restart() {
+  source "${SCRIPT_DIR}/scripts/services/mcp_server.sh"
+  restart_mcp_server
+}
+
 function command_env_sync() {
   if [[ ! -f "${ENV_FILE}" ]]; then
     echo "Error: .env file not found at ${ENV_FILE}" >&2
@@ -1283,6 +1316,11 @@ case "$1" in
   control-status) command_control_status ;;
   control-logs) command_control_logs ;;
   control-restart) command_control_restart ;;
+  mcp-install) command_mcp_install ;;
+  mcp-uninstall) command_mcp_uninstall ;;
+  mcp-status) command_mcp_status ;;
+  mcp-logs) command_mcp_logs ;;
+  mcp-restart) command_mcp_restart ;;
   env-sync) command_env_sync ;;
   group-list) command_group_list ;;
   group-create) shift; command_group_create "$@" ;;

@@ -20,7 +20,7 @@ Provisioning, library helpers, and remote scripts.
 - `scripts/provisioning/` - one-shot setup and hardening scripts run remotely
   on the Pi (`setup.sh`, `harden.sh`)
 - `scripts/services/` - service installers run remotely (`landing.sh`,
-  `control_server.sh`, `wifi-watchdog.sh`)
+  `control_server.sh`, `mcp_server.sh`, `wifi-watchdog.sh`)
 - `scripts/lib/` - shared bash libraries sourced by `lightsctl.sh` for
   organized command implementations
   - `system.sh`, `qlc.sh`, `wifi.sh`, `network.sh`, `backup.sh`, `tls.sh`
@@ -46,6 +46,16 @@ Flask + SocketIO server running on the Pi at port `5000`.
 - `requirements.txt` - Python dependencies (Flask, Flask-CORS,
   Flask-SocketIO, websockets, requests)
 - `README.md` - control server architecture notes
+
+### `/mcp-server`
+
+FastMCP server running on the Pi at port `5001`, exposing the rig as MCP
+tools/resources for LLM agents over Streamable HTTP.
+
+- `server.py` - FastMCP setup, tool/resource definitions, httpx client
+  pointed at the Flask control server on `localhost:5000`
+- `requirements.txt` - `mcp[cli]`, `httpx`
+- `README.md` - tool reference, env vars, client wiring
 
 ### `/landing`
 
@@ -98,7 +108,7 @@ Provisioning scripts in `scripts/provisioning/` and `scripts/services/` are:
 
 ### Service Management on the Pi
 
-Two systemd services run on the Pi:
+Three systemd services run on the Pi:
 
 - `qlcplus-web.service` - QLC+ in headless mode, port 9999
   - `QT_QPA_PLATFORM=minimal` for true headless operation
@@ -108,15 +118,24 @@ Two systemd services run on the Pi:
   - Holds a single persistent WebSocket to QLC+ at `ws://localhost:9999/qlcplusWS`
   - Reads `.env` from `/home/<user>/.env` for AI provider config
   - Auto-restarts on failure
+- `lighting-mcp.service` - the MCP server, port 5001
+  - Ordered `After=lighting-control.service` with `Wants=`, so it waits for
+    the Flask backend before starting
+  - Calls Flask over `http://localhost:5000` (single writer to QLC+ stays
+    in the Flask process)
+  - Auto-restarts on failure
+  - Reads `.env` from `/home/<user>/mcp-server/.env` for `MCP_BEARER_TOKEN`,
+    `CONTROL_URL`, `MCP_PORT` overrides
 
 ### Configuration Files on Pi
 
 - `/etc/systemd/system/qlcplus-web.service` - QLC+ service definition
 - `/etc/systemd/system/lighting-control.service` - control server service
+- `/etc/systemd/system/lighting-mcp.service` - MCP server service
 - `/etc/NetworkManager/system-connections/` and `/etc/netplan/` - WiFi
   (NetworkManager is the active manager on Bookworm; `wpa_supplicant.conf` is
   vestigial and only relevant on older images)
-- `/etc/ufw/` - firewall rules (allow 22, 80, 443, 5000, 9999)
+- `/etc/ufw/` - firewall rules (allow 22, 80, 443, 5000, 5001, 9999)
 - `/etc/udev/rules.d/99-dmx.rules` - ENTTEC USB symlink
 - `/home/<user>/.qlcplus/default.qxw` - the live workspace
 - `/home/<user>/.qlcplus/fixture_groups.json` - persisted fixture groups

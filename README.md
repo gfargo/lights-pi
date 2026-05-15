@@ -2,10 +2,11 @@
 
 > Headless Raspberry Pi lighting controller for studio environments. Control
 > DMX fixtures from any device on your network via QLC+'s web interface, the
-> custom Virtual Console at port `5000`, or natural-language voice/chat
-> commands powered by OpenAI / Anthropic / Ollama.
+> custom Virtual Console at port `5000`, natural-language voice/chat commands
+> powered by OpenAI / Anthropic / Ollama, **or any MCP-compatible LLM agent
+> over the Streamable HTTP MCP server at port `5001`**.
 
-**Core Stack:** QLC+ • ENTTEC DMX USB Pro • Raspberry Pi OS • Flask Control Server
+**Core Stack:** QLC+ • ENTTEC DMX USB Pro • Raspberry Pi OS • Flask Control Server • MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -19,12 +20,16 @@
 - [Command Reference](#-command-reference)
 - [Workflow Examples](#-workflow-examples)
 - [Configuration](#-configuration)
+- [Natural Language Control](#-natural-language-control-beta)
+- [MCP Server (LLM Agent Access)](#-mcp-server-llm-agent-access)
+- [Fixture Groups / Zones](#-fixture-groupszones)
 - [Project Structure](#-project-structure)
 - [Troubleshooting](#-troubleshooting)
 
 For the deeper internals of the natural-language control layer and the
 single-WebSocket QLC+ bridge, see
 [docs/CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md).
+For the MCP server (LLM agent access), see [docs/MCP_SERVER.md](docs/MCP_SERVER.md).
 
 ---
 
@@ -95,24 +100,24 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ## 🏗️ System Architecture
 
 ```
-   Browser / phone / voice           ┌─────────── AI providers ──────────┐
-              │                      │  OpenAI • Anthropic • Ollama (local) │
-              │  WiFi / HTTPS        └─────────────┬─────────────────────┘
-              ▼                                    │
-       Raspberry Pi                                │
-   ┌─────────────────────────────┐                 │
-   │ nginx (80/443, optional)    │                 │
-   │ landing page + reverse proxy│                 │
-   └──────────┬──────────────────┘                 │
-              │                                    │
-   ┌──────────▼──────────────┐    HTTP+WebSocket   │
-   │ Flask control server    │◄────────────────────┘
-   │ (port 5000)             │
-   │  • AI chat → DMX        │
-   │  • Live virtual console │
-   │  • Fixture groups       │
-   │  • .qxf-aware channels  │
-   └──────────┬──────────────┘
+   Browser / phone / voice    MCP-aware LLM agents     ┌─────────── AI providers ──────────┐
+              │              (Claude Desktop, etc.)    │  OpenAI • Anthropic • Ollama (local) │
+              │  WiFi / HTTPS        │                 └─────────────┬─────────────────────┘
+              ▼                      ▼                               │
+       Raspberry Pi                                                  │
+   ┌─────────────────────────────┐  ┌──────────────────────────┐     │
+   │ nginx (80/443, optional)    │  │ MCP server (port 5001)   │     │
+   │ landing page + reverse proxy│  │  Streamable HTTP @ /mcp  │     │
+   └──────────┬──────────────────┘  └───────────┬──────────────┘     │
+              │                                 │ HTTP               │
+   ┌──────────▼─────────────────────────────────▼──┐  HTTP+WebSocket │
+   │ Flask control server (port 5000)              │◄────────────────┘
+   │  • AI chat → DMX                              │
+   │  • Live virtual console                       │
+   │  • Fixture groups                             │
+   │  • .qxf-aware channels                        │
+   │  • /api/action structured dispatch (for MCP)  │
+   └──────────┬────────────────────────────────────┘
               │ persistent WebSocket
               ▼
    ┌──────────────────────────┐
@@ -135,12 +140,13 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 | Raspberry Pi OS (Bookworm) | Lightweight OS |
 | QLC+ 4.14.x | Lighting control engine + DMX output |
 | `lighting-control` (Flask + Flask-SocketIO) | Custom control server (port 5000): AI chat, live UI, group/fixture API, `.qxf`-derived channel labels |
+| `lighting-mcp` (FastMCP + httpx) | MCP server (port 5001): Streamable HTTP endpoint exposing lights as tools/resources to LLM agents — see [MCP_SERVER.md](docs/MCP_SERVER.md) |
 | `websockets` (Python) | Single persistent QLC+ WebSocket on a dedicated asyncio loop — see [CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md) |
 | Avahi | mDNS (`lights.local`) |
 | nginx | Landing page + SSL reverse proxy |
 | stunnel4 (optional) | SSL/TLS termination alternative |
 | ufw | Firewall |
-| systemd | Service management (`qlcplus-web.service`, `lighting-control.service`) |
+| systemd | Service management (`qlcplus-web.service`, `lighting-control.service`, `lighting-mcp.service`) |
 
 </details>
 
@@ -1027,6 +1033,61 @@ Control your lights in real-time using natural language commands via a web inter
 - "Fade to black over 5 seconds"
 
 See [control-server/README.md](control-server/README.md) for complete documentation.
+
+---
+
+## 🤖 MCP Server (LLM Agent Access)
+
+Expose the lighting rig as a [Model Context Protocol](https://modelcontextprotocol.io)
+endpoint so any MCP-capable agent — Claude Desktop, ChatGPT, Cursor, custom
+clients — can discover fixtures, scenes, and groups and issue commands without
+hand-rolling REST integrations.
+
+```bash
+# Install the MCP server (sibling systemd service, port 5001)
+./lightsctl.sh mcp-install
+
+# Endpoint
+# http://lights.local:5001/mcp     ← Streamable HTTP transport
+```
+
+**Architecture.** The MCP server is a thin FastMCP wrapper that calls the
+control server's REST API over `localhost` — the Flask app remains the single
+writer to QLC+, so the MCP process is stateless and crash-safe to restart.
+
+```
+LLM agent ──MCP/HTTP──▶  lighting-mcp.service ──HTTP──▶  lighting-control.service ──WS──▶  QLC+
+                              :5001/mcp                       :5000                          :9999
+```
+
+**Tools exposed:**
+- *Discovery:* `get_status`, `list_fixtures`, `get_fixture_channels`,
+  `list_groups`, `list_scenes`, `list_templates`, `get_channel_values`
+- *Actions:* `activate_scene`, `apply_template`, `adjust_brightness`,
+  `adjust_color`, `fade`, `generate_scene`, `set_channel`, `save_scene`,
+  `snapshot_scene`
+- *Resource:* `lights://workspace` — one-shot snapshot of fixtures, groups,
+  scenes, templates, and status for LLM context
+
+**Wire it up in Claude Desktop / Cursor:**
+```json
+{
+  "mcpServers": {
+    "qlc-lights": { "url": "http://lights.local:5001/mcp" }
+  }
+}
+```
+
+**Commands:**
+```bash
+./lightsctl.sh mcp-install     # install + enable + start
+./lightsctl.sh mcp-status      # systemctl status
+./lightsctl.sh mcp-logs        # journalctl -u lighting-mcp.service
+./lightsctl.sh mcp-restart     # restart after config changes
+./lightsctl.sh mcp-uninstall   # remove service + firewall rule
+```
+
+See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) and [mcp-server/README.md](mcp-server/README.md) for the full tool/resource reference and auth hooks.
 
 ---
 

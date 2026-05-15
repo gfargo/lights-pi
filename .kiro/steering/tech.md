@@ -14,6 +14,7 @@ inclusion: auto
 - **Web Server**: nginx (optional landing page + reverse proxy for HTTPS)
 - **Security**: ufw (firewall), stunnel4 or nginx for TLS
 - **Control Server**: Python 3.11+, Flask, Flask-SocketIO, `websockets`, `requests`
+- **MCP Server**: Python 3.11+, `mcp[cli]` (FastMCP, Streamable HTTP transport), `httpx`
 - **AI**: OpenAI / Anthropic / Ollama (configurable via `.env`)
 
 ## Build System
@@ -31,6 +32,12 @@ and is installed via `./lightsctl.sh control-install`. Required packages:
 - `websockets` (used for the persistent QLC+ connection)
 - `requests` (used for AI provider calls)
 
+The MCP server runs in its own `/home/<user>/mcp-server-venv/` venv and is
+installed via `./lightsctl.sh mcp-install`. Required packages:
+
+- `mcp[cli]>=1.2.0` (FastMCP + Streamable HTTP server)
+- `httpx>=0.27.0` (calls into the Flask control server on `localhost:5000`)
+
 QLC+ provides the actual DMX output and the `.qxf` fixture definition files
 that the control server reads for authoritative channel metadata.
 
@@ -45,6 +52,7 @@ All commands use `./lightsctl.sh` or `make` shortcuts:
 ./lightsctl.sh setup               # Base install only
 ./lightsctl.sh harden              # Security hardening
 ./lightsctl.sh control-install     # Deploy the control server (port 5000)
+./lightsctl.sh mcp-install         # Deploy the MCP server (port 5001)
 ./lightsctl.sh env-sync            # Push local .env to the Pi
 ```
 
@@ -57,6 +65,9 @@ All commands use `./lightsctl.sh` or `make` shortcuts:
 ./lightsctl.sh control-status      # lighting-control.service status
 ./lightsctl.sh control-logs        # last 80 lines from control server
 ./lightsctl.sh control-restart     # restart the control server
+./lightsctl.sh mcp-status          # lighting-mcp.service status
+./lightsctl.sh mcp-logs            # last 50 lines from MCP server
+./lightsctl.sh mcp-restart         # restart the MCP server
 ./lightsctl.sh health              # full system health check
 ```
 
@@ -120,6 +131,13 @@ Environment variables in `.env` (copy from `.env.example`):
 - `AI_MODEL` - e.g. `gpt-4.1`, `claude-3-5-sonnet-20241022`, or local Ollama tag
 - `AI_SCENE_STYLE` - default scene style (`complete` | `modular` | `timeline` |
   `reactive`)
+- `MCP_PORT` - MCP server listen port (default: `5001`)
+- `MCP_HOST` - MCP server bind address (default: `0.0.0.0`)
+- `MCP_PATH` - MCP Streamable HTTP mount path (default: `/mcp`)
+- `MCP_BEARER_TOKEN` - reserved for optional bearer-token auth on the MCP
+  endpoint (scaffolded; not yet enforced)
+- `CONTROL_URL` - URL the MCP server uses to reach the Flask control server
+  (default: `http://localhost:5000`)
 
 ## Control Server Architecture
 
@@ -144,6 +162,23 @@ The same parser is invoked from `scripts/lib/extract_fixtures.py` so
 `./lightsctl.sh generate-scene` enriches the AI prompt with authoritative
 channel metadata too.
 
+## MCP Server Architecture
+
+The MCP server (`mcp-server/server.py`) uses FastMCP with the Streamable HTTP
+transport and runs as a sibling Python process. It does **not** open its own
+QLC+ connection — instead it makes HTTP calls into the Flask control server
+at `http://localhost:5000`, preserving the "single writer" invariant for the
+persistent QLC+ WebSocket.
+
+The Flask app exposes `POST /api/action` as the structured-dispatch path the
+MCP server uses, bypassing the AI interpreter (since the LLM is already on
+the other end of the MCP connection). Read paths reuse the existing
+`GET /api/fixtures`, `/api/groups`, `/api/scenes`, `/api/templates`,
+`/api/channel_values`, and `/api/status` endpoints.
+
+See `docs/MCP_SERVER.md` for the full tool/resource catalog and client
+wiring (Claude Desktop, ChatGPT, Cursor, custom).
+
 ## Testing
 
 No automated test suite. Manual verification via:
@@ -151,6 +186,9 @@ No automated test suite. Manual verification via:
 - `./lightsctl.sh health` - service, web UI, USB, system resources
 - `./lightsctl.sh check` - connectivity pre-flight
 - `./lightsctl.sh control-status` + `control-logs` - control server health
+- `./lightsctl.sh mcp-status` + `mcp-logs` - MCP server health
 - `curl http://lights.local:5000/api/status` - JSON service health summary
 - Browser access to `http://lights.local:5000` (custom UI) and
   `http://lights.local:9999` (QLC+ web UI)
+- `npx @modelcontextprotocol/inspector http://lights.local:5001/mcp` -
+  interactive MCP inspector for tool/resource verification

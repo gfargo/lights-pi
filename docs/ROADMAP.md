@@ -11,6 +11,9 @@
 - Backup/restore functionality
 - Health monitoring and diagnostics
 - Landing page with nginx reverse proxy
+- Natural-language control server with `.qxf`-aware AI scene generation
+- **MCP server (Streamable HTTP @ :5001/mcp) exposing the rig to any
+  MCP-capable LLM agent** (Claude Desktop, ChatGPT, Cursor, custom)
 - Complete documentation
 
 **What Works Well:**
