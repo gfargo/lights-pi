@@ -1138,13 +1138,16 @@ def execute_lighting_action(action_data, target_groups=None):
             result["success"] = False
             result["error"] = "Scene file not created"
             return result
+        scene_xml_content = scene_file.read_text()
         try:
-            apply_result = apply_scene_xml_live(scene_file.read_text())
+            apply_result = apply_scene_xml_live(scene_xml_content)
         finally:
             scene_file.unlink(missing_ok=True)
         result["success"] = apply_result["success"]
         result["output"] = (result.get("output", "") + "\n" + apply_result["output"]).strip()
         result["error"] = apply_result["error"] if not apply_result["success"] else result.get("error", "")
+        # Stash the scene XML so the caller can offer a "save" option
+        result["scene_xml"] = scene_xml_content
         return result
 
     if action == "apply_template":
@@ -1271,6 +1274,7 @@ def handle_command():
         "output": result.get("output", ""),
         "error": result.get("error", "") if not result["success"] else "",
         "log": result.get("error", "") if result["success"] else "",
+        "scene_xml": result.get("scene_xml"),  # present for generate_scene/apply_template
         "debug": {
             "interpret_ms": interpret_ms,
             "execute_ms": execute_ms,
@@ -1431,6 +1435,192 @@ def activate_scene(scene_id):
         }), status
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/scenes/save", methods=["POST"])
+def save_scene():
+    """Save a scene to the workspace permanently.
+
+    Accepts either:
+      - scene_xml: raw QLC+ scene XML to inject directly
+      - snapshot: true — captures the current live channel state as a new scene
+
+    Required: name (the scene name to save as)
+    Optional: path (folder path within QLC+, e.g. "AI Generated")
+    """
+    try:
+        data = request.get_json()
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"success": False, "error": "Scene name is required"}), 400
+
+        scene_xml = data.get("scene_xml", "").strip()
+        snapshot = data.get("snapshot", False)
+        path = data.get("path", "AI Generated").strip()
+
+        if not scene_xml and snapshot:
+            # Build scene XML from current live channel values
+            scene_xml = _snapshot_current_state_as_xml(name, path)
+        elif not scene_xml and not snapshot:
+            return jsonify({
+                "success": False,
+                "error": "Provide scene_xml or set snapshot=true"
+            }), 400
+
+        # If scene_xml was provided but doesn't have the right Name, patch it
+        if scene_xml and name:
+            scene_xml = _patch_scene_name(scene_xml, name, path)
+
+        # Inject into workspace
+        if not WORKSPACE_PATH.exists():
+            return jsonify({"success": False, "error": "Workspace file not found"}), 500
+
+        next_id = get_next_scene_id()
+        success = _inject_scene_into_workspace(scene_xml, next_id)
+
+        if success:
+            return jsonify({
+                "success": True,
+                "scene": {"id": next_id, "name": name, "path": path},
+                "message": f"Scene '{name}' saved (ID {next_id})",
+            })
+        else:
+            return jsonify({"success": False, "error": "Failed to inject scene into workspace"}), 500
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/scenes/snapshot", methods=["POST"])
+def snapshot_scene():
+    """Capture the current live channel state as a new saved scene.
+
+    Body: { "name": "My Scene Name", "path": "AI Generated" }
+    """
+    try:
+        data = request.get_json()
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"success": False, "error": "Scene name is required"}), 400
+        path = data.get("path", "AI Generated").strip()
+
+        scene_xml = _snapshot_current_state_as_xml(name, path)
+        if not scene_xml:
+            return jsonify({"success": False, "error": "Could not read current channel values"}), 500
+
+        next_id = get_next_scene_id()
+        success = _inject_scene_into_workspace(scene_xml, next_id)
+
+        if success:
+            return jsonify({
+                "success": True,
+                "scene": {"id": next_id, "name": name, "path": path},
+                "message": f"Snapshot saved as '{name}' (ID {next_id})",
+            })
+        else:
+            return jsonify({"success": False, "error": "Failed to inject scene into workspace"}), 500
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _snapshot_current_state_as_xml(name: str, path: str = "AI Generated") -> str:
+    """Build a QLC+ scene XML from the current live channel values."""
+    fixtures = get_workspace_fixtures()
+    values = get_current_channel_values()
+    if not values:
+        return ""
+
+    fixture_vals = []
+    for fixture in fixtures:
+        pairs = []
+        for offset in range(fixture["channels"]):
+            abs_ch = fixture["universe"] * 512 + fixture["address"] + offset + 1
+            val = values.get(abs_ch, 0)
+            # Use 1-based channel numbering for generated scenes
+            pairs.append(f"{offset + 1},{val}")
+        if pairs:
+            fixture_vals.append(
+                f'  <FixtureVal ID="{fixture["id"]}">{",".join(pairs)}</FixtureVal>'
+            )
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE Function>\n'
+        f'<Function Type="Scene" Name="{_xml_escape(name)}" Path="{_xml_escape(path)}">\n'
+        '  <Speed FadeIn="0" FadeOut="0" Duration="0"/>\n'
+        + "\n".join(fixture_vals) + "\n"
+        '</Function>'
+    )
+    return xml
+
+
+def _patch_scene_name(scene_xml: str, name: str, path: str) -> str:
+    """Ensure the scene XML has the correct Name and Path attributes."""
+    import re
+    # Replace Name attribute
+    scene_xml = re.sub(
+        r'Name="[^"]*"',
+        f'Name="{_xml_escape(name)}"',
+        scene_xml,
+        count=1,
+    )
+    # Add or replace Path attribute
+    if 'Path="' in scene_xml:
+        scene_xml = re.sub(
+            r'Path="[^"]*"',
+            f'Path="{_xml_escape(path)}"',
+            scene_xml,
+            count=1,
+        )
+    else:
+        scene_xml = scene_xml.replace(
+            'Type="Scene"',
+            f'Type="Scene" Path="{_xml_escape(path)}"',
+            1,
+        )
+    return scene_xml
+
+
+def _xml_escape(text: str) -> str:
+    """Escape text for use in XML attributes."""
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;"))
+
+
+def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
+    """Inject scene XML into the workspace file's Engine element.
+
+    Uses Python XML manipulation directly (no external scripts needed).
+    """
+    try:
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            print("Error: No Engine element in workspace")
+            return False
+
+        # Parse the scene XML
+        scene_root = ET.fromstring(scene_xml.strip().split("<!DOCTYPE Function>")[-1].strip()
+                                   if "<!DOCTYPE" in scene_xml else scene_xml.strip())
+
+        # Set the ID attribute
+        scene_root.set("ID", str(scene_id))
+
+        # Append to Engine
+        engine.append(scene_root)
+
+        # Write back
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return True
+    except Exception as e:
+        print(f"Error injecting scene: {e}")
+        return False
 
 
 @app.route("/api/groups", methods=["GET"])

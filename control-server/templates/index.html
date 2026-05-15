@@ -277,7 +277,10 @@
         .pending-dots span:nth-child(3) { animation-delay: 0.4s; }
         @keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
         .history-log { font-size: 0.72rem; color: #555; white-space: pre-wrap; margin-top: 2px; line-height: 1.4; }
-        .history-command { font-weight: 600; color: #f0f0f0; margin-bottom: 0.25rem; font-size: 0.9rem; }
+        .history-command { font-weight: 600; color: #f0f0f0; margin-bottom: 0.25rem; font-size: 0.9rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+        .save-scene-btn { background: none; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; font-size: 0.85rem; cursor: pointer; opacity: 0.6; transition: opacity 0.2s, border-color 0.2s; flex-shrink: 0; }
+        .save-scene-btn:hover { opacity: 1; border-color: #7c7; }
+        .save-scene-btn:disabled { cursor: default; opacity: 0.4; }
         .history-action { font-size: 0.8rem; color: #999; }
         .history-meta { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.35rem; flex-wrap: wrap; }
         .history-time { font-size: 0.7rem; color: #666; }
@@ -657,6 +660,7 @@
             const errMsg = result.error || '';
             const logMsg = result.log || '';
             const groups = result.groups || null;
+            const sceneXml = result.scene_xml || null;
 
             let badges = '';
             if (dbg.total_ms != null) badges += `<span class="history-badge badge-latency">${dbg.total_ms}ms</span>`;
@@ -669,10 +673,19 @@
 
             const debugPayload = JSON.stringify({ action: result.action||null, debug: dbg, output: result.output||null, error: errMsg||null }, null, 2);
 
+            // Save button: show for successful commands (AI-generated scenes have scene_xml,
+            // others can snapshot the current state)
+            let saveBtn = '';
+            if (ok) {
+                const saveTitle = sceneXml ? 'Save this scene to workspace' : 'Save current light state as scene';
+                const saveData = sceneXml ? `data-scene-xml="${btoa(sceneXml)}"` : 'data-snapshot="true"';
+                saveBtn = `<button class="save-scene-btn" title="${saveTitle}" ${saveData} data-command="${escHtml(command)}" onclick="promptSaveScene(this)">💾</button>`;
+            }
+
             const item = document.createElement('div');
             item.className = 'history-item' + (ok ? ' success' : ' error');
             item.innerHTML = `
-                <div class="history-command">${escHtml(command)}</div>
+                <div class="history-command">${escHtml(command)}${saveBtn}</div>
                 <div class="history-action">${escHtml(ok ? action : (errMsg || action))}</div>
                 ${ok && logMsg ? `<div class="history-log">${escHtml(logMsg)}</div>` : ''}
                 <div class="history-meta">
@@ -687,6 +700,49 @@
         }
 
         function toggleDebug(id) { document.getElementById(`dbg-${id}`).classList.toggle('open'); }
+
+        async function promptSaveScene(btn) {
+            const command = btn.getAttribute('data-command') || 'Saved Scene';
+            const defaultName = command.length > 40 ? command.substring(0, 40) + '…' : command;
+            const name = prompt('Save scene as:', defaultName);
+            if (!name || !name.trim()) return;
+
+            const sceneXmlB64 = btn.getAttribute('data-scene-xml');
+            const isSnapshot = btn.getAttribute('data-snapshot') === 'true';
+
+            btn.disabled = true;
+            btn.textContent = '⏳';
+
+            try {
+                let body;
+                if (sceneXmlB64) {
+                    body = JSON.stringify({ name: name.trim(), scene_xml: atob(sceneXmlB64), path: 'AI Generated' });
+                } else {
+                    body = JSON.stringify({ name: name.trim(), snapshot: true, path: 'AI Generated' });
+                }
+
+                const r = await fetch('/api/scenes/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body
+                });
+                const data = await r.json();
+                if (data.success) {
+                    btn.textContent = '✅';
+                    btn.title = `Saved as "${name.trim()}" (ID ${data.scene?.id})`;
+                    // Refresh the scenes list so the new scene appears
+                    loadScenes();
+                } else {
+                    btn.textContent = '❌';
+                    btn.title = data.error || 'Save failed';
+                    alert('Save failed: ' + (data.error || 'Unknown error'));
+                }
+            } catch (e) {
+                btn.textContent = '❌';
+                btn.title = e.message;
+                alert('Save failed: ' + e.message);
+            }
+        }
 
         function clearHistory() {
             if (!confirm('Clear all command history?')) return;
