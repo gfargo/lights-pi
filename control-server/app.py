@@ -1286,6 +1286,53 @@ def handle_command():
     })
 
 
+@app.route("/api/action", methods=["POST"])
+def handle_action():
+    """Dispatch a structured lighting action without going through the AI interpreter.
+
+    Body:
+        {
+            "action": "<adjust_brightness|adjust_color|fade|apply_template|generate_scene|activate_scene>",
+            "parameters": { ... action-specific ... },
+            "groups": ["group-name", ...]   # optional, applies to all fixtures if omitted
+        }
+
+    Designed for programmatic callers (e.g. the MCP server) that have already
+    resolved the user's intent into a structured action and don't need the AI
+    pass that /api/command performs.
+    """
+    import time as _time
+
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip()
+    if not action:
+        return jsonify({"success": False, "error": "Missing 'action' field"}), 400
+
+    action_data = {
+        "action": action,
+        "parameters": data.get("parameters", {}) or {},
+        "explanation": data.get("explanation", ""),
+    }
+    target_groups = data.get("groups") or None
+
+    t0 = _time.time()
+    result = execute_lighting_action(action_data, target_groups=target_groups)
+    execute_ms = round((_time.time() - t0) * 1000)
+
+    return jsonify({
+        "success": result["success"],
+        "action": action_data,
+        "groups": target_groups,
+        "output": result.get("output", ""),
+        "error": result.get("error", "") if not result["success"] else "",
+        "scene_xml": result.get("scene_xml"),
+        "debug": {
+            "execute_ms": execute_ms,
+            "is_local": IS_LOCAL,
+        }
+    })
+
+
 @app.route("/api/status", methods=["GET"])
 def get_status():
     """Get detailed multi-service health status"""

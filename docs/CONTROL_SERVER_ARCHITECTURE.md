@@ -132,11 +132,14 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/` | Live control UI |
-| POST | `/api/command` | AI natural-language command |
+| POST | `/api/command` | AI natural-language command (interprets, then dispatches) |
+| POST | `/api/action` | Structured action dispatch — skips the AI interpreter (used by the MCP server) |
 | GET | `/api/status` | Multi-service health JSON |
 | GET | `/api/templates` | List built-in scene templates |
 | GET | `/api/scenes` | List Engine scenes from workspace |
 | POST | `/api/scenes/<id>/activate` | Apply existing workspace scene live |
+| POST | `/api/scenes/save` | Save a scene (XML or snapshot) into the workspace |
+| POST | `/api/scenes/snapshot` | Snapshot the current live state as a new scene |
 | GET | `/api/groups` | List fixture groups |
 | POST | `/api/groups/<name>/template` | Apply template to a group |
 | GET | `/api/fixtures` | List fixtures with `channel_info` |
@@ -144,6 +147,32 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | POST | `/api/fixture_definitions/reload` | Rebuild `.qxf` cache |
 | POST | `/api/channel` | Set a single fixture channel value |
 | GET | `/api/channel_values` | Live DMX channel values from QLC+ |
+
+### `/api/action` vs `/api/command`
+
+Both routes ultimately call `execute_lighting_action`. The difference is the
+front end:
+
+- `/api/command` accepts free-form text, runs it through the AI interpreter
+  (OpenAI / Anthropic / Ollama), and dispatches the resulting action. Used by
+  the web UI's chat input.
+- `/api/action` accepts a structured `{action, parameters, groups}` payload
+  and dispatches directly. Used by the **MCP server** at `:5001/mcp`, where an
+  LLM agent is already on the other end of the connection — calling
+  `/api/command` would double-LLM.
+
+Schema for `POST /api/action`:
+
+```json
+{
+  "action": "adjust_color",
+  "parameters": { "color": "warm", "intensity": "75%" },
+  "groups": ["key-lights"]
+}
+```
+
+Valid actions match `execute_lighting_action`'s dispatcher: `apply_template`,
+`generate_scene`, `adjust_brightness`, `adjust_color`, `fade`, `activate_scene`.
 
 ## Failure Modes & Recovery
 
