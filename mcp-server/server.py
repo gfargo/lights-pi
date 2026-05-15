@@ -272,6 +272,215 @@ def snapshot_scene(name: str, path: str = "AI Generated") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Tier 1 — group CRUD
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def create_group(
+    name: str,
+    fixtures: list[int],
+    description: str | None = None,
+) -> dict:
+    """Create a new fixture group (named subset of fixtures).
+
+    Args:
+        name:        Group name (must be unique). Used as the identifier.
+        fixtures:    Fixture IDs to include. Use list_fixtures() to discover.
+        description: Optional free-text description.
+    """
+    return _post("/api/groups", {
+        "name": name,
+        "fixtures": [int(f) for f in fixtures],
+        "description": description or "",
+    })
+
+
+@mcp.tool()
+def delete_group(name: str) -> dict:
+    """Delete a fixture group. Returns 404 in the response if not found."""
+    r = _http().delete(f"/api/groups/{name}")
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def update_group(
+    name: str,
+    new_name: str | None = None,
+    description: str | None = None,
+    fixtures: list[int] | None = None,
+) -> dict:
+    """Rename a group, update its description, or replace its fixture list.
+
+    Pass only the fields you want to change. The fixture list, if provided,
+    REPLACES the existing one (use add_fixtures_to_group / remove_fixtures_from_group
+    for incremental edits).
+    """
+    payload: dict[str, Any] = {}
+    if new_name is not None:
+        payload["name"] = new_name
+    if description is not None:
+        payload["description"] = description
+    if fixtures is not None:
+        payload["fixtures"] = [int(f) for f in fixtures]
+    r = _http().patch(f"/api/groups/{name}", json=payload)
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def add_fixtures_to_group(name: str, fixtures: list[int]) -> dict:
+    """Append fixture IDs to an existing group (preserves current members)."""
+    return _post(f"/api/groups/{name}/fixtures", {
+        "fixtures": [int(f) for f in fixtures],
+    })
+
+
+@mcp.tool()
+def remove_fixtures_from_group(name: str, fixtures: list[int]) -> dict:
+    """Remove fixture IDs from a group. Missing IDs are ignored silently."""
+    r = _http().request(
+        "DELETE",
+        f"/api/groups/{name}/fixtures",
+        json={"fixtures": [int(f) for f in fixtures]},
+    )
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 — scene management
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def describe_scene(scene: str) -> dict:
+    """Return the contents of a saved scene: per-fixture channel values.
+
+    Useful before activating a scene, or to reason about what to change.
+    Returns the fixture name, each channel's offset/name/role, and its value.
+    Accepts scene name or numeric ID.
+    """
+    return _get(f"/api/scenes/{scene}")
+
+
+@mcp.tool()
+def delete_scene(scene: str) -> dict:
+    """Delete a saved scene from the workspace permanently. Accepts name or ID."""
+    r = _http().delete(f"/api/scenes/{scene}")
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def rename_scene(
+    scene: str,
+    new_name: str,
+    path: str | None = None,
+) -> dict:
+    """Rename a saved scene. Accepts the current name or numeric ID.
+
+    Args:
+        scene:    Current name or ID of the scene.
+        new_name: New name.
+        path:     Optional new folder path within QLC+ (e.g. "AI Generated").
+    """
+    payload: dict[str, Any] = {"name": new_name}
+    if path is not None:
+        payload["path"] = path
+    r = _http().patch(f"/api/scenes/{scene}", json=payload)
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def duplicate_scene(scene: str, new_name: str) -> dict:
+    """Copy an existing scene under a new name.
+
+    Useful for "start from the warm scene but bluer" — duplicate, then
+    use describe_scene + set_channel or save_scene to tweak the copy.
+    """
+    return _post(f"/api/scenes/{scene}/duplicate", {"name": new_name})
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 — visual ping, safety, batch
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def identify_fixture(
+    fixture_id: int,
+    duration: float = 2.0,
+    pulses: int = 4,
+) -> dict:
+    """Flash a single fixture so the operator can see which physical light it is.
+
+    Pulses the brightness channels on-off-on-off for `duration` seconds
+    (default 2s, max 10s), then restores the previous channel values.
+
+    Useful during rig setup: "I'm flashing fixture 3, is that the front-left par?"
+
+    Args:
+        fixture_id: Fixture ID from list_fixtures().
+        duration:   Total pattern length in seconds (0.5–10).
+        pulses:     Number of on-off cycles within that duration (1–10).
+    """
+    return _post(f"/api/fixtures/{int(fixture_id)}/identify", {
+        "duration": float(duration),
+        "pulses": int(pulses),
+    })
+
+
+@mcp.tool()
+def blackout(groups: list[str] | None = None) -> dict:
+    """Instantly zero every channel on the targeted fixtures.
+
+    Distinct from fade(target: "0"): blackout writes EVERY channel on the
+    fixture, not just brightness-role channels, so any active strobe,
+    macro, or color state is also cleared. Use for "kill it all" moments.
+
+    Args:
+        groups: Optional list of group names to target. Omit for the entire rig.
+    """
+    return _post("/api/blackout", {"groups": groups})
+
+
+@mcp.tool()
+def batch_action(
+    actions: list[dict],
+    stop_on_error: bool = True,
+) -> dict:
+    """Execute an ordered list of actions in one HTTP round trip.
+
+    Each item in `actions` is a dict with the same shape as a single
+    /api/action call:
+        { "action": "adjust_color", "parameters": {...}, "groups": [...] }
+
+    Use this for compound moves like setting key/fill/back to different
+    colors at once (3 actions → 1 round trip).
+
+    Args:
+        actions:       Ordered list of action specs.
+        stop_on_error: If True (default), aborts at the first failure and
+                       skips remaining steps. If False, continues through
+                       errors and reports per-step results.
+    """
+    return _post("/api/batch", {
+        "actions": actions,
+        "stop_on_error": bool(stop_on_error),
+    })
+
+
+# ---------------------------------------------------------------------------
 # Resources — discovery context bundled into one read
 # ---------------------------------------------------------------------------
 

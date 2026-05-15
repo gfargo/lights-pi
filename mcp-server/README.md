@@ -42,6 +42,22 @@ LLM Client  ──HTTP/MCP──▶  lighting-mcp.service  ──HTTP/REST──
 - `set_channel(fixture_id, channel, value)` — direct DMX channel write
 - `save_scene(name, scene_xml?, snapshot?, path?)` — persist a scene
 - `snapshot_scene(name, path?)` — save current live state as a new scene
+- `blackout(groups?)` — instant kill-all (zeroes every channel on targeted fixtures)
+- `batch_action(actions[], stop_on_error?)` — ordered list of actions in one round trip
+- `identify_fixture(fixture_id, duration?, pulses?)` — pulse a fixture so the operator can locate it physically
+
+**Group management:**
+- `create_group(name, fixtures[], description?)` — new named subset
+- `delete_group(name)` — remove a group
+- `update_group(name, new_name?, description?, fixtures?)` — rename, retag, or replace members
+- `add_fixtures_to_group(name, fixtures[])` — append members
+- `remove_fixtures_from_group(name, fixtures[])` — drop members
+
+**Scene management:**
+- `describe_scene(scene)` — per-fixture channel breakdown of a saved scene
+- `delete_scene(scene)` — remove a scene from the workspace
+- `rename_scene(scene, new_name, path?)` — rename and/or re-folder
+- `duplicate_scene(scene, new_name)` — copy under a new name for tweaking
 
 **Resources:**
 - `lights://workspace` — one-shot dump of fixtures + groups + scenes + templates + status

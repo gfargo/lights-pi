@@ -137,16 +137,28 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | GET | `/api/status` | Multi-service health JSON |
 | GET | `/api/templates` | List built-in scene templates |
 | GET | `/api/scenes` | List Engine scenes from workspace |
+| GET | `/api/scenes/<id>` | Describe a scene — per-fixture channel breakdown |
 | POST | `/api/scenes/<id>/activate` | Apply existing workspace scene live |
 | POST | `/api/scenes/save` | Save a scene (XML or snapshot) into the workspace |
 | POST | `/api/scenes/snapshot` | Snapshot the current live state as a new scene |
+| POST | `/api/scenes/<id>/duplicate` | Clone a scene under a new name |
+| PATCH | `/api/scenes/<id>` | Rename a scene and/or move its folder Path |
+| DELETE | `/api/scenes/<id>` | Delete a scene from the workspace |
 | GET | `/api/groups` | List fixture groups |
+| POST | `/api/groups` | Create a fixture group |
+| PATCH | `/api/groups/<name>` | Rename / re-describe / replace fixture list |
+| DELETE | `/api/groups/<name>` | Delete a fixture group |
+| POST | `/api/groups/<name>/fixtures` | Append fixtures to a group |
+| DELETE | `/api/groups/<name>/fixtures` | Remove fixtures from a group |
 | POST | `/api/groups/<name>/template` | Apply template to a group |
 | GET | `/api/fixtures` | List fixtures with `channel_info` |
 | GET | `/api/fixture_channels/<id>` | Per-fixture channel breakdown |
+| POST | `/api/fixtures/<id>/identify` | Pulse a fixture so the operator can locate it |
 | POST | `/api/fixture_definitions/reload` | Rebuild `.qxf` cache |
 | POST | `/api/channel` | Set a single fixture channel value |
 | GET | `/api/channel_values` | Live DMX channel values from QLC+ |
+| POST | `/api/blackout` | Instantly zero every channel on targeted fixtures |
+| POST | `/api/batch` | Execute an ordered list of actions in one request |
 
 ### `/api/action` vs `/api/command`
 

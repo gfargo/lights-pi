@@ -72,6 +72,28 @@ All tools are defined in [mcp-server/server.py](../mcp-server/server.py).
 | `set_channel`       | Direct DMX channel write (power-user escape hatch)            |
 | `save_scene`        | Persist a scene XML (e.g. from `generate_scene`) to workspace |
 | `snapshot_scene`    | Capture current live state as a new saved scene               |
+| `blackout`          | Instantly zero every channel on targeted fixtures (kill-all)  |
+| `batch_action`      | Execute an ordered list of actions in a single round trip     |
+| `identify_fixture`  | Flash a single fixture on/off so the operator can locate it physically |
+
+### Group management
+
+| Tool                       | Effect                                              |
+|----------------------------|-----------------------------------------------------|
+| `create_group`             | New fixture group from a name + fixture IDs         |
+| `delete_group`             | Remove a group                                      |
+| `update_group`             | Rename, change description, or replace fixture list |
+| `add_fixtures_to_group`    | Append fixtures to an existing group                |
+| `remove_fixtures_from_group` | Remove fixtures from an existing group            |
+
+### Scene management
+
+| Tool               | Effect                                                        |
+|--------------------|---------------------------------------------------------------|
+| `describe_scene`   | Return per-fixture channel values for a saved scene           |
+| `delete_scene`     | Remove a saved scene from the workspace                       |
+| `rename_scene`     | Rename a scene (and/or move its folder Path)                  |
+| `duplicate_scene`  | Copy a scene under a new name (basis for "start from X but…") |
 
 ### Resources
 
