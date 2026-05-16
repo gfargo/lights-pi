@@ -159,6 +159,9 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | GET | `/api/channel_values` | Live DMX channel values from QLC+ |
 | POST | `/api/blackout` | Instantly zero every channel on targeted fixtures |
 | POST | `/api/batch` | Execute an ordered list of actions in one request |
+| POST | `/api/diagnostics/test_dmx` | Run R→G→B→restore sweep across fixtures |
+| GET | `/api/diagnostics/logs/<service>` | Tail systemd journal for an allowlisted service |
+| GET | `/api/diagnostics/system` | Pi-level health JSON (temp, load, memory, disk, uptime, USB) |
 
 ### `/api/action` vs `/api/command`
 

@@ -95,6 +95,14 @@ All tools are defined in [mcp-server/server.py](../mcp-server/server.py).
 | `rename_scene`     | Rename a scene (and/or move its folder Path)                  |
 | `duplicate_scene`  | Copy a scene under a new name (basis for "start from X but…") |
 
+### Diagnostics
+
+| Tool                | Effect                                                       |
+|---------------------|--------------------------------------------------------------|
+| `test_dmx`          | Run an R → G → B → restore sweep to verify DMX reaches the rig |
+| `get_logs`          | Read N lines of a service's systemd journal (allowlisted services) |
+| `get_system_info`   | Pi-level health: CPU temp, load, memory, disk, uptime, USB, services |
+
 ### Resources
 
 | URI                  | Payload                                                      |
