@@ -59,6 +59,11 @@ LLM Client  ──HTTP/MCP──▶  lighting-mcp.service  ──HTTP/REST──
 - `rename_scene(scene, new_name, path?)` — rename and/or re-folder
 - `duplicate_scene(scene, new_name)` — copy under a new name for tweaking
 
+**Diagnostics:**
+- `test_dmx(duration?, groups?)` — R → G → B → restore sweep to verify DMX reaches the rig
+- `get_logs(service, n?)` — last N lines of a service's systemd journal (allowlisted: qlcplus-web, lighting-control, lighting-mcp, nginx)
+- `get_system_info()` — Pi-level health: CPU temp, load, memory, disk, uptime, USB, service status
+
 **Resources:**
 - `lights://workspace` — one-shot dump of fixtures + groups + scenes + templates + status
 

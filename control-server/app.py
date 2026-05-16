@@ -2512,6 +2512,371 @@ def batch_action():
     })
 
 
+# =============================================================================
+# Diagnostics surface (issue #9)
+# =============================================================================
+#
+# test_dmx       — visible R/G/B sweep across every color-aware fixture
+# get_logs      — read systemd journal for a known service (allowlisted)
+# get_system   — Pi-level health: CPU temp, load, mem, disk, uptime, USB,
+#                  service status
+#
+# All three are intended to help an agent / operator debug a misbehaving
+# rig without SSHing in. None of them touch persistent state; test_dmx
+# saves & restores channel values so the rig returns to its pre-test look.
+
+
+# ----------------------------------------------------------------------------
+# test_dmx
+# ----------------------------------------------------------------------------
+
+async def _test_dmx_async(fixtures, duration=5.0):
+    """Drive a known-good R → G → B → off sweep across every color-aware
+    fixture's channels, then restore the previous values.
+
+    Phase split: 4 phases of duration/4 each (red, green, blue, off-restore).
+    Within each phase we send one frame at the start; QLC+ holds it until
+    the next frame.
+    """
+    ws = await _ensure_qlc_ws()
+
+    # Snapshot pre-test channel values so we can restore precisely
+    max_ch = 32
+    for f in fixtures:
+        max_ch = max(max_ch, f["universe"] * 512 + f["address"] + f["channels"])
+    pre_values = await _fetch_channel_values(max_ch)
+
+    # Collect (absolute_channel, role) tuples for every targeted fixture's
+    # color-relevant channels. Falls back to brightness if no color roles
+    # exist (e.g. single-channel dimmers — they'll just pulse on/off).
+    color_role_priorities = [
+        ("red", "green", "blue"),               # RGB fixtures
+        ("warm", "cool", "amber"),              # WWA / tungsten fixtures
+        ("white",),                             # white-only
+    ]
+    fixture_plans = []
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        plan = {}
+        for triplet in color_role_priorities:
+            if any(r in roles for r in triplet):
+                for r in triplet:
+                    if r in roles and isinstance(roles[r], int):
+                        plan[r] = _absolute_channel(fixture, roles[r])
+                break
+        # Fall back to brightness/dimmer for fixtures without color channels
+        if not plan and "brightness" in roles:
+            plan["dimmer"] = _absolute_channel(fixture, roles["brightness"][0])
+        fixture_plans.append((fixture, plan, roles))
+
+    async def _send_frame(commands):
+        async with _qlc_ws_lock:
+            for cmd in commands:
+                await ws.send(cmd)
+
+    # Map phase → role pattern for each fixture type
+    def _phase_value(plan, phase):
+        """Return a {abs_channel: value} map for the given phase index."""
+        out = {}
+        for role, abs_ch in plan.items():
+            if role == "red":
+                out[abs_ch] = 255 if phase == 0 else 0
+            elif role == "green":
+                out[abs_ch] = 255 if phase == 1 else 0
+            elif role == "blue":
+                out[abs_ch] = 255 if phase == 2 else 0
+            elif role == "warm":
+                out[abs_ch] = 255 if phase == 0 else 0
+            elif role == "cool":
+                out[abs_ch] = 255 if phase == 2 else 0
+            elif role == "amber":
+                out[abs_ch] = 255 if phase == 1 else 0
+            elif role == "white":
+                out[abs_ch] = 255 if phase in (0, 1, 2) else 0
+            elif role == "dimmer":
+                out[abs_ch] = 255 if phase in (0, 1, 2) else 0
+        return out
+
+    phase_duration = max(0.5, duration / 4)
+    try:
+        for phase in range(3):
+            commands = []
+            for _fixture, plan, roles in fixture_plans:
+                # Drive dimmer channel up too if it exists (so RGB-only
+                # writes don't appear black due to a closed dimmer)
+                if "dimmer" in roles and isinstance(roles["dimmer"], int):
+                    dimmer_ch = _absolute_channel(_fixture, roles["dimmer"])
+                    commands.append(f"CH|{dimmer_ch}|255")
+                for ch, val in _phase_value(plan, phase).items():
+                    commands.append(f"CH|{ch}|{val}")
+            await _send_frame(commands)
+            await asyncio.sleep(phase_duration)
+
+        # Restore phase — push every channel that we touched back to its
+        # pre-test value
+        restore_commands = []
+        seen_channels = set()
+        for _fixture, plan, roles in fixture_plans:
+            for ch in plan.values():
+                seen_channels.add(ch)
+            if "dimmer" in roles and isinstance(roles["dimmer"], int):
+                seen_channels.add(_absolute_channel(_fixture, roles["dimmer"]))
+        for ch in sorted(seen_channels):
+            restore_commands.append(f"CH|{ch}|{int(pre_values.get(ch, 0))}")
+        await _send_frame(restore_commands)
+        return True
+    except Exception as e:
+        print(f"test_dmx error: {e}")
+        return False
+
+
+@app.route("/api/diagnostics/test_dmx", methods=["POST"])
+def diagnostics_test_dmx():
+    """Run a known-good color sweep across every targeted fixture.
+
+    Body (optional):
+        { "duration": 5.0, "groups": ["key-lights"] }
+
+    Returns after the sweep completes (typically 5 seconds). Channel state
+    is snapshotted before the test and restored at the end, so the rig
+    returns to whatever it looked like before the call.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        duration = max(2.0, min(30.0, float(data.get("duration", 5.0))))
+    except (TypeError, ValueError):
+        duration = 5.0
+    target_groups = data.get("groups") or None
+    fixtures = _target_fixtures(target_groups)
+
+    if not fixtures:
+        return jsonify({
+            "success": False,
+            "error": "No fixtures matched the request",
+        }), 400
+
+    try:
+        success = _qlc_run(
+            _test_dmx_async(fixtures, duration=duration),
+            timeout=duration + 10,
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({
+        "success": success,
+        "fixtures_tested": len(fixtures),
+        "duration": duration,
+        "groups": target_groups,
+        "pattern": "red → green → blue → restore",
+    })
+
+
+# ----------------------------------------------------------------------------
+# get_logs — read systemd journals (allowlisted services only)
+# ----------------------------------------------------------------------------
+
+LOG_ALLOWED_SERVICES = {
+    "qlcplus-web": "qlcplus-web.service",
+    "lighting-control": "lighting-control.service",
+    "lighting-mcp": "lighting-mcp.service",
+    "nginx": "nginx.service",
+}
+
+
+@app.route("/api/diagnostics/logs/<service>", methods=["GET"])
+def diagnostics_logs(service):
+    """Return the last N lines of a service's systemd journal.
+
+    Path: /api/diagnostics/logs/<service>?n=50
+
+    Allowed services: qlcplus-web, lighting-control, lighting-mcp, nginx.
+    Unknown service names are rejected (allowlist enforced — no shell
+    injection surface).
+    """
+    if service not in LOG_ALLOWED_SERVICES:
+        return jsonify({
+            "success": False,
+            "error": f"Unknown service '{service}'. Allowed: {sorted(LOG_ALLOWED_SERVICES.keys())}",
+        }), 400
+
+    try:
+        n = int(request.args.get("n", 50))
+    except (TypeError, ValueError):
+        n = 50
+    n = max(1, min(500, n))
+
+    unit = LOG_ALLOWED_SERVICES[service]
+
+    if not IS_LOCAL:
+        # When running remotely (e.g. developer workstation pointed at a
+        # remote rig) we can't read journals directly — bail out clearly.
+        return jsonify({
+            "success": False,
+            "error": "get_logs is only available when running on the Pi itself",
+            "is_local": False,
+        }), 503
+
+    result = execute_command(f"journalctl -u {unit} -n {n} --no-pager --output=short-iso")
+    raw = result.get("output", "")
+    lines = [line for line in raw.splitlines() if line.strip()]
+
+    return jsonify({
+        "success": result["success"],
+        "service": service,
+        "unit": unit,
+        "lines_returned": len(lines),
+        "lines_requested": n,
+        "lines": lines,
+        "error": result.get("error", "") if not result["success"] else "",
+    })
+
+
+# ----------------------------------------------------------------------------
+# get_system_info — Pi-level health & inventory
+# ----------------------------------------------------------------------------
+
+def _read_first_line(path: str) -> str:
+    try:
+        return Path(path).read_text().strip().splitlines()[0]
+    except Exception:
+        return ""
+
+
+def _read_proc_meminfo() -> dict:
+    """Parse /proc/meminfo into kB integers. Returns {} on non-Linux."""
+    info = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if ":" not in line:
+                continue
+            key, _, rest = line.partition(":")
+            parts = rest.strip().split()
+            if parts and parts[0].isdigit():
+                info[key.strip()] = int(parts[0])  # kB
+    except Exception:
+        return {}
+    return info
+
+
+@app.route("/api/diagnostics/system", methods=["GET"])
+def diagnostics_system():
+    """Return Pi-level health info: CPU temp, load, memory, disk, uptime,
+    USB devices (ENTTEC filter), and service status for the three services
+    we manage.
+
+    Most fields are best-effort — fields that aren't available on this
+    platform (e.g. /sys/class/thermal on macOS dev machines) are reported
+    as null rather than failing the whole call.
+    """
+    import shutil as _shutil
+
+    out: dict = {
+        "is_local": IS_LOCAL,
+        "platform": sys.platform,
+    }
+
+    # CPU temperature — Linux only
+    try:
+        millic = _read_first_line("/sys/class/thermal/thermal_zone0/temp")
+        out["cpu_temp_c"] = round(int(millic) / 1000.0, 1) if millic.isdigit() else None
+    except Exception:
+        out["cpu_temp_c"] = None
+
+    # Load average — POSIX
+    try:
+        load1, load5, load15 = os.getloadavg()
+        out["load_avg"] = {"1m": round(load1, 2), "5m": round(load5, 2), "15m": round(load15, 2)}
+    except (OSError, AttributeError):
+        out["load_avg"] = None
+
+    # Memory — /proc/meminfo (Linux only)
+    mem = _read_proc_meminfo()
+    if mem:
+        total_kb = mem.get("MemTotal", 0)
+        avail_kb = mem.get("MemAvailable", mem.get("MemFree", 0))
+        used_kb = max(0, total_kb - avail_kb)
+        out["memory"] = {
+            "total_mb": round(total_kb / 1024, 1),
+            "used_mb": round(used_kb / 1024, 1),
+            "available_mb": round(avail_kb / 1024, 1),
+            "used_pct": round((used_kb / total_kb) * 100, 1) if total_kb else None,
+        }
+    else:
+        out["memory"] = None
+
+    # Disk usage — / and /home if present
+    disk = {}
+    for mount in ("/", "/home"):
+        try:
+            usage = _shutil.disk_usage(mount)
+            disk[mount] = {
+                "total_gb": round(usage.total / (1024 ** 3), 1),
+                "used_gb": round(usage.used / (1024 ** 3), 1),
+                "free_gb": round(usage.free / (1024 ** 3), 1),
+                "used_pct": round((usage.used / usage.total) * 100, 1),
+            }
+        except FileNotFoundError:
+            continue
+        except Exception:
+            disk[mount] = None
+    out["disk"] = disk
+
+    # Uptime — /proc/uptime (Linux) seconds since boot
+    try:
+        uptime_line = _read_first_line("/proc/uptime")
+        if uptime_line:
+            seconds = float(uptime_line.split()[0])
+            out["uptime_seconds"] = int(seconds)
+            # Human-readable summary
+            d, rem = divmod(int(seconds), 86400)
+            h, rem = divmod(rem, 3600)
+            m, _ = divmod(rem, 60)
+            parts = []
+            if d:
+                parts.append(f"{d}d")
+            if h:
+                parts.append(f"{h}h")
+            if m or not parts:
+                parts.append(f"{m}m")
+            out["uptime_human"] = " ".join(parts)
+        else:
+            out["uptime_seconds"] = None
+            out["uptime_human"] = None
+    except Exception:
+        out["uptime_seconds"] = None
+        out["uptime_human"] = None
+
+    # USB devices — filter to FTDI / ENTTEC related lines
+    if IS_LOCAL:
+        usb = execute_command("lsusb")
+        if usb["success"]:
+            all_lines = [ln for ln in usb["output"].splitlines() if ln.strip()]
+            interesting = [ln for ln in all_lines if any(
+                k in ln.lower() for k in ("ftdi", "enttec", "dmx")
+            )]
+            out["usb"] = {
+                "all_count": len(all_lines),
+                "dmx_related": interesting,
+            }
+        else:
+            out["usb"] = None
+    else:
+        out["usb"] = None
+
+    # Service status for the three units (only when local)
+    services_status = {}
+    if IS_LOCAL:
+        for label, unit in LOG_ALLOWED_SERVICES.items():
+            if label == "nginx":
+                continue  # nginx is optional and reporting failure noisy
+            check = execute_command(f"systemctl is-active {unit}")
+            services_status[label] = (check.get("output") or "").strip() or "unknown"
+    out["services"] = services_status or None
+
+    return jsonify({"success": True, **out})
+
+
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():

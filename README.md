@@ -1070,6 +1070,7 @@ LLM agent ──MCP/HTTP──▶  lighting-mcp.service ──HTTP──▶  lig
   `add_fixtures_to_group`, `remove_fixtures_from_group`
 - *Scene management:* `describe_scene`, `delete_scene`, `rename_scene`,
   `duplicate_scene`
+- *Diagnostics:* `test_dmx`, `get_logs`, `get_system_info`
 - *Resource:* `lights://workspace` — one-shot snapshot of fixtures, groups,
   scenes, templates, and status for LLM context
 

@@ -454,6 +454,66 @@ def blackout(groups: list[str] | None = None) -> dict:
     return _post("/api/blackout", {"groups": groups})
 
 
+# ---------------------------------------------------------------------------
+# Diagnostics (issue #9)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def test_dmx(
+    duration: float = 5.0,
+    groups: list[str] | None = None,
+) -> dict:
+    """Run a known-good color sweep (red → green → blue → restore) across
+    every targeted fixture's color channels.
+
+    Used to verify DMX is actually reaching the rig — "if you don't see
+    the sweep, the problem is somewhere between this server and the
+    fixtures." Channel values are snapshotted before the test and
+    restored at the end, so the rig returns to its pre-test look.
+
+    Args:
+        duration: Total seconds for the sweep (2.0–30.0, default 5.0).
+        groups:   Optional list of group names to limit the test to.
+                  Omit to sweep every fixture in the workspace.
+    """
+    return _post("/api/diagnostics/test_dmx", {
+        "duration": float(duration),
+        "groups": groups,
+    })
+
+
+@mcp.tool()
+def get_logs(service: str, n: int = 50) -> dict:
+    """Read the last N lines of a service's systemd journal.
+
+    Useful when diagnosing a misbehaving rig — pull recent log lines
+    instead of asking the user to SSH in.
+
+    Args:
+        service: One of "qlcplus-web", "lighting-control",
+                 "lighting-mcp", "nginx". Other names are rejected.
+        n:       Number of lines to return (1–500, default 50).
+    """
+    r = _http().get(f"/api/diagnostics/logs/{service}", params={"n": int(n)})
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def get_system_info() -> dict:
+    """Return Pi-level health: CPU temperature, load average, memory,
+    disk usage, uptime, USB devices (ENTTEC filter), and systemd unit
+    status for the lighting services.
+
+    All fields are best-effort — anything not available on this platform
+    (e.g. CPU temp on a non-Linux dev machine) is reported as null
+    rather than failing the whole call.
+    """
+    return _get("/api/diagnostics/system")
+
+
 @mcp.tool()
 def batch_action(
     actions: list[dict],
