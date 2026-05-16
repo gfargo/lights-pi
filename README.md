@@ -1064,9 +1064,9 @@ LLM agent ──MCP/HTTP──▶  lighting-mcp.service ──HTTP──▶  lig
 - *Discovery:* `get_status`, `list_fixtures`, `get_fixture_channels`,
   `list_groups`, `list_scenes`, `list_templates`, `get_channel_values`
 - *Actions:* `activate_scene`, `apply_template`, `adjust_brightness`,
-  `adjust_color`, `color_temperature`, `fade`, `generate_scene`,
-  `set_channel`, `save_scene`, `snapshot_scene`, `blackout`,
-  `batch_action`, `identify_fixture`
+  `adjust_color`, `color_temperature`, `palette`, `fade`,
+  `generate_scene`, `set_channel`, `save_scene`, `snapshot_scene`,
+  `blackout`, `batch_action`, `identify_fixture`
 - *Group management:* `create_group`, `delete_group`, `update_group`,
   `add_fixtures_to_group`, `remove_fixtures_from_group`
 - *Scene management:* `describe_scene`, `delete_scene`, `rename_scene`,

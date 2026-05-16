@@ -188,7 +188,10 @@ Schema for `POST /api/action`:
 
 Valid actions match `execute_lighting_action`'s dispatcher: `apply_template`,
 `generate_scene`, `adjust_brightness`, `adjust_color`, `color_temperature`,
-`fade`, `activate_scene`.
+`palette`, `fade`, `activate_scene`.
+
+> **Note**: `palette` ignores the top-level `groups` argument — its
+> assignments dict's keys *are* the targets.
 
 ## Failure Modes & Recovery
 

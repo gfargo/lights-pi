@@ -1055,6 +1055,161 @@ def apply_color_temperature_live(kelvin, intensity=None, target_groups=None):
     }
 
 
+# ----------------------------------------------------------------------------
+# Palette — assign different colors/CCTs to different groups in one call
+# (issue #7)
+# ----------------------------------------------------------------------------
+#
+# This is the "set the room" primitive — three-point lighting in one move.
+# Functionally it's a dispatcher over apply_color_live / apply_color_temperature_live
+# per group, but the ergonomics are different: agents (and humans) tend to
+# think "here's my palette" as a unit, not as a sequence of independent
+# color calls.
+#
+# Each assignment value is normalized to either {color, intensity} or
+# {kelvin, intensity}. The accepted shapes are documented on the MCP tool.
+
+
+def _normalize_palette_value(value):
+    """Coerce a palette assignment value into a routing dict.
+
+    Returns a dict with one of these shapes:
+        {"kelvin": float, "intensity": ...}    → routed to color_temperature
+        {"color":  str,   "intensity": ...}    → routed to adjust_color
+        {"error":  str}                        → unparseable
+
+    Accepted input shapes:
+        "warm"                                  → color preset
+        3200, 3200.0                            → Kelvin number
+        "3200"                                  → Kelvin (numeric string)
+        "5600K"                                 → Kelvin (with K suffix)
+        {"color": "warm", "intensity": "70%"}   → explicit color
+        {"kelvin": 3200, "intensity": "50%"}    → explicit Kelvin
+        {"k": 3200}                             → Kelvin (short key)
+    """
+    if isinstance(value, dict):
+        intensity = value.get("intensity")
+        kelvin = value.get("kelvin") or value.get("k")
+        color = value.get("color")
+        if kelvin is not None:
+            try:
+                return {"kelvin": float(kelvin), "intensity": intensity}
+            except (TypeError, ValueError):
+                return {"error": f"Invalid kelvin in palette dict: {kelvin!r}"}
+        if color is not None:
+            return {"color": str(color), "intensity": intensity}
+        return {"error": "palette dict requires 'kelvin' or 'color'"}
+
+    if isinstance(value, bool):
+        # Bool is technically a number in Python — explicitly reject
+        return {"error": f"Invalid palette value: {value!r}"}
+
+    if isinstance(value, (int, float)):
+        return {"kelvin": float(value), "intensity": None}
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return {"error": "Empty palette value"}
+        # Try Kelvin number with optional K suffix
+        kelvin_candidate = stripped.rstrip("Kk").strip() if stripped[-1] in "Kk" else stripped
+        try:
+            k_val = float(kelvin_candidate)
+            # Only treat as Kelvin if it's in a plausible range — otherwise
+            # it's likely an intensity-as-string or a malformed color name
+            if 1000 <= k_val <= 40000:
+                return {"kelvin": k_val, "intensity": None}
+        except ValueError:
+            pass
+        # Otherwise interpret as a color preset name
+        return {"color": stripped, "intensity": None}
+
+    return {"error": f"Unsupported palette value type: {type(value).__name__}"}
+
+
+def apply_palette_live(assignments):
+    """Apply a palette: assign different colors/CCTs to different groups in
+    one round trip.
+
+    Note: unlike most other actions, palette does NOT accept a
+    `target_groups` argument — the assignments dict's keys ARE the targets.
+    Group names not present in the assignments are left untouched.
+
+    Args:
+        assignments: dict mapping group_name → value. See
+                     `_normalize_palette_value` for the accepted value shapes.
+    """
+    if not isinstance(assignments, dict) or not assignments:
+        return {
+            "success": False,
+            "output": "",
+            "error": "assignments must be a non-empty object mapping group → value",
+        }
+
+    per_group = {}
+    overall_success = True
+
+    for group_name, raw_value in assignments.items():
+        routing = _normalize_palette_value(raw_value)
+        if "error" in routing:
+            per_group[group_name] = {
+                "success": False,
+                "error": routing["error"],
+                "value": raw_value,
+            }
+            overall_success = False
+            continue
+
+        try:
+            if "kelvin" in routing:
+                result = apply_color_temperature_live(
+                    routing["kelvin"],
+                    routing.get("intensity"),
+                    target_groups=[group_name],
+                )
+                per_group[group_name] = {
+                    "success": bool(result.get("success")),
+                    "strategy": "color_temperature",
+                    "kelvin": routing["kelvin"],
+                    "intensity": routing.get("intensity"),
+                    "fixtures_touched": len(result.get("fixtures", [])),
+                    "output": result.get("output", ""),
+                    "error": result.get("error", "") if not result.get("success") else "",
+                }
+            else:
+                result = apply_color_live(
+                    routing["color"],
+                    routing.get("intensity"),
+                    target_groups=[group_name],
+                )
+                per_group[group_name] = {
+                    "success": bool(result.get("success")),
+                    "strategy": "color_preset",
+                    "color": routing["color"],
+                    "intensity": routing.get("intensity"),
+                    "output": result.get("output", ""),
+                    "error": result.get("error", "") if not result.get("success") else "",
+                }
+            if not per_group[group_name]["success"]:
+                overall_success = False
+        except Exception as e:
+            per_group[group_name] = {
+                "success": False,
+                "error": f"{type(e).__name__}: {e}",
+            }
+            overall_success = False
+
+    successful = sum(1 for r in per_group.values() if r.get("success"))
+    return {
+        "success": overall_success,
+        "applied_to": len(assignments),
+        "successful": successful,
+        "groups": per_group,
+        "output": f"Palette applied · {successful}/{len(assignments)} groups",
+        "error": "" if overall_success else "One or more group assignments failed — see per-group results",
+    }
+
+
 async def _fade_brightness_async(channels, target_value, seconds, steps):
     """Run a multi-step fade over the persistent QLC+ WebSocket."""
     ws = await _ensure_qlc_ws()
@@ -1464,6 +1619,12 @@ def execute_lighting_action(action_data, target_groups=None):
             return {"success": False, "output": "", "error": "Missing required parameter 'kelvin'"}
         intensity = params.get("intensity")
         return apply_color_temperature_live(kelvin, intensity, target_groups=target_groups)
+
+    elif action == "palette":
+        # Palette uses its own per-group assignments — target_groups is
+        # ignored (the assignments dict's keys are the targets).
+        assignments = params.get("assignments")
+        return apply_palette_live(assignments)
 
     elif action == "fade":
         duration = params.get("duration", "3")
