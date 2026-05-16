@@ -162,6 +162,12 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | POST | `/api/diagnostics/test_dmx` | Run R→G→B→restore sweep across fixtures |
 | GET | `/api/diagnostics/logs/<service>` | Tail systemd journal for an allowlisted service |
 | GET | `/api/diagnostics/system` | Pi-level health JSON (temp, load, memory, disk, uptime, USB) |
+| GET | `/api/chases` | List chases in the workspace |
+| GET | `/api/chases/<id>` | Describe a chase (full step list, scene names, timing) |
+| POST | `/api/chases` | Create a new chase from name + ordered step list |
+| DELETE | `/api/chases/<id>` | Remove a chase from the workspace |
+| POST | `/api/chases/<id>/start` | Start chase playback (QLC+API setFunctionStatus 1) |
+| POST | `/api/chases/<id>/stop` | Stop chase playback (QLC+API setFunctionStatus 0) |
 
 ### `/api/action` vs `/api/command`
 

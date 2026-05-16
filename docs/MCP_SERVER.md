@@ -106,6 +106,21 @@ All tools are defined in [mcp-server/server.py](../mcp-server/server.py).
 | `get_logs`          | Read N lines of a service's systemd journal (allowlisted services) |
 | `get_system_info`   | Pi-level health: CPU temp, load, memory, disk, uptime, USB, services |
 
+### Chase management
+
+Chases are ordered sequences of saved scenes with per-step timing — the
+time-based programming primitive. Stored as `<Function Type="Chaser">`
+in the workspace XML, played back via QLC+'s native chase engine.
+
+| Tool              | Effect                                                        |
+|-------------------|---------------------------------------------------------------|
+| `list_chases`     | List all chases in the workspace                              |
+| `describe_chase`  | Return a chase's full step list with resolved scene names     |
+| `create_chase`    | Build a chase from a name + ordered list of scene references  |
+| `delete_chase`    | Remove a chase from the workspace                             |
+| `start_chase`     | Begin playback (loops forever unless run_order is SingleShot) |
+| `stop_chase`      | Halt playback; fixtures hold their current state              |
+
 ### Resources
 
 | URI                  | Payload                                                      |

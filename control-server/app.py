@@ -3467,6 +3467,457 @@ def diagnostics_system():
     return jsonify({"success": True, **out})
 
 
+# =============================================================================
+# Chases / sequences (issue #4)
+# =============================================================================
+#
+# A chase in QLC+ is a <Function Type="Chaser"> in the workspace's Engine
+# element. Each chase has function-level Speed (default FadeIn/Hold/FadeOut)
+# plus an ordered list of <Step> elements that reference scenes by ID and
+# can override per-step timing.
+#
+# Playback is driven over the QLC+API WebSocket via
+#     QLC+API|setFunctionStatus|<id>|1   (start)
+#     QLC+API|setFunctionStatus|<id>|0   (stop)
+#
+# Chase XML format we generate (QLC+ 4.14.x):
+#     <Function ID="N" Type="Chaser" Name="..." Path="...">
+#       <Speed FadeIn="500" FadeOut="500" Duration="2000"/>
+#       <Direction>Forward</Direction>
+#       <RunOrder>Loop</RunOrder>
+#       <SpeedModes FadeIn="Default" FadeOut="Default" Duration="Default"/>
+#       <Step Number="0" FadeIn="500" Hold="2000" FadeOut="500" Values="42"/>
+#       <Step Number="1" FadeIn="500" Hold="2000" FadeOut="500" Values="43"/>
+#       ...
+#     </Function>
+
+
+# Enum normalization tables — accept lowercase, store canonical
+_CHASE_DIRECTIONS = {"forward": "Forward", "backward": "Backward"}
+_CHASE_RUN_ORDERS = {
+    "loop": "Loop",
+    "singleshot": "SingleShot",
+    "single-shot": "SingleShot",
+    "single_shot": "SingleShot",
+    "pingpong": "PingPong",
+    "ping-pong": "PingPong",
+    "ping_pong": "PingPong",
+    "random": "Random",
+}
+
+
+def _normalize_direction(value: str | None, default: str = "Forward") -> str:
+    if not value:
+        return default
+    return _CHASE_DIRECTIONS.get(str(value).strip().lower(), default)
+
+
+def _normalize_run_order(value: str | None, default: str = "Loop") -> str:
+    if not value:
+        return default
+    return _CHASE_RUN_ORDERS.get(str(value).strip().lower(), default)
+
+
+def _engine_functions(engine):
+    """All <Function> children of Engine, namespace-tolerant."""
+    if engine is None:
+        return []
+    ns = "http://www.qlcplus.org/Workspace"
+    return list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function"))
+
+
+def get_next_function_id() -> int:
+    """Return the next unused Function ID across the entire workspace.
+
+    Functions of every type (Scene, Chaser, EFX, Sequence, …) share a single
+    ID space in QLC+, so this scans ALL functions — not just scenes.
+    Generalization of the existing get_next_scene_id which only saw scenes.
+    """
+    if not WORKSPACE_PATH.exists():
+        return 0
+    root = _workspace_root()
+    engine = _engine_element(root)
+    if engine is None:
+        return 0
+    max_id = -1
+    for func in _engine_functions(engine):
+        fid = func.get("ID", "")
+        if fid.isdigit():
+            n = int(fid)
+            if n > max_id:
+                max_id = n
+    return max_id + 1
+
+
+def _find_function_element(id_or_name, function_type: str | None = None):
+    """Find a Function by ID or by case-insensitive Name.
+
+    If function_type is given (e.g. "Chaser"), only matches functions of
+    that type — so "Red" won't accidentally resolve to a chase if a scene
+    of the same name exists.
+    """
+    if not WORKSPACE_PATH.exists():
+        return None
+    root = _workspace_root()
+    engine = _engine_element(root)
+    if engine is None:
+        return None
+    needle = str(id_or_name).strip().lower()
+    for func in _engine_functions(engine):
+        if function_type and func.get("Type") != function_type:
+            continue
+        if func.get("ID") == str(id_or_name) or (func.get("Name") or "").lower() == needle:
+            return func
+    return None
+
+
+def get_workspace_chases() -> list[dict]:
+    """Return chase summaries from the loaded workspace."""
+    if not WORKSPACE_PATH.exists():
+        return []
+    root = _workspace_root()
+    engine = _engine_element(root)
+    if engine is None:
+        return []
+    out = []
+    for func in _engine_functions(engine):
+        if func.get("Type") != "Chaser":
+            continue
+        fid = func.get("ID", "")
+        speed = next(iter(_find_children(func, "Speed")), None)
+        direction = next(iter(_find_children(func, "Direction")), None)
+        run_order = next(iter(_find_children(func, "RunOrder")), None)
+        steps = _find_children(func, "Step")
+        out.append({
+            "id": int(fid) if fid.isdigit() else fid,
+            "name": func.get("Name", ""),
+            "path": func.get("Path", ""),
+            "steps": len(steps),
+            "direction": direction.text if direction is not None else "Forward",
+            "run_order": run_order.text if run_order is not None else "Loop",
+            "speed": {
+                "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
+                "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
+                "hold_ms":     int(speed.get("Duration", "0")) if speed is not None else 0,
+            },
+        })
+    return out
+
+
+def _describe_chase_full(chase_element) -> dict:
+    """Return the full chase shape (used by /api/chases/<id> GET)."""
+    fid = chase_element.get("ID", "")
+    speed = next(iter(_find_children(chase_element, "Speed")), None)
+    direction = next(iter(_find_children(chase_element, "Direction")), None)
+    run_order = next(iter(_find_children(chase_element, "RunOrder")), None)
+
+    # Resolve scene ID → scene name for friendlier output
+    scenes_by_id = {str(s["id"]): s for s in get_workspace_scenes()}
+
+    steps = []
+    for step in _find_children(chase_element, "Step"):
+        # QLC+ writes the scene reference as the Values attribute in 4.12+
+        scene_id = step.get("Values") or (step.text or "").strip()
+        scene_info = scenes_by_id.get(str(scene_id))
+        steps.append({
+            "number": int(step.get("Number", "0")) if step.get("Number", "").isdigit() else 0,
+            "scene_id": int(scene_id) if scene_id and str(scene_id).isdigit() else scene_id,
+            "scene_name": scene_info["name"] if scene_info else None,
+            "fade_in_ms":  int(step.get("FadeIn", "-1"))  if step.get("FadeIn", "-1").lstrip("-").isdigit() else -1,
+            "hold_ms":     int(step.get("Hold", "-1"))    if step.get("Hold", "-1").lstrip("-").isdigit() else -1,
+            "fade_out_ms": int(step.get("FadeOut", "-1")) if step.get("FadeOut", "-1").lstrip("-").isdigit() else -1,
+        })
+    steps.sort(key=lambda s: s["number"])
+
+    return {
+        "id": int(fid) if fid.isdigit() else fid,
+        "name": chase_element.get("Name", ""),
+        "path": chase_element.get("Path", ""),
+        "direction": direction.text if direction is not None else "Forward",
+        "run_order": run_order.text if run_order is not None else "Loop",
+        "speed": {
+            "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
+            "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
+            "hold_ms":     int(speed.get("Duration", "0")) if speed is not None else 0,
+        },
+        "steps": steps,
+    }
+
+
+def _resolve_scene_id(scene_ref) -> int | None:
+    """Coerce a step's scene_ref (int ID or string name) to a numeric scene ID."""
+    if isinstance(scene_ref, bool):
+        return None
+    if isinstance(scene_ref, (int, float)):
+        return int(scene_ref)
+    if isinstance(scene_ref, str):
+        text = scene_ref.strip()
+        if text.isdigit():
+            return int(text)
+        # Look up by case-insensitive name
+        needle = text.lower()
+        for scene in get_workspace_scenes():
+            if scene["name"].lower() == needle:
+                return scene["id"]
+    return None
+
+
+def _build_chase_xml(
+    name: str,
+    steps: list,
+    fade_in_ms: int,
+    hold_ms: int,
+    fade_out_ms: int,
+    direction: str,
+    run_order: str,
+    path: str,
+    chase_id: int,
+) -> str:
+    """Generate the <Function Type="Chaser"> XML to inject into the workspace."""
+    lines = [
+        f'<Function ID="{chase_id}" Type="Chaser" Name="{_xml_escape(name)}" Path="{_xml_escape(path)}">',
+        f'  <Speed FadeIn="{fade_in_ms}" FadeOut="{fade_out_ms}" Duration="{hold_ms}"/>',
+        f'  <Direction>{direction}</Direction>',
+        f'  <RunOrder>{run_order}</RunOrder>',
+        '  <SpeedModes FadeIn="Default" FadeOut="Default" Duration="Default"/>',
+    ]
+    for i, step in enumerate(steps):
+        # step is { scene_id, fade_in_ms?, hold_ms?, fade_out_ms? } (already
+        # normalized by the caller)
+        sfi = step.get("fade_in_ms", fade_in_ms)
+        sh  = step.get("hold_ms",    hold_ms)
+        sfo = step.get("fade_out_ms", fade_out_ms)
+        lines.append(
+            f'  <Step Number="{i}" FadeIn="{sfi}" Hold="{sh}" FadeOut="{sfo}" Values="{step["scene_id"]}"/>'
+        )
+    lines.append('</Function>')
+    return "\n".join(lines)
+
+
+def _inject_chase_into_workspace(chase_xml: str) -> bool:
+    """Inject the chase XML into the workspace's Engine element."""
+    try:
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return False
+        chase_root = ET.fromstring(chase_xml.strip())
+        engine.append(chase_root)
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return True
+    except Exception as e:
+        print(f"_inject_chase_into_workspace error: {e}")
+        return False
+
+
+async def _set_function_status_async(function_id: int, running: bool) -> str:
+    """Tell QLC+ to start or stop a function via the persistent WebSocket."""
+    flag = "1" if running else "0"
+    return await _qlc_request_reply(
+        f"QLC+API|setFunctionStatus|{function_id}|{flag}",
+        response_marker="setFunctionStatus",
+        timeout=2.0,
+    )
+
+
+def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
+    """Sync wrapper around setFunctionStatus. Returns (ok, raw_response)."""
+    try:
+        raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
+        return True, raw
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+# ------------------------------- endpoints ----------------------------------
+
+
+@app.route("/api/chases", methods=["GET"])
+def list_chases():
+    """List all chases (Chaser functions) in the loaded workspace."""
+    try:
+        return jsonify({"chases": get_workspace_chases()})
+    except Exception as e:
+        return jsonify({"error": str(e), "chases": []}), 500
+
+
+@app.route("/api/chases/<chase_id>", methods=["GET"])
+def describe_chase(chase_id):
+    """Return the full chase definition, including resolved per-step scene names."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+    return jsonify({"success": True, "chase": _describe_chase_full(chase)})
+
+
+@app.route("/api/chases", methods=["POST"])
+def create_chase():
+    """Create a new chase.
+
+    Body:
+        {
+          "name": "Sunset",
+          "steps": [                # required, ordered
+            "Warm",                  # scene name (or numeric ID)
+            42,                      # scene ID
+            { "scene": "Amber", "hold_ms": 4000 }
+          ],
+          "fade_in_ms":  500,       # default per step
+          "hold_ms":     2000,
+          "fade_out_ms": 500,
+          "direction":   "Forward",  # Forward | Backward
+          "run_order":   "Loop",     # Loop | SingleShot | PingPong | Random
+          "path":        "AI Generated"
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "name is required"}), 400
+
+    raw_steps = data.get("steps") or []
+    if not isinstance(raw_steps, list) or not raw_steps:
+        return jsonify({"success": False, "error": "steps must be a non-empty array"}), 400
+
+    fade_in_ms  = max(0, int(data.get("fade_in_ms",  500)))
+    hold_ms     = max(0, int(data.get("hold_ms",     2000)))
+    fade_out_ms = max(0, int(data.get("fade_out_ms", 500)))
+    direction   = _normalize_direction(data.get("direction"))
+    run_order   = _normalize_run_order(data.get("run_order"))
+    path        = (data.get("path") or "AI Generated").strip()
+
+    # Reject duplicate names — chase Name is the agent-friendly key
+    if _find_function_element(name, function_type="Chaser") is not None:
+        return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
+
+    # Normalize and validate steps. Each step becomes
+    # { scene_id, fade_in_ms?, hold_ms?, fade_out_ms? }.
+    normalized_steps = []
+    unknown_refs = []
+    for i, raw in enumerate(raw_steps):
+        if isinstance(raw, dict):
+            scene_ref = raw.get("scene") or raw.get("scene_id") or raw.get("id")
+            step_fade_in  = raw.get("fade_in_ms")
+            step_hold     = raw.get("hold_ms")
+            step_fade_out = raw.get("fade_out_ms")
+        else:
+            scene_ref = raw
+            step_fade_in = step_hold = step_fade_out = None
+
+        scene_id = _resolve_scene_id(scene_ref)
+        if scene_id is None:
+            unknown_refs.append({"step": i, "ref": scene_ref})
+            continue
+
+        normalized = {"scene_id": scene_id}
+        if step_fade_in  is not None: normalized["fade_in_ms"]  = max(0, int(step_fade_in))
+        if step_hold     is not None: normalized["hold_ms"]     = max(0, int(step_hold))
+        if step_fade_out is not None: normalized["fade_out_ms"] = max(0, int(step_fade_out))
+        normalized_steps.append(normalized)
+
+    if unknown_refs:
+        return jsonify({
+            "success": False,
+            "error": "One or more steps reference unknown scenes",
+            "unknown": unknown_refs,
+        }), 400
+
+    chase_id = get_next_function_id()
+    chase_xml = _build_chase_xml(
+        name=name, steps=normalized_steps,
+        fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
+        direction=direction, run_order=run_order, path=path,
+        chase_id=chase_id,
+    )
+    if not _inject_chase_into_workspace(chase_xml):
+        return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
+
+    return jsonify({
+        "success": True,
+        "chase": {
+            "id": chase_id,
+            "name": name,
+            "path": path,
+            "steps": len(normalized_steps),
+            "direction": direction,
+            "run_order": run_order,
+            "speed": {
+                "fade_in_ms":  fade_in_ms,
+                "hold_ms":     hold_ms,
+                "fade_out_ms": fade_out_ms,
+            },
+        },
+    })
+
+
+@app.route("/api/chases/<chase_id>", methods=["DELETE"])
+def delete_chase(chase_id):
+    """Remove a chase from the workspace."""
+    try:
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(chase_id).strip().lower()
+        target = None
+        for func in _engine_functions(engine):
+            if func.get("Type") != "Chaser":
+                continue
+            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                target = func
+                break
+        if target is None:
+            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+
+        engine.remove(target)
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return jsonify({
+            "success": True,
+            "deleted": {"id": target.get("ID"), "name": target.get("Name")},
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/chases/<chase_id>/start", methods=["POST"])
+def start_chase(chase_id):
+    """Start chase playback via the QLC+ WebSocket API."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+    fid = chase.get("ID")
+    if not (fid and fid.isdigit()):
+        return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+    ok, raw = set_function_status(int(fid), running=True)
+    return jsonify({
+        "success": ok,
+        "chase": {"id": int(fid), "name": chase.get("Name")},
+        "response": raw,
+        "error": "" if ok else raw,
+    })
+
+
+@app.route("/api/chases/<chase_id>/stop", methods=["POST"])
+def stop_chase(chase_id):
+    """Stop chase playback via the QLC+ WebSocket API."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+    fid = chase.get("ID")
+    if not (fid and fid.isdigit()):
+        return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+    ok, raw = set_function_status(int(fid), running=False)
+    return jsonify({
+        "success": ok,
+        "chase": {"id": int(fid), "name": chase.get("Name")},
+        "response": raw,
+        "error": "" if ok else raw,
+    })
+
+
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():

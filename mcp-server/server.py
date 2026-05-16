@@ -184,6 +184,129 @@ def adjust_color(
     })
 
 
+# ---------------------------------------------------------------------------
+# Chase management (issue #4) — time-based programming axis
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_chases() -> dict:
+    """List every chase (Chaser function) in the loaded workspace.
+
+    Returns each chase with id, name, step count, direction, run_order, and
+    its function-level speed (fade_in_ms / hold_ms / fade_out_ms).
+    """
+    return _get("/api/chases")
+
+
+@mcp.tool()
+def describe_chase(chase: str) -> dict:
+    """Return the full definition of a chase including each step's scene
+    reference (with friendly name lookup) and per-step timing overrides.
+
+    Useful before starting a chase or duplicating its structure into a
+    new one. Accepts the chase's numeric ID or its name (case-insensitive).
+    """
+    return _get(f"/api/chases/{chase}")
+
+
+@mcp.tool()
+def create_chase(
+    name: str,
+    steps: list,
+    fade_in_ms: int = 500,
+    hold_ms: int = 2000,
+    fade_out_ms: int = 500,
+    direction: str = "Forward",
+    run_order: str = "Loop",
+    path: str = "AI Generated",
+) -> dict:
+    """Create a new chase referencing existing scenes.
+
+    Each step can be:
+      - a scene name string: "Warm Wash"
+      - a scene numeric ID: 42
+      - a dict with per-step overrides:
+            {"scene": "Amber", "hold_ms": 4000, "fade_in_ms": 1000}
+
+    Steps reference scenes by ID or case-insensitive name; the server
+    resolves them and rejects the request if any step points at a
+    non-existent scene.
+
+    Args:
+        name:        Display name for the chase (must be unique).
+        steps:       Ordered list of steps. See above for accepted shapes.
+        fade_in_ms:  Default fade-in time per step (ms). Per-step overrides
+                     in the step dict take precedence.
+        hold_ms:     Default hold time per step (ms).
+        fade_out_ms: Default fade-out time per step (ms).
+        direction:   "Forward" or "Backward".
+        run_order:   "Loop", "SingleShot", "PingPong", or "Random".
+        path:        Folder path within QLC+ for organization.
+
+    To start the chase after creating it, call start_chase(name) or
+    start_chase(id) with the returned chase ID.
+
+    Example:
+        create_chase(
+            name="Sunset",
+            steps=[
+                {"scene": "Daylight", "hold_ms": 3000},
+                {"scene": "Warm Wash", "hold_ms": 5000},
+                {"scene": "Deep Amber", "hold_ms": 8000},
+                {"scene": "Off",        "hold_ms": 2000},
+            ],
+            fade_in_ms=1500,
+            fade_out_ms=1500,
+            run_order="SingleShot",
+        )
+    """
+    return _post("/api/chases", {
+        "name": name,
+        "steps": steps,
+        "fade_in_ms":  int(fade_in_ms),
+        "hold_ms":     int(hold_ms),
+        "fade_out_ms": int(fade_out_ms),
+        "direction":   direction,
+        "run_order":   run_order,
+        "path":        path,
+    })
+
+
+@mcp.tool()
+def delete_chase(chase: str) -> dict:
+    """Delete a chase from the workspace permanently.
+
+    Accepts the chase's name or numeric ID. Idempotent — returns 404
+    cleanly if the chase doesn't exist.
+    """
+    r = _http().delete(f"/api/chases/{chase}")
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def start_chase(chase: str) -> dict:
+    """Start chase playback. Accepts name or numeric ID.
+
+    QLC+ runs the chase according to its direction + run_order — it will
+    loop forever for run_order: "Loop", play once for "SingleShot", etc.
+    Use stop_chase() to stop a running loop.
+    """
+    return _post(f"/api/chases/{chase}/start", {})
+
+
+@mcp.tool()
+def stop_chase(chase: str) -> dict:
+    """Stop chase playback. Accepts name or numeric ID.
+
+    The fixtures stay in whatever state the last step left them in —
+    follow with blackout() or activate_scene() to set a new state.
+    """
+    return _post(f"/api/chases/{chase}/stop", {})
+
+
 @mcp.tool()
 def strobe(
     rate: str | float | int,
