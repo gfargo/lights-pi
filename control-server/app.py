@@ -803,6 +803,258 @@ def apply_color_live(color, intensity=None, target_groups=None):
     }
 
 
+# ----------------------------------------------------------------------------
+# Color temperature — Kelvin-based white balance (issue #6)
+# ----------------------------------------------------------------------------
+#
+# Per-fixture-type strategy:
+#
+#   • Warm + cool (+ optional amber) — WWA/tungsten fixtures like the
+#     SlimPAR Pro W. Linear mix between warm and cool channels by Kelvin
+#     position. Below 2700K we blend toward amber for candle-warmth.
+#
+#   • RGB / RGBA / RGBW — drive the RGB channels with Tanner Helland's
+#     CCT-to-RGB approximation. RGBW additionally pushes the white
+#     channel at full so cooler colors look clean rather than blue.
+#
+#   • White-only or dimmer-only — set the channel at intensity. Includes a
+#     per-fixture note in the response since CCT can't actually be expressed.
+#
+# Kelvin is clamped to 1800–10000 (candle → overcast sky).
+
+
+def _cct_to_rgb(kelvin: float) -> tuple[int, int, int]:
+    """Approximate the color of a black-body radiator at the given Kelvin
+    temperature as 8-bit RGB. Uses Tanner Helland's algorithm — widely-cited,
+    accurate enough for stage lighting (where the eye + fixture optics smear
+    away any precision past ~50K anyway).
+
+    Reference: https://tannerhelland.com/2012/09/18/convert-temperature-rgb-algorithm-code.html
+    """
+    temp = max(1000.0, min(40000.0, float(kelvin))) / 100.0
+
+    # Red
+    if temp <= 66:
+        r = 255.0
+    else:
+        r = temp - 60.0
+        r = 329.698727446 * (r ** -0.1332047592)
+
+    # Green
+    if temp <= 66:
+        g = 99.4708025861 * math.log(temp) - 161.1195681661
+    else:
+        g = temp - 60.0
+        g = 288.1221695283 * (g ** -0.0755148492)
+
+    # Blue
+    if temp >= 66:
+        b = 255.0
+    elif temp <= 19:
+        b = 0.0
+    else:
+        b = temp - 10.0
+        b = 138.5177312231 * math.log(b) - 305.0447927307
+
+    def clamp(v: float) -> int:
+        return max(0, min(255, round(v)))
+
+    return clamp(r), clamp(g), clamp(b)
+
+
+# Kelvin anchors for the warm + cool channel mix on WWA fixtures.
+# 2700K is conventional tungsten (pure warm); 6500K is daylight (pure cool).
+_WWA_WARM_K = 2700
+_WWA_COOL_K = 6500
+# Below this we start blending the warm channel toward amber for very-warm
+# (candle / firelight) territory.
+_AMBER_THRESHOLD_K = 2700
+# Below this we are fully amber, no warm.
+_AMBER_FLOOR_K = 1800
+
+
+def _wwa_mix(kelvin: float) -> dict[str, float]:
+    """Return {role: 0..1} mix for a fixture's warm/cool/amber channels.
+
+    Outside the warm/cool range we clamp to the nearest anchor. Below 2700K
+    we additionally taper warm→amber so candle-warm Kelvin (~1900K) reads
+    correctly on fixtures that have an amber channel.
+    """
+    k = float(kelvin)
+    # Warm/cool linear mix in the canonical range
+    span = _WWA_COOL_K - _WWA_WARM_K
+    cool_amount = max(0.0, min(1.0, (k - _WWA_WARM_K) / span))
+    warm_amount = max(0.0, min(1.0, (_WWA_COOL_K - k) / span))
+
+    # Amber blend below 2700K
+    if k < _AMBER_THRESHOLD_K:
+        amber_span = _AMBER_THRESHOLD_K - _AMBER_FLOOR_K
+        amber_amount = max(0.0, min(1.0, (_AMBER_THRESHOLD_K - k) / amber_span))
+        # Shift some warm to amber proportionally
+        warm_amount *= (1.0 - amber_amount)
+    else:
+        amber_amount = 0.0
+
+    return {"warm": warm_amount, "cool": cool_amount, "amber": amber_amount}
+
+
+def apply_color_temperature_live(kelvin, intensity=None, target_groups=None):
+    """Set the targeted fixtures to a Kelvin white balance.
+
+    Args:
+        kelvin: target color temperature in Kelvin. Numbers or numeric strings.
+                Clamped to [1800, 10000].
+        intensity: optional 0–255, percentage, or relative (+/-) — same shape
+                   accepted by apply_color_live. Defaults to full (255).
+        target_groups: optional list of group names. Omit for the entire rig.
+
+    Per-fixture strategy is chosen automatically based on which color roles
+    the .qxf parser exposes for that fixture.
+    """
+    try:
+        k = float(kelvin)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "output": "",
+            "error": f"Invalid kelvin value: {kelvin!r}",
+        }
+    k = max(1800.0, min(10000.0, k))
+
+    intensity_scale = _parse_level(intensity, default=255) / 255 if intensity is not None else 1.0
+    intensity_scale = max(0.0, min(1.0, intensity_scale))
+    master_intensity = round(255 * intensity_scale)
+
+    fixtures = _target_fixtures(target_groups)
+    updates = []
+    per_fixture_notes = []
+
+    # Pre-compute the RGB tint once — same for every fixture, only mix-in
+    # differs per fixture type.
+    rgb = _cct_to_rgb(k)
+
+    # Roles we explicitly set vs. roles we leave untouched
+    color_roles = {"red", "green", "blue", "white", "warm", "cool", "amber",
+                   "uv", "cyan", "magenta", "yellow", "indigo", "lime"}
+    keep_alone_roles = {"dimmer", "pan", "tilt"}
+
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        has_warm = "warm" in roles
+        has_cool = "cool" in roles
+        has_rgb = all(r in roles for r in ("red", "green", "blue"))
+        has_white = "white" in roles
+        has_amber = "amber" in roles
+
+        if has_warm and has_cool:
+            # Strategy A — WWA / tungsten fixture
+            mix = _wwa_mix(k)
+            for role in ("warm", "cool", "amber"):
+                if role not in roles:
+                    continue
+                value = round(255 * mix[role] * intensity_scale)
+                updates.append((_absolute_channel(fixture, roles[role]), value))
+            per_fixture_notes.append({
+                "id": fixture["id"],
+                "name": fixture.get("name", ""),
+                "strategy": "wwa",
+                "applied": {role: round(255 * mix[role] * intensity_scale)
+                            for role in ("warm", "cool", "amber") if role in roles},
+            })
+        elif has_rgb:
+            # Strategy B — RGB / RGBA / RGBW fixture, Tanner Helland tint
+            r_val = round(rgb[0] * intensity_scale)
+            g_val = round(rgb[1] * intensity_scale)
+            b_val = round(rgb[2] * intensity_scale)
+            updates.append((_absolute_channel(fixture, roles["red"]), r_val))
+            updates.append((_absolute_channel(fixture, roles["green"]), g_val))
+            updates.append((_absolute_channel(fixture, roles["blue"]), b_val))
+
+            applied = {"red": r_val, "green": g_val, "blue": b_val}
+
+            # RGBW — push the white channel at full intensity so cool whites
+            # don't read as blue. Skip if no white channel.
+            if has_white:
+                w_val = master_intensity
+                updates.append((_absolute_channel(fixture, roles["white"]), w_val))
+                applied["white"] = w_val
+
+            # RGBA — use amber to reinforce warmth below ~3500K
+            if has_amber and not has_white:
+                # Map 1800K..3500K → amber 255..0
+                amber_amount = max(0.0, min(1.0, (3500 - k) / (3500 - 1800)))
+                a_val = round(255 * amber_amount * intensity_scale)
+                updates.append((_absolute_channel(fixture, roles["amber"]), a_val))
+                applied["amber"] = a_val
+
+            per_fixture_notes.append({
+                "id": fixture["id"],
+                "name": fixture.get("name", ""),
+                "strategy": "rgbw" if has_white else ("rgba" if has_amber else "rgb"),
+                "applied": applied,
+            })
+        elif has_white:
+            # Strategy C — white-only fixture, can't express CCT, just set intensity
+            updates.append((_absolute_channel(fixture, roles["white"]), master_intensity))
+            per_fixture_notes.append({
+                "id": fixture["id"],
+                "name": fixture.get("name", ""),
+                "strategy": "white_only",
+                "note": "Fixture has no warm/cool or RGB channels; CCT can't be expressed. Set white at intensity.",
+                "applied": {"white": master_intensity},
+            })
+        elif "brightness" in roles or "dimmer" in roles:
+            # Strategy D — dimmer-only fixture, even less than white
+            offsets = roles.get("brightness", [roles["dimmer"]] if "dimmer" in roles else [])
+            for offset in offsets:
+                updates.append((_absolute_channel(fixture, offset), master_intensity))
+            per_fixture_notes.append({
+                "id": fixture["id"],
+                "name": fixture.get("name", ""),
+                "strategy": "dimmer_only",
+                "note": "Fixture has no color channels; CCT can't be expressed. Set dimmer at intensity.",
+                "applied": {"dimmer": master_intensity},
+            })
+        else:
+            per_fixture_notes.append({
+                "id": fixture["id"],
+                "name": fixture.get("name", ""),
+                "strategy": "skip",
+                "note": "No usable color or brightness channel found.",
+            })
+            continue
+
+        # Drive the dimmer channel up so the colored channels are actually visible
+        if "dimmer" in roles and isinstance(roles["dimmer"], int):
+            updates.append((_absolute_channel(fixture, roles["dimmer"]), master_intensity))
+
+        # Zero out non-color, non-motion channels (same pattern as
+        # apply_color_live) so macro/strobe/program state doesn't bleed in.
+        color_offsets = {
+            roles[r] for r in color_roles
+            if r in roles and isinstance(roles[r], int)
+        }
+        keep_offsets = {
+            roles[r] for r in keep_alone_roles
+            if r in roles and isinstance(roles[r], int)
+        }
+        channel_count = int(fixture.get("channels", 0))
+        for offset in range(channel_count):
+            if offset in color_offsets or offset in keep_offsets:
+                continue
+            updates.append((_absolute_channel(fixture, offset), 0))
+
+    success = set_channel_values(updates)
+    return {
+        "success": success,
+        "output": f"Applied {k:.0f}K to {len(per_fixture_notes)} fixture(s) ({len(updates)} channels)",
+        "error": "" if success else f"Failed to apply {k:.0f}K via WebSocket",
+        "kelvin": k,
+        "rgb": list(rgb),
+        "fixtures": per_fixture_notes,
+    }
+
+
 async def _fade_brightness_async(channels, target_value, seconds, steps):
     """Run a multi-step fade over the persistent QLC+ WebSocket."""
     ws = await _ensure_qlc_ws()
@@ -1205,6 +1457,13 @@ def execute_lighting_action(action_data, target_groups=None):
         color = params.get("color", "white")
         intensity = params.get("intensity", "200")
         return apply_color_live(color, intensity, target_groups=target_groups)
+
+    elif action == "color_temperature":
+        kelvin = params.get("kelvin") or params.get("k")
+        if kelvin is None:
+            return {"success": False, "output": "", "error": "Missing required parameter 'kelvin'"}
+        intensity = params.get("intensity")
+        return apply_color_temperature_live(kelvin, intensity, target_groups=target_groups)
 
     elif action == "fade":
         duration = params.get("duration", "3")

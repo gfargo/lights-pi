@@ -37,6 +37,7 @@ LLM Client  ──HTTP/MCP──▶  lighting-mcp.service  ──HTTP/REST──
 - `apply_template(template, groups?)` — apply built-in template
 - `adjust_brightness(value, groups?)` — set/nudge brightness (0-255, '%', '+/-')
 - `adjust_color(color, intensity?, groups?)` — set color preset
+- `color_temperature(kelvin, intensity?, groups?)` — Kelvin white balance (1800–10000K), role-aware per fixture type
 - `fade(target, duration, groups?)` — fade to target over seconds
 - `generate_scene(description, groups?)` — AI-synthesized scene, applied live
 - `set_channel(fixture_id, channel, value)` — direct DMX channel write

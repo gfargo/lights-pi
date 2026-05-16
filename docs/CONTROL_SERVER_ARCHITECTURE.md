@@ -187,7 +187,8 @@ Schema for `POST /api/action`:
 ```
 
 Valid actions match `execute_lighting_action`'s dispatcher: `apply_template`,
-`generate_scene`, `adjust_brightness`, `adjust_color`, `fade`, `activate_scene`.
+`generate_scene`, `adjust_brightness`, `adjust_color`, `color_temperature`,
+`fade`, `activate_scene`.
 
 ## Failure Modes & Recovery
 

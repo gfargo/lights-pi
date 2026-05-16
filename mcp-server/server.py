@@ -185,6 +185,46 @@ def adjust_color(
 
 
 @mcp.tool()
+def color_temperature(
+    kelvin: float,
+    intensity: str | int | None = None,
+    groups: list[str] | None = None,
+) -> dict:
+    """Set the targeted fixtures to a Kelvin white balance.
+
+    This is the right tool when an operator thinks in white-balance terms:
+    "set the key lights to 5600K daylight", "drop the wash to 3200K tungsten",
+    "candlelit mood at 1900K". The control server picks the right per-fixture
+    strategy based on which color channels each fixture exposes — WWA fixtures
+    use the warm + cool + amber mix, RGB fixtures use a CCT-to-RGB
+    approximation, RGBW additionally drives the white channel.
+
+    Args:
+        kelvin:    Target color temperature in Kelvin. Clamped to 1800–10000.
+                   Useful reference points:
+                     - 1800: candle / firelight
+                     - 2700: incandescent warm-white bulb
+                     - 3200: tungsten / studio key
+                     - 4000: cool-white fluorescent
+                     - 5600: daylight
+                     - 6500: pure white
+                     - 7500: overcast / north-window
+        intensity: Optional 0-255, percentage like "75%", or relative
+                   "+30" / "-20". Defaults to full intensity.
+        groups:    Optional list of group names to target. Omit for all
+                   fixtures in the workspace.
+    """
+    return _post("/api/action", {
+        "action": "color_temperature",
+        "parameters": {
+            "kelvin": float(kelvin),
+            "intensity": intensity if intensity is not None else "255",
+        },
+        "groups": groups,
+    })
+
+
+@mcp.tool()
 def fade(
     target: str = "0",
     duration: str = "3",
