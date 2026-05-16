@@ -62,6 +62,14 @@ LLM Client  ──HTTP/MCP──▶  lighting-mcp.service  ──HTTP/REST──
 - `rename_scene(scene, new_name, path?)` — rename and/or re-folder
 - `duplicate_scene(scene, new_name)` — copy under a new name for tweaking
 
+**Chase management:**
+- `list_chases()` — every chase in the workspace
+- `describe_chase(chase)` — full step list with resolved scene names + per-step timing
+- `create_chase(name, steps[], fade_in_ms?, hold_ms?, fade_out_ms?, direction?, run_order?, path?)` — build from name + ordered scene references; each step can override timing
+- `delete_chase(chase)` — remove from workspace
+- `start_chase(chase)` — begin playback (loops unless run_order is SingleShot)
+- `stop_chase(chase)` — halt playback, fixtures hold their current state
+
 **Diagnostics:**
 - `test_dmx(duration?, groups?)` — R → G → B → restore sweep to verify DMX reaches the rig
 - `get_logs(service, n?)` — last N lines of a service's systemd journal (allowlisted: qlcplus-web, lighting-control, lighting-mcp, nginx)
