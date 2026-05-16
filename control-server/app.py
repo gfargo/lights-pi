@@ -39,6 +39,7 @@ LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
 # Default to ~/.qlcplus/default.qxw, but can be overridden via env var
 WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / "default.qxw")))
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
+CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 
 # QLC+ WebSocket configuration
 QLC_HOST = os.getenv("QLC_HOST", "localhost")
@@ -1804,6 +1805,42 @@ def execute_lighting_action(action_data, target_groups=None):
     elif action == "activate_scene":
         scene = params.get("scene") or params.get("name") or params.get("id")
         return apply_existing_scene_live(scene)
+
+    elif action == "start_chase":
+        # Dispatch through the same helper the /api/chases/<id>/start endpoint uses.
+        # Lets cue lists + batch_action fire chases composably.
+        chase_ref = params.get("chase") or params.get("name") or params.get("id")
+        if chase_ref is None:
+            return {"success": False, "output": "", "error": "Missing 'chase' parameter"}
+        chase = _find_function_element(chase_ref, function_type="Chaser")
+        if chase is None:
+            return {"success": False, "output": "", "error": f"Chase not found: {chase_ref}"}
+        fid = chase.get("ID")
+        if not (fid and fid.isdigit()):
+            return {"success": False, "output": "", "error": f"Chase has no numeric ID: {chase.get('Name')}"}
+        ok, raw = set_function_status(int(fid), running=True)
+        return {
+            "success": ok,
+            "output": f"Started chase '{chase.get('Name')}'" if ok else "",
+            "error": "" if ok else raw,
+        }
+
+    elif action == "stop_chase":
+        chase_ref = params.get("chase") or params.get("name") or params.get("id")
+        if chase_ref is None:
+            return {"success": False, "output": "", "error": "Missing 'chase' parameter"}
+        chase = _find_function_element(chase_ref, function_type="Chaser")
+        if chase is None:
+            return {"success": False, "output": "", "error": f"Chase not found: {chase_ref}"}
+        fid = chase.get("ID")
+        if not (fid and fid.isdigit()):
+            return {"success": False, "output": "", "error": f"Chase has no numeric ID: {chase.get('Name')}"}
+        ok, raw = set_function_status(int(fid), running=False)
+        return {
+            "success": ok,
+            "output": f"Stopped chase '{chase.get('Name')}'" if ok else "",
+            "error": "" if ok else raw,
+        }
 
     else:
         return {
@@ -3915,6 +3952,559 @@ def stop_chase(chase_id):
         "chase": {"id": int(fid), "name": chase.get("Name")},
         "response": raw,
         "error": "" if ok else raw,
+    })
+
+
+# =============================================================================
+# Cue lists — audio-synced show programming (issue #8)
+# =============================================================================
+#
+# A *cue list* is an ordered list of cues; each cue has an absolute timestamp
+# relative to GO and an action to dispatch. When the operator (or agent)
+# presses GO, the server starts an internal clock and fires each cue at its
+# at_ms timestamp. This is the QLab / ETC Ion model — the "cue stack" that
+# every live show is built on.
+#
+# Sync-mode only for v1: the user runs their audio in OBS / Logic / whatever
+# and presses GO on the cue list at the same moment. The server doesn't play
+# audio itself. Future work could add player-mode.
+#
+# Persistence: ~/.qlcplus/cue_lists.json (separate from QLC+ workspace —
+# cue lists are a control-server concept, not a QLC+ function type).
+#
+# Cue shape (all forms accepted by the API):
+#
+#   { "at": "0:32",        "scene": "Chorus" }
+#   { "at": "1:45.500",    "chase": "Sunset" }
+#   { "at_ms": 32000,      "action": "strobe", "parameters": {"rate": 12} }
+#   { "at": "0:08",        "scene": "Daylight", "groups": ["key-lights"] }
+#
+# Internally everything is normalized to:
+#   { "at_ms": int, "action": str, "parameters": dict, "groups": list|null }
+
+
+def _load_cue_lists() -> dict:
+    """Return the persisted cue-list registry, tolerant of missing file."""
+    if not CUE_LISTS_FILE.exists():
+        return {"next_id": 1, "cue_lists": []}
+    try:
+        data = json.loads(CUE_LISTS_FILE.read_text())
+    except json.JSONDecodeError:
+        return {"next_id": 1, "cue_lists": []}
+    if not isinstance(data, dict):
+        return {"next_id": 1, "cue_lists": []}
+    data.setdefault("next_id", 1)
+    data.setdefault("cue_lists", [])
+    return data
+
+
+def _save_cue_lists(data: dict) -> None:
+    CUE_LISTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CUE_LISTS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _parse_time_ms(value) -> int | None:
+    """Coerce a time input to milliseconds.
+
+    Accepts:
+        12345           int / float → ms
+        "12345"         numeric string → ms
+        "12345ms"       explicit ms
+        "32s"           seconds
+        "0:32"          MM:SS
+        "0:32.5"        MM:SS.fff
+        "1:23:45"       HH:MM:SS
+        "1:23:45.250"   HH:MM:SS.fff
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    # Handle suffix forms
+    if text.endswith("ms"):
+        try:
+            return max(0, int(float(text[:-2].strip())))
+        except ValueError:
+            return None
+    if text.endswith("s") and not text.endswith("ms"):
+        try:
+            return max(0, int(float(text[:-1].strip()) * 1000))
+        except ValueError:
+            return None
+
+    # Colon-separated forms
+    if ":" in text:
+        parts = text.split(":")
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError:
+            return None
+        if len(nums) == 2:
+            minutes, seconds = nums
+            return max(0, int((minutes * 60 + seconds) * 1000))
+        if len(nums) == 3:
+            hours, minutes, seconds = nums
+            return max(0, int((hours * 3600 + minutes * 60 + seconds) * 1000))
+        return None
+
+    # Plain numeric → ms
+    try:
+        return max(0, int(float(text)))
+    except ValueError:
+        return None
+
+
+def _format_time_ms(ms: int) -> str:
+    """Format ms as M:SS.mmm or H:MM:SS.mmm for display."""
+    if ms is None:
+        return "—"
+    ms = max(0, int(ms))
+    millis = ms % 1000
+    total_s = ms // 1000
+    h = total_s // 3600
+    m = (total_s % 3600) // 60
+    s = total_s % 60
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}.{millis:03d}"
+    return f"{m}:{s:02d}.{millis:03d}"
+
+
+def _normalize_cue(raw_cue) -> dict:
+    """Resolve a raw cue dict into the canonical internal form.
+
+    Returns a dict with one of:
+        {"error": "..."}           — couldn't parse
+        {"at_ms", "action", "parameters", "groups"}
+
+    Accepted shapes for the action portion:
+        {"scene": "Name"}                  → activate_scene
+        {"chase": "Name"}                  → start_chase
+        {"action": "strobe", "parameters": {...}}
+        {"action": "blackout"}
+    """
+    if not isinstance(raw_cue, dict):
+        return {"error": f"Cue must be an object, got {type(raw_cue).__name__}"}
+
+    at_input = raw_cue.get("at") if "at" in raw_cue else raw_cue.get("at_ms")
+    if at_input is None:
+        return {"error": "Cue missing 'at' or 'at_ms'"}
+    at_ms = _parse_time_ms(at_input)
+    if at_ms is None:
+        return {"error": f"Cue 'at' is not parseable: {at_input!r}"}
+
+    groups = raw_cue.get("groups") or None
+
+    # Resolve the action portion
+    if "scene" in raw_cue:
+        return {
+            "at_ms": at_ms,
+            "action": "activate_scene",
+            "parameters": {"scene": raw_cue["scene"]},
+            "groups": groups,
+        }
+    if "chase" in raw_cue:
+        return {
+            "at_ms": at_ms,
+            "action": "start_chase",
+            "parameters": {"chase": raw_cue["chase"]},
+            "groups": groups,
+        }
+    if "action" in raw_cue:
+        return {
+            "at_ms": at_ms,
+            "action": str(raw_cue["action"]),
+            "parameters": raw_cue.get("parameters", {}) or {},
+            "groups": groups,
+        }
+    return {"error": "Cue must have 'scene', 'chase', or 'action'"}
+
+
+def _validate_cue_action(cue: dict) -> str | None:
+    """Cross-check that the cue references existing scenes/chases. Returns
+    an error string or None.
+
+    Doesn't validate action names since execute_lighting_action will reject
+    unknown ones at fire time — but the agent gets a much better signal if
+    we catch broken refs before storage.
+    """
+    action = cue["action"]
+    params = cue["parameters"]
+    if action == "activate_scene":
+        scene_ref = params.get("scene") or params.get("name") or params.get("id")
+        if _find_scene_element(scene_ref) is None:
+            return f"Scene not found: {scene_ref!r}"
+    elif action in ("start_chase", "stop_chase"):
+        chase_ref = params.get("chase") or params.get("name") or params.get("id")
+        if _find_function_element(chase_ref, function_type="Chaser") is None:
+            return f"Chase not found: {chase_ref!r}"
+    return None
+
+
+def _serialize_cue(cue: dict) -> dict:
+    """Cue → API-friendly form with both numeric and human-readable time."""
+    return {
+        "at_ms": cue["at_ms"],
+        "at": _format_time_ms(cue["at_ms"]),
+        "action": cue["action"],
+        "parameters": cue["parameters"],
+        "groups": cue.get("groups"),
+    }
+
+
+def _serialize_cue_list(cl: dict, include_runtime: bool = False) -> dict:
+    out = {
+        "id": cl["id"],
+        "name": cl["name"],
+        "description": cl.get("description", ""),
+        "duration_ms": cl.get("duration_ms", 0),
+        "duration": _format_time_ms(cl.get("duration_ms", 0)),
+        "cue_count": len(cl.get("cues", [])),
+        "cues": [_serialize_cue(c) for c in cl.get("cues", [])],
+    }
+    if include_runtime:
+        runtime = _active_cue_lists.get(cl["id"])
+        if runtime:
+            elapsed_ms = int((time.time() - runtime["started_at"]) * 1000)
+            out["runtime"] = {
+                "running": True,
+                "elapsed_ms": elapsed_ms,
+                "elapsed": _format_time_ms(elapsed_ms),
+                "cues_fired": len(runtime["cues_fired"]),
+                "started_at": runtime["started_at"],
+            }
+        else:
+            out["runtime"] = {"running": False}
+    return out
+
+
+def _find_cue_list(id_or_name) -> tuple[dict, dict] | tuple[None, None]:
+    """Return (full_store, found_cue_list) or (None, None) if not found.
+
+    Accepts either an integer ID or a case-insensitive name match.
+    """
+    data = _load_cue_lists()
+    needle = str(id_or_name).strip().lower()
+    for cl in data["cue_lists"]:
+        if str(cl["id"]) == str(id_or_name) or cl["name"].lower() == needle:
+            return data, cl
+    return None, None
+
+
+# ----------------------------------------------------------------------------
+# Playback engine — one asyncio task per running cue list
+# ----------------------------------------------------------------------------
+
+# Registry of currently-playing cue lists.
+# Shape: { cue_list_id: { 'task', 'started_at', 'cues_fired', 'cue_list' } }
+_active_cue_lists: dict[int, dict] = {}
+_active_cue_lists_lock = threading.Lock()
+
+
+async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
+    """Play a cue list — fire each cue at its at_ms relative to GO.
+
+    Designed to tolerate cue dispatch failures: one bad cue prints a warning
+    but the remaining cues still fire on schedule.
+    """
+    started_at = time.time()
+    fired_indexes: list[int] = []
+
+    with _active_cue_lists_lock:
+        _active_cue_lists[cue_list_id] = {
+            "started_at": started_at,
+            "cues_fired": fired_indexes,
+        }
+
+    # Stable order in case caller passed cues out of timestamp order
+    sorted_cues = sorted(enumerate(cues), key=lambda item: item[1]["at_ms"])
+
+    try:
+        for idx, cue in sorted_cues:
+            elapsed_ms = (time.time() - started_at) * 1000
+            wait_ms = max(0, cue["at_ms"] - elapsed_ms)
+            if wait_ms > 0:
+                await asyncio.sleep(wait_ms / 1000)
+
+            action_data = {
+                "action": cue["action"],
+                "parameters": cue["parameters"],
+            }
+            try:
+                # execute_lighting_action is sync but does its own _qlc_run
+                # internally for channel writes; it's safe to call from
+                # this async context (it'll just submit further work to the
+                # same event loop without re-entering).
+                execute_lighting_action(action_data, target_groups=cue.get("groups"))
+            except Exception as e:
+                print(f"[cue-list {cue_list_id}] cue #{idx} ({cue['action']}) failed: {e}")
+            fired_indexes.append(idx)
+    except asyncio.CancelledError:
+        # Normal path for stop_cue_list — just exit cleanly
+        raise
+    except Exception as e:
+        print(f"[cue-list {cue_list_id}] playback engine error: {e}")
+    finally:
+        with _active_cue_lists_lock:
+            _active_cue_lists.pop(cue_list_id, None)
+
+
+def _go_cue_list(cue_list: dict) -> bool:
+    """Start playback. If already running, cancel the old task and start
+    fresh (matches "press GO twice = restart")."""
+    cl_id = cue_list["id"]
+    with _active_cue_lists_lock:
+        existing = _active_cue_lists.get(cl_id)
+    if existing and existing.get("task"):
+        existing["task"].cancel()
+
+    # Schedule the coroutine on the QLC+ background loop so we share an
+    # event loop with the WebSocket writes (no cross-loop weirdness).
+    if _qlc_loop is None:
+        _start_qlc_loop()
+
+    cues = list(cue_list.get("cues", []))
+    coro = _run_cue_list_async(cl_id, cues)
+    task = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+
+    # Stash the task handle so we can cancel later
+    with _active_cue_lists_lock:
+        entry = _active_cue_lists.setdefault(cl_id, {})
+        entry["task"] = task
+    return True
+
+
+def _stop_cue_list(cl_id: int) -> bool:
+    with _active_cue_lists_lock:
+        entry = _active_cue_lists.get(cl_id)
+    if not entry:
+        return False
+    task = entry.get("task")
+    if task is not None:
+        task.cancel()
+    return True
+
+
+# ----------------------------------------------------------------------------
+# endpoints
+# ----------------------------------------------------------------------------
+
+
+@app.route("/api/cue_lists", methods=["GET"])
+def list_cue_lists():
+    """List every saved cue list with runtime status for any currently playing."""
+    data = _load_cue_lists()
+    return jsonify({
+        "cue_lists": [_serialize_cue_list(cl, include_runtime=True) for cl in data["cue_lists"]],
+    })
+
+
+@app.route("/api/cue_lists/active", methods=["GET"])
+def list_active_cue_lists():
+    """List only cue lists that are currently playing, with elapsed time."""
+    data = _load_cue_lists()
+    by_id = {cl["id"]: cl for cl in data["cue_lists"]}
+    active = []
+    with _active_cue_lists_lock:
+        snapshot = dict(_active_cue_lists)
+    for cl_id, runtime in snapshot.items():
+        cl = by_id.get(cl_id)
+        if cl is None:
+            continue
+        elapsed_ms = int((time.time() - runtime["started_at"]) * 1000)
+        active.append({
+            "id": cl_id,
+            "name": cl["name"],
+            "elapsed_ms": elapsed_ms,
+            "elapsed": _format_time_ms(elapsed_ms),
+            "cues_fired": len(runtime["cues_fired"]),
+            "cues_total": len(cl["cues"]),
+            "duration_ms": cl.get("duration_ms", 0),
+        })
+    return jsonify({"active": active})
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>", methods=["GET"])
+def describe_cue_list(cl_id_or_name):
+    """Return a single cue list's full definition plus runtime status."""
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+    return jsonify({"success": True, "cue_list": _serialize_cue_list(cl, include_runtime=True)})
+
+
+@app.route("/api/cue_lists", methods=["POST"])
+def create_cue_list():
+    """Create a new cue list.
+
+    Body:
+        {
+          "name": "YouTube Intro",
+          "description": "30-second series intro",      # optional
+          "cues": [
+            { "at": "0:00",     "scene": "Daylight" },
+            { "at": "0:08",     "chase": "Sunset" },
+            { "at": "0:15.500", "scene": "Warm" },
+            { "at": "0:22",     "action": "strobe",   "parameters": {"rate": 8} },
+            { "at": "0:24",     "action": "strobe",   "parameters": {"rate": "off"} },
+            { "at": "0:28",     "action": "fade",     "parameters": {"target": "0", "duration": "2"} },
+            { "at": "0:30",     "action": "blackout" }
+          ]
+        }
+    """
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "name is required"}), 400
+
+    raw_cues = body.get("cues") or []
+    if not isinstance(raw_cues, list) or not raw_cues:
+        return jsonify({"success": False, "error": "cues must be a non-empty array"}), 400
+
+    # Normalize + validate
+    cues = []
+    errors = []
+    for i, raw in enumerate(raw_cues):
+        norm = _normalize_cue(raw)
+        if "error" in norm:
+            errors.append({"index": i, "error": norm["error"]})
+            continue
+        ref_err = _validate_cue_action(norm)
+        if ref_err:
+            errors.append({"index": i, "error": ref_err})
+            continue
+        cues.append(norm)
+
+    if errors:
+        return jsonify({
+            "success": False,
+            "error": "One or more cues are invalid",
+            "cue_errors": errors,
+        }), 400
+
+    cues.sort(key=lambda c: c["at_ms"])
+    duration_ms = cues[-1]["at_ms"] if cues else 0
+
+    data = _load_cue_lists()
+    if any(cl["name"].lower() == name.lower() for cl in data["cue_lists"]):
+        return jsonify({"success": False, "error": f"Cue list '{name}' already exists"}), 409
+
+    cl_id = data["next_id"]
+    data["next_id"] = cl_id + 1
+    new_cl = {
+        "id": cl_id,
+        "name": name,
+        "description": (body.get("description") or "").strip(),
+        "duration_ms": duration_ms,
+        "cues": cues,
+    }
+    data["cue_lists"].append(new_cl)
+    _save_cue_lists(data)
+
+    return jsonify({"success": True, "cue_list": _serialize_cue_list(new_cl)})
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>", methods=["PATCH"])
+def update_cue_list(cl_id_or_name):
+    """Update a cue list — rename, change description, or replace the cues array."""
+    body = request.get_json(silent=True) or {}
+    data, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+
+    new_name = (body.get("name") or "").strip()
+    if new_name and new_name.lower() != cl["name"].lower():
+        if any(other["name"].lower() == new_name.lower() for other in data["cue_lists"] if other["id"] != cl["id"]):
+            return jsonify({"success": False, "error": f"Cue list '{new_name}' already exists"}), 409
+        cl["name"] = new_name
+
+    if "description" in body:
+        cl["description"] = (body.get("description") or "").strip()
+
+    if "cues" in body:
+        raw_cues = body["cues"]
+        if not isinstance(raw_cues, list) or not raw_cues:
+            return jsonify({"success": False, "error": "cues must be a non-empty array"}), 400
+        cues = []
+        errors = []
+        for i, raw in enumerate(raw_cues):
+            norm = _normalize_cue(raw)
+            if "error" in norm:
+                errors.append({"index": i, "error": norm["error"]})
+                continue
+            ref_err = _validate_cue_action(norm)
+            if ref_err:
+                errors.append({"index": i, "error": ref_err})
+                continue
+            cues.append(norm)
+        if errors:
+            return jsonify({
+                "success": False,
+                "error": "One or more cues are invalid",
+                "cue_errors": errors,
+            }), 400
+        cues.sort(key=lambda c: c["at_ms"])
+        cl["cues"] = cues
+        cl["duration_ms"] = cues[-1]["at_ms"] if cues else 0
+
+    _save_cue_lists(data)
+    return jsonify({"success": True, "cue_list": _serialize_cue_list(cl)})
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>", methods=["DELETE"])
+def delete_cue_list(cl_id_or_name):
+    """Remove a cue list. Stops playback first if it's currently running."""
+    data, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+    _stop_cue_list(cl["id"])
+    data["cue_lists"] = [c for c in data["cue_lists"] if c["id"] != cl["id"]]
+    _save_cue_lists(data)
+    return jsonify({"success": True, "deleted": {"id": cl["id"], "name": cl["name"]}})
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/go", methods=["POST"])
+def go_cue_list(cl_id_or_name):
+    """GO — start cue list playback from the top.
+
+    If the list is already running, the old run is cancelled and a fresh
+    run starts (matches "press GO twice = restart" intuition).
+    """
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+    if not cl.get("cues"):
+        return jsonify({"success": False, "error": "Cue list is empty"}), 400
+    _go_cue_list(cl)
+    return jsonify({
+        "success": True,
+        "cue_list": {"id": cl["id"], "name": cl["name"]},
+        "started_at": time.time(),
+        "duration_ms": cl.get("duration_ms", 0),
+        "duration": _format_time_ms(cl.get("duration_ms", 0)),
+        "cue_count": len(cl["cues"]),
+    })
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/stop", methods=["POST"])
+def stop_cue_list(cl_id_or_name):
+    """Stop a running cue list. Fixtures hold whatever state the last fired
+    cue left them in — follow with blackout() or activate_scene() if you
+    want a deterministic finish."""
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+    was_running = _stop_cue_list(cl["id"])
+    return jsonify({
+        "success": True,
+        "cue_list": {"id": cl["id"], "name": cl["name"]},
+        "was_running": was_running,
     })
 
 

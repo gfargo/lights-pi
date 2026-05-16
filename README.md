@@ -1073,6 +1073,9 @@ LLM agent ──MCP/HTTP──▶  lighting-mcp.service ──HTTP──▶  lig
   `duplicate_scene`
 - *Chase management:* `list_chases`, `describe_chase`, `create_chase`,
   `delete_chase`, `start_chase`, `stop_chase`
+- *Cue lists (audio-synced shows):* `list_cue_lists`, `describe_cue_list`,
+  `get_active_cue_lists`, `create_cue_list`, `update_cue_list`,
+  `delete_cue_list`, `go_cue_list`, `stop_cue_list`
 - *Diagnostics:* `test_dmx`, `get_logs`, `get_system_info`
 - *Resource:* `lights://workspace` — one-shot snapshot of fixtures, groups,
   scenes, templates, and status for LLM context

@@ -185,6 +185,156 @@ def adjust_color(
 
 
 # ---------------------------------------------------------------------------
+# Cue lists — audio-synced show programming (issue #8)
+# ---------------------------------------------------------------------------
+#
+# A cue list is the QLab / ETC Ion "cue stack" model: an ordered list of
+# cues, each with an absolute timestamp relative to GO. Press GO and the
+# server fires each cue at its time. Sync-mode only — the user runs their
+# audio in OBS / Logic / etc. and presses GO at the same moment.
+
+@mcp.tool()
+def list_cue_lists() -> dict:
+    """List every saved cue list with runtime status (whether it's currently playing)."""
+    return _get("/api/cue_lists")
+
+
+@mcp.tool()
+def describe_cue_list(cue_list: str) -> dict:
+    """Return a single cue list's full definition plus runtime status.
+
+    Includes each cue's timestamp (in human-readable form like "0:32.500"
+    and as raw at_ms), its action, parameters, and target groups.
+
+    Accepts the cue list's numeric ID or case-insensitive name.
+    """
+    return _get(f"/api/cue_lists/{cue_list}")
+
+
+@mcp.tool()
+def get_active_cue_lists() -> dict:
+    """List only cue lists currently playing, with elapsed time and cues
+    fired so far. Empty list if nothing is running."""
+    return _get("/api/cue_lists/active")
+
+
+@mcp.tool()
+def create_cue_list(
+    name: str,
+    cues: list[dict],
+    description: str | None = None,
+) -> dict:
+    """Create a new cue list.
+
+    Each cue is a dict with a timestamp and an action specification:
+
+      Timestamp (use one):
+        "at_ms":  32500
+        "at":     "0:32.500"  or  "32s"  or  "32500ms"  or  "1:23:45"
+
+      Action (use one):
+        "scene":  "Chorus"                      # → activate_scene
+        "chase":  "Sunset"                      # → start_chase
+        "action": "strobe",  "parameters": {...}    # any execute_lighting_action
+        "action": "blackout"                    # no parameters
+
+      Optional:
+        "groups": ["key-lights"]                # restrict to these groups
+
+    Example — 30-second YouTube intro:
+
+      create_cue_list(
+        name="YouTube Intro",
+        description="30s series intro",
+        cues=[
+          {"at": "0:00",     "scene": "Daylight"},
+          {"at": "0:08",     "chase": "Sunset"},
+          {"at": "0:15.500", "scene": "Warm"},
+          {"at": "0:22",     "action": "strobe",   "parameters": {"rate": 8}},
+          {"at": "0:24",     "action": "strobe",   "parameters": {"rate": "off"}},
+          {"at": "0:28",     "action": "fade",     "parameters": {"target": "0", "duration": "2"}},
+          {"at": "0:30",     "action": "blackout"},
+        ],
+      )
+
+    Scene and chase references are validated against the workspace at
+    creation time — broken refs cause the whole create to fail with a
+    structured list of which cues are bad.
+    """
+    return _post("/api/cue_lists", {
+        "name": name,
+        "description": description or "",
+        "cues": cues,
+    })
+
+
+@mcp.tool()
+def update_cue_list(
+    cue_list: str,
+    new_name: str | None = None,
+    description: str | None = None,
+    cues: list[dict] | None = None,
+) -> dict:
+    """Update a cue list — rename, change description, or replace cues entirely.
+
+    The cues array, if provided, REPLACES the existing one. To add or
+    remove individual cues, read the current cues via describe_cue_list,
+    modify the list, then pass the modified array here.
+
+    Args:
+        cue_list:    Current name or numeric ID.
+        new_name:    Optional new name.
+        description: Optional new description.
+        cues:        Optional replacement cue array.
+    """
+    payload: dict[str, Any] = {}
+    if new_name is not None: payload["name"] = new_name
+    if description is not None: payload["description"] = description
+    if cues is not None: payload["cues"] = cues
+    r = _http().patch(f"/api/cue_lists/{cue_list}", json=payload)
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def delete_cue_list(cue_list: str) -> dict:
+    """Delete a cue list permanently. Stops playback first if it's running."""
+    r = _http().delete(f"/api/cue_lists/{cue_list}")
+    try:
+        return r.json()
+    except Exception:
+        return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+@mcp.tool()
+def go_cue_list(cue_list: str) -> dict:
+    """GO — start the cue list playing from the top.
+
+    The first cue at "at: 0:00" fires immediately; subsequent cues fire
+    at their at_ms relative to this GO moment. The server doesn't play
+    audio itself — sync your audio source (OBS, Logic, etc.) to fire
+    GO at the same moment as the track starts.
+
+    If the cue list is already running, the old run is cancelled and a
+    fresh run starts (matches "press GO twice = restart").
+    """
+    return _post(f"/api/cue_lists/{cue_list}/go", {})
+
+
+@mcp.tool()
+def stop_cue_list(cue_list: str) -> dict:
+    """Stop a running cue list.
+
+    Fixtures hold whatever state the last fired cue left them in —
+    follow with blackout() or activate_scene() if you want a
+    deterministic finish state.
+    """
+    return _post(f"/api/cue_lists/{cue_list}/stop", {})
+
+
+# ---------------------------------------------------------------------------
 # Chase management (issue #4) — time-based programming axis
 # ---------------------------------------------------------------------------
 

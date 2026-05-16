@@ -70,6 +70,16 @@ LLM Client  ──HTTP/MCP──▶  lighting-mcp.service  ──HTTP/REST──
 - `start_chase(chase)` — begin playback (loops unless run_order is SingleShot)
 - `stop_chase(chase)` — halt playback, fixtures hold their current state
 
+**Cue lists (audio-synced shows):**
+- `list_cue_lists()` — every saved cue list with runtime status
+- `describe_cue_list(cue_list)` — full cue array + runtime status
+- `get_active_cue_lists()` — only currently-playing lists, with elapsed time
+- `create_cue_list(name, cues[], description?)` — build from name + cue array. Each cue has a timestamp (`at: "0:32"` or `at_ms: 32000`) and an action (scene, chase, or any execute_lighting_action).
+- `update_cue_list(cue_list, new_name?, description?, cues?)` — rename / re-describe / replace cues
+- `delete_cue_list(cue_list)` — remove (stops playback if running)
+- `go_cue_list(cue_list)` — GO from the top; sync with your audio source by pressing GO at track start
+- `stop_cue_list(cue_list)` — halt; fixtures hold last fired state
+
 **Diagnostics:**
 - `test_dmx(duration?, groups?)` — R → G → B → restore sweep to verify DMX reaches the rig
 - `get_logs(service, n?)` — last N lines of a service's systemd journal (allowlisted: qlcplus-web, lighting-control, lighting-mcp, nginx)

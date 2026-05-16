@@ -106,6 +106,28 @@ All tools are defined in [mcp-server/server.py](../mcp-server/server.py).
 | `get_logs`          | Read N lines of a service's systemd journal (allowlisted services) |
 | `get_system_info`   | Pi-level health: CPU temp, load, memory, disk, uptime, USB, services |
 
+### Cue lists (audio-synced show programming)
+
+Cue lists are the QLab / ETC Ion "cue stack" model — an ordered list of
+cues, each with an absolute timestamp. Press GO and the server fires each
+cue at its time. Sync-mode only: the user runs their audio in OBS / Logic
+/ etc. and presses GO at the same moment as the track starts.
+
+| Tool                  | Effect                                                        |
+|-----------------------|---------------------------------------------------------------|
+| `list_cue_lists`      | List every saved cue list with runtime status                 |
+| `describe_cue_list`   | Full definition + runtime status for one list                 |
+| `get_active_cue_lists`| Only currently-playing lists, with elapsed time               |
+| `create_cue_list`     | Build a new cue list from name + cues array                   |
+| `update_cue_list`     | Rename, change description, or replace the cues array         |
+| `delete_cue_list`     | Remove (stops playback first if running)                      |
+| `go_cue_list`         | GO — start playback from the top                              |
+| `stop_cue_list`       | Halt playback; fixtures hold their last fired state           |
+
+Each cue accepts a timestamp (`at_ms` or human-readable `at` like `"0:32.500"`,
+`"32s"`, `"1:23:45"`) and an action (a scene name, a chase name, or any
+`execute_lighting_action`-compatible action with parameters).
+
 ### Chase management
 
 Chases are ordered sequences of saved scenes with per-step timing — the
