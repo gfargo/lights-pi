@@ -185,6 +185,50 @@ def adjust_color(
 
 
 @mcp.tool()
+def strobe(
+    rate: str | float | int,
+    intensity: str | int | None = None,
+    groups: list[str] | None = None,
+) -> dict:
+    """Strobe the targeted fixtures at the given rate.
+
+    First-class abstraction over each fixture's dedicated strobe channel —
+    no need to know per-fixture channel offsets or DMX value ranges. The
+    server maps rate → DMX value via the .qxf role parser.
+
+    Args:
+        rate:      Frequency in Hz (0-20). Use "off" / 0 / "0Hz" to stop.
+                   Rates above 20Hz clamp to 20Hz (typically the fastest
+                   stage fixtures will reliably strobe).
+        intensity: Optional brightness applied to the fixture's dimmer
+                   channel so the strobe is visible (0-255 / "75%" /
+                   "+30" / "-20"). If omitted, brightness is left alone —
+                   strobe happens at whatever level the fixture is
+                   currently at.
+        groups:    Optional list of group names to limit the strobe.
+                   Omit to strobe every fixture with a strobe channel.
+
+    Common rates:
+        1-3 Hz   — slow heartbeat / breathing
+        5-8 Hz   — typical party strobe
+        12-15 Hz — aggressive accent
+        18-20 Hz — pulse-machine territory
+
+    Fixtures without a dedicated strobe channel are listed in the
+    response under skipped — use blackout() and adjust_color() via
+    batch_action for brightness-cycled "strobe" effects on those.
+    """
+    return _post("/api/action", {
+        "action": "strobe",
+        "parameters": {
+            "rate": rate,
+            "intensity": intensity,
+        },
+        "groups": groups,
+    })
+
+
+@mcp.tool()
 def palette(assignments: dict) -> dict:
     """Assign different colors / Kelvin values to different groups in one
     round trip — the "set the room" primitive.

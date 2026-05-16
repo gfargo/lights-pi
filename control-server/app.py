@@ -1210,6 +1210,169 @@ def apply_palette_live(assignments):
     }
 
 
+# ----------------------------------------------------------------------------
+# Strobe — first-class abstraction over the per-fixture strobe channel
+# (issue #5)
+# ----------------------------------------------------------------------------
+#
+# QLC+ fixtures with a dedicated strobe channel almost universally follow
+# the convention:
+#
+#     DMX 0–9    : rest (no strobe)
+#     DMX 10–255 : slow → fast strobe
+#
+# We can't statically know the exact rate-to-DMX mapping for every fixture
+# (it varies — some go to 20Hz, some 25Hz, some have non-linear ramps), so
+# v1 uses a linear approximation: rate 0 → DMX 0 (rest), rate 20Hz → DMX 255
+# (typically the fastest the fixture can do). Most stage fixtures look right
+# at this mapping. Future work: parse <Capability> ranges from the .qxf to
+# get per-fixture-accurate Hz mappings.
+
+
+# Fixtures that hit pure-pulse at this Hz get full DMX (255).
+_STROBE_MAX_HZ = 20.0
+# DMX value where the strobe channel transitions out of "rest" zone.
+_STROBE_DMX_REST_FLOOR = 10
+_STROBE_DMX_MAX = 255
+
+
+def _strobe_dmx_value(rate) -> int:
+    """Map a rate input to a DMX channel value.
+
+    Accepts:
+        "off" / "0" / 0 / 0.0 / None  → 0  (rest)
+        positive number (Hz)          → 10..255 linearly (clamped to 0..20 Hz)
+    """
+    if rate is None:
+        return 0
+    if isinstance(rate, str):
+        normalized = rate.strip().lower()
+        if normalized in ("off", "stop", "rest", "none", "0", "0hz"):
+            return 0
+        # Strip a trailing "hz" if present
+        if normalized.endswith("hz"):
+            normalized = normalized[:-2].strip()
+        try:
+            rate_val = float(normalized)
+        except ValueError:
+            return 0
+    else:
+        try:
+            rate_val = float(rate)
+        except (TypeError, ValueError):
+            return 0
+
+    if rate_val <= 0:
+        return 0
+    clamped = min(_STROBE_MAX_HZ, rate_val)
+    span = _STROBE_DMX_MAX - _STROBE_DMX_REST_FLOOR
+    return int(round(_STROBE_DMX_REST_FLOOR + (clamped / _STROBE_MAX_HZ) * span))
+
+
+def apply_strobe_live(rate, intensity=None, target_groups=None):
+    """Strobe targeted fixtures at the given rate.
+
+    Args:
+        rate: 0–20 Hz, or "off"/"0" to stop. Above 20Hz clamps to 20Hz.
+        intensity: Optional brightness level (0-255 / "%" / "+/-") applied
+                   to the fixture's dimmer / brightness-tracking channels
+                   so the strobe is visible. If None, brightness is left
+                   alone (operator wants to strobe at whatever's currently lit).
+        target_groups: Optional group names to limit the strobe. Omit to
+                       target every fixture in the workspace.
+
+    Fixtures without a dedicated strobe channel are skipped and listed in
+    the response. Use blackout() and adjust_color() / batch_action for
+    fixtures that need brightness-cycled "strobe" effects instead.
+    """
+    fixtures = _target_fixtures(target_groups)
+    if not fixtures:
+        return {
+            "success": False,
+            "output": "",
+            "error": "No fixtures matched the request",
+        }
+
+    dmx_value = _strobe_dmx_value(rate)
+    rest = (dmx_value == 0)
+
+    updates = []
+    per_fixture = []
+
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        strobe_offset = roles.get("strobe")
+
+        if not isinstance(strobe_offset, int):
+            per_fixture.append({
+                "id": fixture["id"],
+                "name": fixture.get("name", ""),
+                "status": "skipped",
+                "reason": "no dedicated strobe channel — use batch_action with blackout/adjust_color for brightness-cycled effects",
+            })
+            continue
+
+        strobe_abs = _absolute_channel(fixture, strobe_offset)
+        updates.append((strobe_abs, dmx_value))
+
+        applied = {"strobe": dmx_value}
+
+        # Drive dimmer to make the strobe visible (only if caller specified
+        # an intensity and we're not resting)
+        if intensity is not None and not rest:
+            parsed_intensity = _parse_level(intensity, default=255)
+            if "dimmer" in roles and isinstance(roles["dimmer"], int):
+                dim_abs = _absolute_channel(fixture, roles["dimmer"])
+                updates.append((dim_abs, parsed_intensity))
+                applied["dimmer"] = parsed_intensity
+            elif "brightness" in roles and roles["brightness"]:
+                for offset in roles["brightness"]:
+                    abs_ch = _absolute_channel(fixture, offset)
+                    updates.append((abs_ch, parsed_intensity))
+                applied[f"brightness({len(roles['brightness'])} channels)"] = parsed_intensity
+
+        per_fixture.append({
+            "id": fixture["id"],
+            "name": fixture.get("name", ""),
+            "status": "applied",
+            "applied": applied,
+        })
+
+    skipped = sum(1 for f in per_fixture if f["status"] == "skipped")
+    applied_count = sum(1 for f in per_fixture if f["status"] == "applied")
+
+    if applied_count == 0:
+        return {
+            "success": False,
+            "output": "",
+            "error": "No fixtures with a strobe channel were targeted",
+            "fixtures": per_fixture,
+        }
+
+    # Reconstruct a human-readable rate string for the response
+    if rest:
+        rate_label = "off"
+    else:
+        # Reverse-engineer the rate from the DMX value (after clamping) for
+        # display — avoids re-parsing a potentially string `rate`
+        span = _STROBE_DMX_MAX - _STROBE_DMX_REST_FLOOR
+        approx_hz = ((dmx_value - _STROBE_DMX_REST_FLOOR) / span) * _STROBE_MAX_HZ
+        rate_label = f"~{approx_hz:.1f}Hz"
+
+    success = set_channel_values(updates)
+    return {
+        "success": success,
+        "output": (
+            f"Strobe {'stopped' if rest else 'at ' + rate_label} "
+            f"on {applied_count} fixture(s), {skipped} skipped"
+        ),
+        "error": "" if success else "Failed to apply strobe via WebSocket",
+        "rate": rate_label,
+        "dmx_value": dmx_value,
+        "fixtures": per_fixture,
+    }
+
+
 async def _fade_brightness_async(channels, target_value, seconds, steps):
     """Run a multi-step fade over the persistent QLC+ WebSocket."""
     ws = await _ensure_qlc_ws()
@@ -1625,6 +1788,13 @@ def execute_lighting_action(action_data, target_groups=None):
         # ignored (the assignments dict's keys are the targets).
         assignments = params.get("assignments")
         return apply_palette_live(assignments)
+
+    elif action == "strobe":
+        rate = params.get("rate")
+        if rate is None:
+            return {"success": False, "output": "", "error": "Missing required parameter 'rate'"}
+        intensity = params.get("intensity")
+        return apply_strobe_live(rate, intensity, target_groups=target_groups)
 
     elif action == "fade":
         duration = params.get("duration", "3")
