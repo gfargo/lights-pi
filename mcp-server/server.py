@@ -185,6 +185,42 @@ def adjust_color(
 
 
 @mcp.tool()
+def palette(assignments: dict) -> dict:
+    """Assign different colors / Kelvin values to different groups in one
+    round trip — the "set the room" primitive.
+
+    Each entry in `assignments` maps a group name to a value. Value shapes:
+
+      "warm"                                  → color preset name
+      3200                                    → Kelvin number
+      "5600K"                                 → Kelvin (with "K" suffix)
+      {"color": "warm", "intensity": "70%"}   → explicit color
+      {"kelvin": 3200, "intensity": "50%"}    → explicit Kelvin
+
+    Numbers in the 1000–40000 range are interpreted as Kelvin; everything
+    else as a color preset name (red, green, blue, warm, cool, amber,
+    magenta, cyan, white, …).
+
+    Use this for moves like three-point lighting:
+        palette({
+            "key-lights":  3200,         # tungsten
+            "fill-lights": 5600,         # daylight
+            "back-lights": "magenta",    # color accent
+        })
+
+    Returns per-group results so the agent can see what was applied to
+    each group and detect partial failures.
+
+    Args:
+        assignments: dict mapping group name → value. Non-empty.
+    """
+    return _post("/api/action", {
+        "action": "palette",
+        "parameters": {"assignments": assignments},
+    })
+
+
+@mcp.tool()
 def color_temperature(
     kelvin: float,
     intensity: str | int | None = None,

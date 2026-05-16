@@ -68,6 +68,7 @@ All tools are defined in [mcp-server/server.py](../mcp-server/server.py).
 | `adjust_brightness` | Set/nudge master/dimmer (`0-255`, `'75%'`, `'+30'`, `'-20'`)  |
 | `adjust_color`      | Set a color preset (red, warm, cool, …) with optional intensity |
 | `color_temperature` | Set Kelvin white balance (1800K–10000K), role-aware per fixture type |
+| `palette`           | Assign different colors / Kelvin values to different groups in one call |
 | `fade`              | Fade brightness to target over N seconds                      |
 | `generate_scene`    | AI-synthesize a scene from a description and apply live       |
 | `set_channel`       | Direct DMX channel write (power-user escape hatch)            |
