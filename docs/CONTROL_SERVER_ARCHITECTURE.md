@@ -168,6 +168,14 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | DELETE | `/api/chases/<id>` | Remove a chase from the workspace |
 | POST | `/api/chases/<id>/start` | Start chase playback (QLC+API setFunctionStatus 1) |
 | POST | `/api/chases/<id>/stop` | Stop chase playback (QLC+API setFunctionStatus 0) |
+| GET | `/api/cue_lists` | List saved cue lists + runtime status |
+| GET | `/api/cue_lists/active` | Currently-playing cue lists, with elapsed time |
+| GET | `/api/cue_lists/<id>` | Describe a cue list (full cue array, timing) |
+| POST | `/api/cue_lists` | Create a new cue list |
+| PATCH | `/api/cue_lists/<id>` | Rename / re-describe / replace cues array |
+| DELETE | `/api/cue_lists/<id>` | Remove (stops playback first if running) |
+| POST | `/api/cue_lists/<id>/go` | GO — start cue-list playback from the top |
+| POST | `/api/cue_lists/<id>/stop` | Halt running cue list |
 
 ### `/api/action` vs `/api/command`
 
