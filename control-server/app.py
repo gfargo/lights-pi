@@ -1856,6 +1856,85 @@ def index():
     return render_template("index.html")
 
 
+# ----------------------------------------------------------------------------
+# PWA support — manifest + service worker so the web UI installs as a phone app
+# ----------------------------------------------------------------------------
+
+@app.route("/manifest.json", methods=["GET"])
+def pwa_manifest():
+    """Web App Manifest — lets the browser offer "Add to Home Screen"."""
+    manifest = {
+        "name": "Lighting Control",
+        "short_name": "Lights",
+        "description": "Drive a QLC+ DMX rig from the browser.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": "#0a0a0a",
+        "theme_color": "#0a0a0a",
+        "categories": ["productivity", "utilities"],
+        # Pure-SVG icon embedded inline. Avoids needing static-file plumbing
+        # for the install flow; the browser will use it at any size.
+        "icons": [
+            {
+                "src": "/icon.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any maskable",
+            }
+        ],
+    }
+    response = jsonify(manifest)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
+@app.route("/icon.svg", methods=["GET"])
+def pwa_icon():
+    """SVG icon used by the manifest. Matches the in-app logo (sun with rays)."""
+    svg = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">'
+        '<rect width="192" height="192" fill="#0a0a0a"/>'
+        '<g transform="translate(96 96)">'
+          '<circle r="64" fill="none" stroke="#444" stroke-width="3"/>'
+          '<circle r="20" fill="#f0f0f0" opacity="0.9"/>'
+          '<g stroke="#555" stroke-width="4" stroke-linecap="round">'
+            '<line x1="0" y1="-72" x2="0" y2="-48"/>'
+            '<line x1="0" y1="48" x2="0" y2="72"/>'
+            '<line x1="-72" y1="0" x2="-48" y2="0"/>'
+            '<line x1="48" y1="0" x2="72" y2="0"/>'
+            '<line x1="-50.9" y1="-50.9" x2="-33.9" y2="-33.9"/>'
+            '<line x1="33.9" y1="33.9" x2="50.9" y2="50.9"/>'
+            '<line x1="33.9" y1="-33.9" x2="50.9" y2="-50.9"/>'
+            '<line x1="-50.9" y1="33.9" x2="-33.9" y2="50.9"/>'
+          '</g>'
+        '</g></svg>'
+    )
+    response = app.response_class(svg, mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@app.route("/sw.js", methods=["GET"])
+def pwa_service_worker():
+    """Tiny service worker — installability requirement on Chrome/Android.
+
+    Doesn't do offline caching (would conflict with live DMX state).
+    Network-first for everything; the only purpose is the install prompt.
+    """
+    js = (
+        "// Lights Pi service worker — install only, no caching\n"
+        "self.addEventListener('install', e => self.skipWaiting());\n"
+        "self.addEventListener('activate', e => self.clients.claim());\n"
+        "self.addEventListener('fetch', e => { /* let the network handle it */ });\n"
+    )
+    response = app.response_class(js, mimetype="application/javascript")
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
 @app.route("/api/command", methods=["POST"])
 def handle_command():
     """Handle natural language command"""
