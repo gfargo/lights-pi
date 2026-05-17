@@ -1008,6 +1008,26 @@ See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete docu
 
 ---
 
+## 💬 Agentic Chat (v2.11+)
+
+The web UI's **Chat** tab is a full Claude/ChatGPT-style conversation where
+the LLM has access to ~39 of the MCP tools and can plan multi-step lighting
+operations autonomously:
+
+> *"Set up three-point lighting with tungsten key, daylight fill, magenta back, and save it as 'photoshoot'."*
+>
+> The agent calls `list_groups` (sees no groups yet) → `list_fixtures` → `create_group(key-lights)` → `create_group(fill-lights)` → `create_group(back-lights)` → `palette({...})` → `snapshot_scene('photoshoot')` → reports back.
+
+Implementation lives server-side in `POST /api/chat` — runs an Anthropic
+`tool_use` or OpenAI function-calling loop, dispatches tools via the same
+endpoints the MCP server uses. Stateless; the client owns the conversation
+history (persisted in localStorage).
+
+Set `AI_PROVIDER=anthropic` or `openai` in `.env` plus your `AI_API_KEY`.
+Ollama tool-calling isn't supported yet — it varies too much by model.
+
+---
+
 ## 🎙️ Natural Language Control (Beta)
 
 Control your lights in real-time using natural language commands via a web interface.

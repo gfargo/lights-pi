@@ -651,6 +651,130 @@
             display: flex; gap: 0.3rem; margin-top: 0.4rem;
             padding-top: 0.4rem; border-top: 1px solid #1a1a1a;
         }
+
+        /* ══════════════════════════════════════════════════════════════
+           v2.11 agentic chat — message list, tool calls, composer
+           ══════════════════════════════════════════════════════════════ */
+        .chat-pane {
+            background: #0a0a0a;
+            border: 1px solid #1f1f1f;
+            min-height: 380px;
+            max-height: calc(100vh - 360px);
+            overflow-y: auto;
+            padding: 1rem;
+        }
+        .chat-welcome {
+            text-align: center;
+            padding: 2rem 1rem 1.5rem;
+            color: #888;
+        }
+        .chat-welcome-title {
+            font-size: 1rem; font-weight: 600;
+            color: #f0f0f0; letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+        .chat-welcome-sub {
+            font-size: 0.85rem; line-height: 1.5;
+            max-width: 480px; margin: 0 auto 1.25rem;
+            color: #888;
+        }
+        .chat-suggestions {
+            display: flex; flex-wrap: wrap; gap: 0.5rem;
+            justify-content: center; max-width: 540px; margin: 0 auto;
+        }
+        .chat-suggest {
+            background: #161616; border: 1px solid #2a2a2a;
+            color: #ccc; padding: 0.5rem 0.85rem;
+            font-size: 0.78rem; cursor: pointer;
+            transition: all 0.15s; font-family: inherit;
+        }
+        .chat-suggest:hover {
+            background: #1f1f1f; color: #fff; border-color: #444;
+        }
+        .chat-messages {
+            display: flex; flex-direction: column; gap: 0.85rem;
+        }
+        .chat-msg {
+            max-width: 92%;
+            padding: 0.7rem 0.95rem;
+            font-size: 0.9rem;
+            line-height: 1.45;
+        }
+        .chat-msg.user {
+            align-self: flex-end;
+            background: #1f1f1f; border: 1px solid #2a2a2a;
+            color: #f0f0f0;
+            border-bottom-right-radius: 0;
+        }
+        .chat-msg.assistant {
+            align-self: flex-start;
+            background: #0f1411; border: 1px solid #1a2a20;
+            color: #e6f0ea;
+            border-bottom-left-radius: 0;
+        }
+        .chat-msg.pending {
+            color: #666; font-style: italic;
+        }
+        .chat-msg.pending::after {
+            content: '·'; animation: chat-dots 1.4s steps(4) infinite;
+        }
+        @keyframes chat-dots {
+            0%   { content: '·'; }
+            33%  { content: '··'; }
+            66%  { content: '···'; }
+        }
+        .chat-tool-block {
+            align-self: flex-start;
+            background: #0f0f0f; border: 1px solid #1f1f1f;
+            border-left: 2px solid #facc15;
+            padding: 0.45rem 0.7rem; max-width: 92%;
+            font-family: ui-monospace, "SF Mono", monospace;
+            font-size: 0.75rem; color: #ccc;
+        }
+        .chat-tool-summary {
+            display: flex; align-items: center; gap: 0.5rem;
+            cursor: pointer; user-select: none;
+        }
+        .chat-tool-summary .tool-chev {
+            color: #555; font-size: 0.6rem; transition: transform 0.2s;
+        }
+        .chat-tool-block.open .tool-chev { transform: rotate(90deg); }
+        .chat-tool-name {
+            color: #facc15; font-weight: 600;
+        }
+        .chat-tool-input { color: #888; font-size: 0.7rem; }
+        .chat-tool-detail {
+            display: none; margin-top: 0.45rem; padding-top: 0.45rem;
+            border-top: 1px solid #1f1f1f;
+            white-space: pre-wrap; word-break: break-word;
+            font-size: 0.7rem; color: #999;
+            max-height: 220px; overflow-y: auto;
+        }
+        .chat-tool-block.open .chat-tool-detail { display: block; }
+        .chat-tool-block.error { border-left-color: #f87171; }
+        .chat-tool-block.error .chat-tool-name { color: #f87171; }
+        .chat-error {
+            align-self: stretch; background: #2a0a0a; border: 1px solid #5a1818;
+            color: #f87171; padding: 0.6rem 0.85rem; font-size: 0.85rem;
+        }
+        .chat-composer {
+            margin-top: 0.75rem;
+            border: 1px solid #2a2a2a; background: #0f0f0f;
+            padding: 0.5rem;
+        }
+        .chat-composer textarea {
+            width: 100%; background: transparent; border: none;
+            color: #f0f0f0; font-family: inherit; font-size: 0.9rem;
+            resize: vertical; padding: 0.4rem;
+            outline: none;
+        }
+        .chat-actions {
+            display: flex; justify-content: flex-end; gap: 0.5rem;
+            padding: 0.3rem 0.4rem 0;
+        }
+        #chatSendBtn:disabled {
+            background: #2a2a2a; color: #666; border-color: #2a2a2a; cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -736,9 +860,10 @@
             </div>
         </div>
 
-        <!-- Tabs: full surface — AI chat, scenes, console, cue lists, chases, quick tools, diagnostics -->
+        <!-- Tabs: full surface — chat-first, then control/build/inspect -->
         <div class="tabs" role="tablist">
-            <button class="tab active" onclick="switchTab('ai', this)" role="tab" aria-selected="true">AI Control</button>
+            <button class="tab active" onclick="switchTab('chat', this)" role="tab" aria-selected="true">Chat</button>
+            <button class="tab" onclick="switchTab('ai', this)" role="tab" aria-selected="false">Quick Commands</button>
             <button class="tab" onclick="switchTab('console', this)" role="tab" aria-selected="false">Virtual Console</button>
             <button class="tab" onclick="switchTab('cuelists', this)" role="tab" aria-selected="false">Cue Lists</button>
             <button class="tab" onclick="switchTab('chases', this)" role="tab" aria-selected="false">Chases</button>
@@ -746,7 +871,44 @@
             <button class="tab" onclick="switchTab('diag', this)" role="tab" aria-selected="false">Diagnostics</button>
         </div>
 
-        <div id="ai-tab" class="tab-content active">
+        <!-- ══════════════════════════════════════
+             Chat tab — agentic conversation (v2.11)
+             Full conversational agent with access to all 48 MCP tools
+             ══════════════════════════════════════ -->
+        <div id="chat-tab" class="tab-content active">
+            <div class="chat-pane" id="chatPane">
+                <div class="chat-welcome" id="chatWelcome">
+                    <div class="chat-welcome-title">Talk to your rig</div>
+                    <div class="chat-welcome-sub">
+                        Try natural language. The agent can list fixtures, build groups, create
+                        chases, run cue lists, and dispatch any of the 48 tools — it'll plan multi-step
+                        operations and report back.
+                    </div>
+                    <div class="chat-suggestions">
+                        <button class="chat-suggest" onclick="sendChatMessage('Show me what fixtures and groups are configured.')">Show me my rig</button>
+                        <button class="chat-suggest" onclick="sendChatMessage('Set up three-point lighting with tungsten key, daylight fill, and magenta back.')">Three-point lighting</button>
+                        <button class="chat-suggest" onclick="sendChatMessage('Build me a 30-second sunset cue list and save it.')">Sunset cue list</button>
+                        <button class="chat-suggest" onclick="sendChatMessage('Why are the lights not responding? Diagnose.')">Diagnose the rig</button>
+                    </div>
+                </div>
+                <div class="chat-messages" id="chatMessages"></div>
+            </div>
+
+            <div class="chat-composer">
+                <textarea
+                    id="chatInput"
+                    placeholder="Ask the agent — Enter to send, Shift+Enter for new line"
+                    rows="2"
+                    aria-label="Chat message"
+                ></textarea>
+                <div class="chat-actions">
+                    <button class="btn-ghost btn-tiny" onclick="clearChat()" title="Clear conversation">Clear</button>
+                    <button class="btn-primary" id="chatSendBtn" onclick="sendChatMessage()">Send</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="ai-tab" class="tab-content">
             <div class="input-group">
                 <input type="text" id="commandInput" placeholder="Try: 'make it warmer' or 'party mode'" autocomplete="off" aria-label="Lighting command">
                 <button id="voiceBtn" title="Voice input" aria-label="Voice input">🎤</button>
@@ -2473,6 +2635,260 @@
             await _origLoadGroups();
             populateToolsGroupSelects();
         };
+
+        /* ══════════════════════════════════════════════════════════════
+           v2.11 agentic chat
+           ══════════════════════════════════════════════════════════════ */
+        const CHAT_HISTORY_KEY = 'lp_chat_history_v1';
+        let chatHistory = loadChatHistory();
+        let chatBusy = false;
+
+        function loadChatHistory() {
+            try {
+                const raw = localStorage.getItem(CHAT_HISTORY_KEY);
+                return raw ? JSON.parse(raw) : [];
+            } catch (e) { return []; }
+        }
+        function persistChatHistory() {
+            try {
+                localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(chatHistory));
+            } catch (e) { /* localStorage may be full or disabled */ }
+        }
+
+        function clearChat() {
+            if (chatHistory.length && !confirm('Clear the entire conversation?')) return;
+            chatHistory = [];
+            persistChatHistory();
+            renderChatHistory();
+        }
+
+        /* Render the persisted history when the chat tab is first shown. */
+        function renderChatHistory() {
+            const container = document.getElementById('chatMessages');
+            const welcome = document.getElementById('chatWelcome');
+            container.innerHTML = '';
+            if (!chatHistory.length) {
+                welcome.style.display = 'block';
+                return;
+            }
+            welcome.style.display = 'none';
+            for (const msg of chatHistory) {
+                appendChatMessage(msg, /* persist */ false);
+            }
+            // Scroll to bottom
+            const pane = document.getElementById('chatPane');
+            pane.scrollTop = pane.scrollHeight;
+        }
+
+        /**
+         * Append a message to the visible chat. `msg` matches the server-
+         * side normalized shape: { role: 'user' | 'assistant', content: ... }
+         * where content can be a plain string OR an array of Anthropic-style
+         * blocks (text / tool_use / tool_result).
+         */
+        function appendChatMessage(msg, persist = true) {
+            const container = document.getElementById('chatMessages');
+            const welcome = document.getElementById('chatWelcome');
+            welcome.style.display = 'none';
+
+            if (msg.role === 'user') {
+                // User content is usually a string. If it's an array of tool_results
+                // from a previous turn, skip rendering (these were already shown
+                // inline next to the assistant's tool_use blocks).
+                if (typeof msg.content === 'string') {
+                    const el = document.createElement('div');
+                    el.className = 'chat-msg user';
+                    el.textContent = msg.content;
+                    container.appendChild(el);
+                }
+                // Array tool_result content: don't show as a user bubble — the
+                // assistant's tool_use blocks already display their outputs.
+            } else if (msg.role === 'assistant') {
+                // Assistant content may be a string OR array of {text, tool_use}
+                const blocks = Array.isArray(msg.content)
+                    ? msg.content
+                    : [{ type: 'text', text: msg.content }];
+                for (const block of blocks) {
+                    if (block.type === 'text' && block.text) {
+                        const el = document.createElement('div');
+                        el.className = 'chat-msg assistant';
+                        el.textContent = block.text;
+                        container.appendChild(el);
+                    } else if (block.type === 'tool_use') {
+                        // Look up the matching tool_result from the conversation
+                        const toolResult = findToolResult(block.id);
+                        const isError = toolResult && (
+                            (typeof toolResult === 'object' && toolResult.error) ||
+                            (typeof toolResult === 'string' && /^.*error/i.test(toolResult))
+                        );
+                        const el = document.createElement('div');
+                        el.className = 'chat-tool-block' + (isError ? ' error' : '');
+                        const inputSummary = formatToolInputSummary(block.input);
+                        const resultText = toolResult
+                            ? (typeof toolResult === 'object' ? JSON.stringify(toolResult, null, 2) : String(toolResult))
+                            : '(pending)';
+                        el.innerHTML = `
+                            <div class="chat-tool-summary" onclick="this.parentElement.classList.toggle('open')">
+                                <span class="tool-chev">▶</span>
+                                <span class="chat-tool-name">${escHtml(block.name)}</span>
+                                <span class="chat-tool-input">${escHtml(inputSummary)}</span>
+                            </div>
+                            <div class="chat-tool-detail">${escHtml(resultText)}</div>`;
+                        container.appendChild(el);
+                    }
+                }
+            }
+
+            if (persist) {
+                chatHistory.push(msg);
+                persistChatHistory();
+            }
+
+            const pane = document.getElementById('chatPane');
+            pane.scrollTop = pane.scrollHeight;
+        }
+
+        function findToolResult(toolUseId) {
+            // Tool results live in the NEXT user message after the assistant
+            // turn that contained the tool_use. Walk forward from the start of
+            // history looking for a {type: 'tool_result', tool_use_id} block.
+            for (const msg of chatHistory) {
+                if (msg.role === 'user' && Array.isArray(msg.content)) {
+                    for (const block of msg.content) {
+                        if (block.type === 'tool_result' && block.tool_use_id === toolUseId) {
+                            // Parse as JSON when possible
+                            try { return JSON.parse(block.content); }
+                            catch (e) { return block.content; }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        function formatToolInputSummary(input) {
+            if (!input || typeof input !== 'object') return '';
+            const entries = Object.entries(input);
+            if (!entries.length) return '()';
+            // Keep it compact for the inline summary
+            return '(' + entries.map(([k, v]) => {
+                const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
+                const truncated = val.length > 30 ? val.slice(0, 27) + '…' : val;
+                return `${k}: ${truncated}`;
+            }).join(', ') + ')';
+        }
+
+        async function sendChatMessage(prefilledText) {
+            if (chatBusy) return;
+            const input = document.getElementById('chatInput');
+            const text = (prefilledText || input.value).trim();
+            if (!text) return;
+
+            const sendBtn = document.getElementById('chatSendBtn');
+            chatBusy = true;
+            sendBtn.disabled = true;
+            input.value = '';
+            input.style.height = '';
+
+            // Echo the user's message immediately
+            appendChatMessage({ role: 'user', content: text });
+
+            // Add a transient "thinking" indicator
+            const pendingEl = document.createElement('div');
+            pendingEl.className = 'chat-msg assistant pending';
+            pendingEl.id = 'chat-pending-' + Date.now();
+            pendingEl.textContent = 'Thinking';
+            document.getElementById('chatMessages').appendChild(pendingEl);
+            document.getElementById('chatPane').scrollTop = 1e9;
+
+            try {
+                const r = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: chatHistory }),
+                });
+                const data = await r.json();
+
+                pendingEl.remove();
+
+                if (!data.success) {
+                    const err = document.createElement('div');
+                    err.className = 'chat-error';
+                    err.textContent = data.error || 'Chat failed (unknown reason)';
+                    document.getElementById('chatMessages').appendChild(err);
+                    // Roll the user message back so they can retry
+                    chatHistory.pop();
+                    persistChatHistory();
+                    return;
+                }
+
+                // The server returns the FULL updated history (including the
+                // user message we already echoed). Replace our local copy with
+                // the server's authoritative version, then re-render any new
+                // assistant + tool turns.
+                const oldLen = chatHistory.length;
+                chatHistory = data.messages || chatHistory;
+                persistChatHistory();
+
+                // Render the new messages (assistant + any tool_result turns)
+                for (let i = oldLen; i < chatHistory.length; i++) {
+                    appendChatMessage(chatHistory[i], /* persist */ false);
+                }
+
+                // Light up any controls that may have changed (groups, scenes,
+                // chases, cue lists may have been created/deleted by the agent)
+                if (data.tool_calls && data.tool_calls.length) {
+                    const touched = new Set(data.tool_calls.map(t => t.name));
+                    if (touched.has('create_group') || touched.has('delete_group') ||
+                        touched.has('update_group') || touched.has('add_fixtures_to_group') ||
+                        touched.has('remove_fixtures_from_group')) {
+                        loadGroups();
+                    }
+                    if (touched.has('snapshot_scene') || touched.has('delete_scene') ||
+                        touched.has('rename_scene') || touched.has('duplicate_scene') ||
+                        touched.has('generate_scene')) {
+                        loadScenes();
+                    }
+                    if (touched.has('create_cue_list') || touched.has('go_cue_list') ||
+                        touched.has('stop_cue_list') || touched.has('delete_cue_list')) {
+                        if (currentTab === 'cuelists') loadCueLists();
+                    }
+                    if (touched.has('create_chase') || touched.has('delete_chase')) {
+                        if (currentTab === 'chases') loadChases();
+                    }
+                }
+            } catch (e) {
+                pendingEl.remove();
+                const err = document.createElement('div');
+                err.className = 'chat-error';
+                err.textContent = 'Network error: ' + e.message;
+                document.getElementById('chatMessages').appendChild(err);
+                chatHistory.pop();
+                persistChatHistory();
+            } finally {
+                chatBusy = false;
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        /* Hook into tab switching so the chat history renders on first open */
+        const _prevSwitchTab = switchTab;
+        switchTab = function(tabName, btn) {
+            _prevSwitchTab(tabName, btn);
+            if (tabName === 'chat') renderChatHistory();
+        };
+
+        /* Wire up textarea keybindings: Enter to send, Shift+Enter for newline */
+        document.getElementById('chatInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+
+        /* Auto-render history on initial page load (chat is the default tab) */
+        renderChatHistory();
     </script>
 </body>
 </html>

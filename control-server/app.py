@@ -4508,6 +4508,938 @@ def stop_cue_list(cl_id_or_name):
     })
 
 
+# =============================================================================
+# Agentic chat (issue: agent-driven web UI experience)
+# =============================================================================
+#
+# Replaces the v2.2-era one-shot "natural language → JSON action" pattern with
+# a proper conversational agent that has access to the full tool surface.
+# Uses the LLM provider's native tool-calling (Anthropic tool_use / OpenAI
+# function calling), runs a multi-step tool dispatch loop server-side, and
+# returns the final assistant message + a trace of which tools were called.
+#
+# Why server-side: the browser shouldn't hold the provider API key, and the
+# tool execution needs access to our internal helpers (workspace XML write,
+# QLC+ WebSocket, persistent storage).
+#
+# Stateless: the client sends the full conversation history on each turn,
+# the server processes one turn and returns the updated history. Same model
+# as ChatGPT / Claude.ai SPAs.
+
+
+# ----------------------------------------------------------------------------
+# Tool registry — single source of truth, consumed by both Anthropic + OpenAI
+# ----------------------------------------------------------------------------
+#
+# Each tool has:
+#   • name        — what the LLM calls it
+#   • description — what shows in the LLM's tool catalog
+#   • input_schema — JSON schema for the arguments (Anthropic format)
+#   • handler     — (args) → dict; tool execution
+#
+# Handlers dispatch via the Flask test client where there's existing endpoint
+# logic to reuse (POST/PATCH/DELETE paths with validation), or call helpers
+# directly for read-only operations.
+
+def _call_self(method: str, path: str, body: dict | None = None) -> dict:
+    """Dispatch into our own endpoints via Flask's test client.
+    Lets chat tool handlers reuse endpoint validation / response shape
+    without re-implementing each one. Negligible perf cost (in-process)."""
+    with app.test_client() as client:
+        if method == "GET":
+            r = client.get(path)
+        elif method == "POST":
+            r = client.post(path, json=body or {})
+        elif method == "PATCH":
+            r = client.patch(path, json=body or {})
+        elif method == "DELETE":
+            r = client.delete(path, json=body or {})
+        else:
+            return {"success": False, "error": f"Unknown method: {method}"}
+        try:
+            return r.get_json() or {}
+        except Exception:
+            return {"success": r.status_code < 400, "status_code": r.status_code}
+
+
+def _build_chat_tools() -> list[dict]:
+    """Build the tool registry. Mirrors the MCP catalog so the agentic chat
+    feels identical to using Claude Desktop against the MCP server."""
+
+    GROUPS_OPTIONAL = {"type": "array", "items": {"type": "string"}, "description": "Optional list of group names to target. Omit for all fixtures."}
+
+    return [
+        # ── Discovery ─────────────────────────────────────────────────────
+        {
+            "name": "list_fixtures",
+            "description": "List every DMX fixture in the workspace with channel metadata.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/fixtures"),
+        },
+        {
+            "name": "list_groups",
+            "description": "List named fixture groups and their members.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/groups"),
+        },
+        {
+            "name": "list_scenes",
+            "description": "List saved scene functions in the workspace.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/scenes"),
+        },
+        {
+            "name": "list_templates",
+            "description": "List built-in scene templates (party, ambient, youtube-studio, etc).",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/templates"),
+        },
+        {
+            "name": "list_chases",
+            "description": "List QLC+ chases (ordered scene sequences) in the workspace.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/chases"),
+        },
+        {
+            "name": "list_cue_lists",
+            "description": "List saved cue lists (audio-synced shows) with runtime status.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/cue_lists"),
+        },
+        {
+            "name": "get_active_cue_lists",
+            "description": "List cue lists currently playing with elapsed time and cues fired.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/cue_lists/active"),
+        },
+        {
+            "name": "get_channel_values",
+            "description": "Return the current live DMX channel values from QLC+ as a {channel: value} map.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/channel_values"),
+        },
+        {
+            "name": "get_status",
+            "description": "System health: AI provider, QLC+ service, workspace, persistent WebSocket.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/status"),
+        },
+
+        # ── Quick actions ────────────────────────────────────────────────
+        {
+            "name": "activate_scene",
+            "description": "Apply an existing saved scene immediately. Accepts scene name or numeric ID.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"scene": {"type": "string"}},
+                "required": ["scene"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/scenes/{a['scene']}/activate"),
+        },
+        {
+            "name": "apply_template",
+            "description": "Apply a built-in template (party, ambient, youtube-studio, spotlight, work-light, warm-white, cool-white).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "template": {"type": "string"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["template"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "apply_template",
+                "parameters": {"template": a["template"]},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "adjust_brightness",
+            "description": "Set or nudge overall brightness. Value: '0-255', '75%', '+30', '-20'.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["value"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "adjust_brightness",
+                "parameters": {"value": a["value"]},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "adjust_color",
+            "description": "Set a color preset (red, green, blue, warm, cool, amber, magenta, cyan, white).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "color": {"type": "string"},
+                    "intensity": {"type": "string", "description": "Optional 0-255, '%', or '+/-'"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["color"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "adjust_color",
+                "parameters": {"color": a["color"], "intensity": a.get("intensity", "255")},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "color_temperature",
+            "description": "Set Kelvin white balance (1800K candle → 10000K overcast). Role-aware per fixture.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "kelvin": {"type": "number", "minimum": 1800, "maximum": 10000},
+                    "intensity": {"type": "string", "description": "Optional 0-255, '%', or '+/-'"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["kelvin"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "color_temperature",
+                "parameters": {"kelvin": a["kelvin"], "intensity": a.get("intensity")},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "palette",
+            "description": "Assign different colors / Kelvin values to different groups in one call. Values: color preset name (\"warm\"), Kelvin number (3200), or dict with intensity.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "assignments": {
+                        "type": "object",
+                        "description": "Map of group name → value (color preset, Kelvin number, or {color/kelvin, intensity})",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["assignments"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "palette",
+                "parameters": {"assignments": a["assignments"]},
+            }),
+        },
+        {
+            "name": "strobe",
+            "description": "Strobe fixtures at Hz rate (0-20Hz, or 'off' to stop).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "rate": {"oneOf": [{"type": "number"}, {"type": "string"}]},
+                    "intensity": {"type": "string"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["rate"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "strobe",
+                "parameters": {"rate": a["rate"], "intensity": a.get("intensity")},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "fade",
+            "description": "Fade brightness to target over duration seconds.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "0-255 or '%'"},
+                    "duration": {"type": "string", "description": "Seconds"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["target", "duration"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "fade",
+                "parameters": {"target": a["target"], "duration": a["duration"]},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "blackout",
+            "description": "Instantly zero every channel on targeted fixtures (kill-all, clears strobe/macro too).",
+            "input_schema": {
+                "type": "object",
+                "properties": {"groups": GROUPS_OPTIONAL},
+                "required": [],
+            },
+            "handler": lambda a: _call_self("POST", "/api/blackout", {"groups": a.get("groups")}),
+        },
+        {
+            "name": "generate_scene",
+            "description": "AI-synthesize a new scene from a description and apply it live. Result includes scene_xml — pass to save_scene to persist.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": ["description"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/action", {
+                "action": "generate_scene",
+                "parameters": {"description": a["description"]},
+                "groups": a.get("groups"),
+            }),
+        },
+        {
+            "name": "snapshot_scene",
+            "description": "Save the current live channel state as a new scene.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "path": {"type": "string", "description": "Optional folder, defaults to 'AI Generated'"},
+                },
+                "required": ["name"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/scenes/snapshot", {
+                "name": a["name"], "path": a.get("path", "AI Generated"),
+            }),
+        },
+
+        # ── Scene management ─────────────────────────────────────────────
+        {
+            "name": "describe_scene",
+            "description": "Return per-fixture channel breakdown of a saved scene.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"scene": {"type": "string"}},
+                "required": ["scene"],
+            },
+            "handler": lambda a: _call_self("GET", f"/api/scenes/{a['scene']}"),
+        },
+        {
+            "name": "delete_scene",
+            "description": "Delete a saved scene from the workspace.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"scene": {"type": "string"}},
+                "required": ["scene"],
+            },
+            "handler": lambda a: _call_self("DELETE", f"/api/scenes/{a['scene']}"),
+        },
+        {
+            "name": "rename_scene",
+            "description": "Rename a scene (and/or move its folder path).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "scene": {"type": "string"},
+                    "new_name": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["scene", "new_name"],
+            },
+            "handler": lambda a: _call_self("PATCH", f"/api/scenes/{a['scene']}", {
+                "name": a["new_name"], **({"path": a["path"]} if "path" in a else {}),
+            }),
+        },
+        {
+            "name": "duplicate_scene",
+            "description": "Copy a scene under a new name (basis for variations).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "scene": {"type": "string"},
+                    "new_name": {"type": "string"},
+                },
+                "required": ["scene", "new_name"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/scenes/{a['scene']}/duplicate", {
+                "name": a["new_name"],
+            }),
+        },
+
+        # ── Group management ─────────────────────────────────────────────
+        {
+            "name": "create_group",
+            "description": "Create a fixture group from a name + list of fixture IDs.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "fixtures": {"type": "array", "items": {"type": "integer"}},
+                    "description": {"type": "string"},
+                },
+                "required": ["name", "fixtures"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/groups", {
+                "name": a["name"],
+                "fixtures": a["fixtures"],
+                "description": a.get("description", ""),
+            }),
+        },
+        {
+            "name": "delete_group",
+            "description": "Remove a fixture group.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+            "handler": lambda a: _call_self("DELETE", f"/api/groups/{a['name']}"),
+        },
+        {
+            "name": "update_group",
+            "description": "Rename a group, change description, or replace its fixture list.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "new_name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "fixtures": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["name"],
+            },
+            "handler": lambda a: _call_self("PATCH", f"/api/groups/{a['name']}", {
+                **({"name": a["new_name"]} if "new_name" in a else {}),
+                **({"description": a["description"]} if "description" in a else {}),
+                **({"fixtures": a["fixtures"]} if "fixtures" in a else {}),
+            }),
+        },
+        {
+            "name": "add_fixtures_to_group",
+            "description": "Append fixture IDs to an existing group.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "fixtures": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["name", "fixtures"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/groups/{a['name']}/fixtures", {
+                "fixtures": a["fixtures"],
+            }),
+        },
+        {
+            "name": "remove_fixtures_from_group",
+            "description": "Remove fixture IDs from a group.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "fixtures": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["name", "fixtures"],
+            },
+            "handler": lambda a: _call_self("DELETE", f"/api/groups/{a['name']}/fixtures", {
+                "fixtures": a["fixtures"],
+            }),
+        },
+
+        # ── Chases ───────────────────────────────────────────────────────
+        {
+            "name": "describe_chase",
+            "description": "Full chase definition with resolved per-step scene names + timing.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"chase": {"type": "string"}},
+                "required": ["chase"],
+            },
+            "handler": lambda a: _call_self("GET", f"/api/chases/{a['chase']}"),
+        },
+        {
+            "name": "create_chase",
+            "description": "Build a QLC+ chase from a name + ordered list of scene references. Steps can be scene names, IDs, or {scene, hold_ms} dicts.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "steps": {"type": "array", "description": "Ordered scene refs (strings, ints, or dicts with per-step timing)"},
+                    "fade_in_ms": {"type": "integer"},
+                    "hold_ms": {"type": "integer"},
+                    "fade_out_ms": {"type": "integer"},
+                    "direction": {"type": "string", "enum": ["Forward", "Backward"]},
+                    "run_order": {"type": "string", "enum": ["Loop", "SingleShot", "PingPong", "Random"]},
+                },
+                "required": ["name", "steps"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/chases", a),
+        },
+        {
+            "name": "delete_chase",
+            "description": "Delete a chase from the workspace.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"chase": {"type": "string"}},
+                "required": ["chase"],
+            },
+            "handler": lambda a: _call_self("DELETE", f"/api/chases/{a['chase']}"),
+        },
+        {
+            "name": "start_chase",
+            "description": "Begin chase playback (loops forever unless run_order is SingleShot).",
+            "input_schema": {
+                "type": "object",
+                "properties": {"chase": {"type": "string"}},
+                "required": ["chase"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/chases/{a['chase']}/start"),
+        },
+        {
+            "name": "stop_chase",
+            "description": "Halt chase playback; fixtures hold their last step.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"chase": {"type": "string"}},
+                "required": ["chase"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/chases/{a['chase']}/stop"),
+        },
+
+        # ── Cue lists ────────────────────────────────────────────────────
+        {
+            "name": "describe_cue_list",
+            "description": "Full cue-list definition with per-cue timestamps and actions.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"cue_list": {"type": "string"}},
+                "required": ["cue_list"],
+            },
+            "handler": lambda a: _call_self("GET", f"/api/cue_lists/{a['cue_list']}"),
+        },
+        {
+            "name": "create_cue_list",
+            "description": "Build a cue list (audio-synced show). Each cue: {at: '0:32', scene/chase/action: ...}. Timestamps accept '0:32.500', '32s', '32500ms', or integer ms.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "cues": {"type": "array", "description": "Ordered cues — each with at/at_ms + scene/chase/action"},
+                },
+                "required": ["name", "cues"],
+            },
+            "handler": lambda a: _call_self("POST", "/api/cue_lists", a),
+        },
+        {
+            "name": "delete_cue_list",
+            "description": "Delete a cue list (stops playback first if running).",
+            "input_schema": {
+                "type": "object",
+                "properties": {"cue_list": {"type": "string"}},
+                "required": ["cue_list"],
+            },
+            "handler": lambda a: _call_self("DELETE", f"/api/cue_lists/{a['cue_list']}"),
+        },
+        {
+            "name": "go_cue_list",
+            "description": "GO — start cue list playback from the top. Sync with audio by triggering at track start.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"cue_list": {"type": "string"}},
+                "required": ["cue_list"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/cue_lists/{a['cue_list']}/go"),
+        },
+        {
+            "name": "stop_cue_list",
+            "description": "Halt a running cue list; fixtures hold last fired state.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"cue_list": {"type": "string"}},
+                "required": ["cue_list"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/cue_lists/{a['cue_list']}/stop"),
+        },
+
+        # ── Diagnostics ──────────────────────────────────────────────────
+        {
+            "name": "get_system_info",
+            "description": "Pi-level health: CPU temp, load, memory, disk, uptime, USB, service status.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("GET", "/api/diagnostics/system"),
+        },
+        {
+            "name": "test_dmx",
+            "description": "Run an R→G→B sweep to verify DMX reaches the rig. Snapshots + restores channel state.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "duration": {"type": "number", "minimum": 2, "maximum": 30},
+                    "groups": GROUPS_OPTIONAL,
+                },
+                "required": [],
+            },
+            "handler": lambda a: _call_self("POST", "/api/diagnostics/test_dmx", a),
+        },
+        {
+            "name": "get_logs",
+            "description": "Tail systemd journal for an allowlisted service: qlcplus-web, lighting-control, lighting-mcp, nginx.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "enum": ["qlcplus-web", "lighting-control", "lighting-mcp", "nginx"]},
+                    "n": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+                "required": ["service"],
+            },
+            "handler": lambda a: _call_self("GET", f"/api/diagnostics/logs/{a['service']}?n={a.get('n', 50)}"),
+        },
+
+        # ── Setup utility ────────────────────────────────────────────────
+        {
+            "name": "identify_fixture",
+            "description": "Flash a single fixture so the operator can locate it physically. Pulses 2s × 4 then restores prior state.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "fixture_id": {"type": "integer"},
+                    "duration": {"type": "number"},
+                    "pulses": {"type": "integer"},
+                },
+                "required": ["fixture_id"],
+            },
+            "handler": lambda a: _call_self("POST", f"/api/fixtures/{a['fixture_id']}/identify", {
+                "duration": a.get("duration", 2),
+                "pulses": a.get("pulses", 4),
+            }),
+        },
+    ]
+
+
+# ----------------------------------------------------------------------------
+# Anthropic tool-use loop
+# ----------------------------------------------------------------------------
+
+_CHAT_SYSTEM_PROMPT = (
+    "You are the lighting operator for a QLC+ studio rig. The user is a creator, "
+    "photographer, theatre LD, or event producer who wants you to drive the rig. "
+    "Use the discovery tools (list_fixtures, list_groups, list_scenes, list_chases, "
+    "list_cue_lists, list_templates) when you need to understand the current state — "
+    "don't ask the user for context you can fetch yourself. "
+    "Prefer high-level abstractions (palette, color_temperature, apply_template, "
+    "activate_scene) over low-level set_channel writes. "
+    "When the user wants a 'show' or 'timed sequence', use cue lists. "
+    "When the user wants a looping motion sequence, use chases. "
+    "For Kelvin requests, use color_temperature with the Kelvin number directly. "
+    "Be concise — operators don't want long explanations, they want lights changed."
+)
+
+
+def _anthropic_chat_loop(messages: list, tools: list, model: str, api_key: str, max_iters: int = 10) -> dict:
+    """Run Anthropic's tool_use loop against /v1/messages.
+
+    Returns:
+        {
+          "messages": updated history (assistant messages + tool_result user messages),
+          "tool_calls": [{name, input, output}, ...] for telemetry,
+          "stop_reason": 'end_turn' | 'max_iters' | 'tool_use' | 'error',
+        }
+    """
+    import requests
+
+    anthropic_tools = [
+        {"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]}
+        for t in tools
+    ]
+    tool_handlers = {t["name"]: t["handler"] for t in tools}
+    tool_calls_made = []
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+
+    for _ in range(max_iters):
+        payload = {
+            "model": model,
+            "max_tokens": 4096,
+            "system": _CHAT_SYSTEM_PROMPT,
+            "messages": messages,
+            "tools": anthropic_tools,
+        }
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers, json=payload, timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            return {
+                "messages": messages,
+                "tool_calls": tool_calls_made,
+                "stop_reason": "error",
+                "error": f"Anthropic API error: {e}",
+            }
+
+        # Append assistant response (preserves tool_use blocks for protocol)
+        messages.append({"role": "assistant", "content": data.get("content", [])})
+
+        # Find tool_use blocks
+        tool_use_blocks = [b for b in data.get("content", []) if b.get("type") == "tool_use"]
+        if not tool_use_blocks:
+            return {
+                "messages": messages,
+                "tool_calls": tool_calls_made,
+                "stop_reason": data.get("stop_reason", "end_turn"),
+            }
+
+        # Execute each requested tool call
+        tool_results = []
+        for block in tool_use_blocks:
+            name = block.get("name")
+            tool_input = block.get("input", {}) or {}
+            tool_id = block.get("id")
+            handler = tool_handlers.get(name)
+            if handler is None:
+                output = {"error": f"Unknown tool: {name}"}
+            else:
+                try:
+                    output = handler(tool_input)
+                except Exception as e:
+                    output = {"error": f"{type(e).__name__}: {e}"}
+
+            tool_calls_made.append({"name": name, "input": tool_input, "output": output})
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "content": json.dumps(output)[:8000],  # cap to keep context manageable
+            })
+
+        # Feed tool results back as a user turn
+        messages.append({"role": "user", "content": tool_results})
+
+    return {
+        "messages": messages,
+        "tool_calls": tool_calls_made,
+        "stop_reason": "max_iters",
+    }
+
+
+# ----------------------------------------------------------------------------
+# OpenAI tool-calling loop (parallel path)
+# ----------------------------------------------------------------------------
+
+def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max_iters: int = 10) -> dict:
+    """Run OpenAI's function-calling loop against /v1/chat/completions.
+
+    Translates between OpenAI's message shape and our normalized shape on
+    the way out — the client always sees Anthropic-style messages.
+    """
+    import requests
+
+    openai_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            },
+        }
+        for t in tools
+    ]
+    tool_handlers = {t["name"]: t["handler"] for t in tools}
+    tool_calls_made = []
+
+    # Translate incoming history (Anthropic-style) to OpenAI-style
+    openai_messages = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}]
+    for m in messages:
+        if m["role"] == "user":
+            content = m["content"]
+            if isinstance(content, list):
+                # tool_result blocks from a previous turn — flatten to text
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        openai_messages.append({
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id"),
+                            "content": block.get("content", ""),
+                        })
+                    else:
+                        openai_messages.append({"role": "user", "content": str(block)})
+            else:
+                openai_messages.append({"role": "user", "content": content})
+        elif m["role"] == "assistant":
+            content = m["content"]
+            if isinstance(content, list):
+                # Anthropic-style content blocks — convert tool_use to tool_calls
+                text_parts = []
+                tool_calls = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif block.get("type") == "tool_use":
+                        tool_calls.append({
+                            "id": block.get("id"),
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name"),
+                                "arguments": json.dumps(block.get("input", {}) or {}),
+                            },
+                        })
+                msg = {"role": "assistant", "content": "\n".join(text_parts) or None}
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
+                openai_messages.append(msg)
+            else:
+                openai_messages.append({"role": "assistant", "content": content})
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    for _ in range(max_iters):
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": openai_messages,
+                    "tools": openai_tools,
+                    "max_tokens": 4096,
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            return {
+                "messages": messages,
+                "tool_calls": tool_calls_made,
+                "stop_reason": "error",
+                "error": f"OpenAI API error: {e}",
+            }
+
+        msg = data["choices"][0]["message"]
+        openai_messages.append(msg)
+
+        # Mirror into the Anthropic-style history we return
+        assistant_blocks = []
+        if msg.get("content"):
+            assistant_blocks.append({"type": "text", "text": msg["content"]})
+        for tc in msg.get("tool_calls") or []:
+            try:
+                tc_input = json.loads(tc["function"]["arguments"])
+            except (ValueError, KeyError):
+                tc_input = {}
+            assistant_blocks.append({
+                "type": "tool_use",
+                "id": tc["id"],
+                "name": tc["function"]["name"],
+                "input": tc_input,
+            })
+        messages.append({"role": "assistant", "content": assistant_blocks})
+
+        if not msg.get("tool_calls"):
+            return {
+                "messages": messages,
+                "tool_calls": tool_calls_made,
+                "stop_reason": data["choices"][0].get("finish_reason", "end_turn"),
+            }
+
+        # Execute each tool call
+        tool_result_blocks = []
+        for tc in msg["tool_calls"]:
+            name = tc["function"]["name"]
+            try:
+                tc_input = json.loads(tc["function"]["arguments"])
+            except ValueError:
+                tc_input = {}
+            handler = tool_handlers.get(name)
+            if handler is None:
+                output = {"error": f"Unknown tool: {name}"}
+            else:
+                try:
+                    output = handler(tc_input)
+                except Exception as e:
+                    output = {"error": f"{type(e).__name__}: {e}"}
+
+            tool_calls_made.append({"name": name, "input": tc_input, "output": output})
+            output_str = json.dumps(output)[:8000]
+            openai_messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": output_str,
+            })
+            tool_result_blocks.append({
+                "type": "tool_result",
+                "tool_use_id": tc["id"],
+                "content": output_str,
+            })
+        # Mirror into normalized history
+        messages.append({"role": "user", "content": tool_result_blocks})
+
+    return {
+        "messages": messages,
+        "tool_calls": tool_calls_made,
+        "stop_reason": "max_iters",
+    }
+
+
+# ----------------------------------------------------------------------------
+# /api/chat endpoint
+# ----------------------------------------------------------------------------
+
+@app.route("/api/chat", methods=["POST"])
+def handle_chat():
+    """Stateless agentic chat — client sends full message history, server
+    processes one turn (which may include several internal tool dispatches),
+    returns the updated history plus a trace of tool calls.
+
+    Body:
+        {
+          "messages": [
+            { "role": "user", "content": "Set the key lights to 3200K" }
+          ]
+        }
+
+    Response:
+        {
+          "success": true,
+          "messages": [...updated history...],
+          "tool_calls": [{name, input, output}, ...],
+          "stop_reason": "end_turn" | "max_iters" | "error",
+          "provider": "anthropic",
+          "model": "...",
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    incoming_messages = data.get("messages") or []
+    if not isinstance(incoming_messages, list) or not incoming_messages:
+        return jsonify({"success": False, "error": "messages must be a non-empty array"}), 400
+
+    if AI_PROVIDER not in ("anthropic", "openai"):
+        return jsonify({
+            "success": False,
+            "error": f"Agentic chat requires AI_PROVIDER=anthropic or openai (got {AI_PROVIDER!r}). Ollama tool-calling is not supported yet.",
+        }), 400
+    if not AI_API_KEY:
+        return jsonify({"success": False, "error": "AI_API_KEY not configured"}), 400
+
+    tools = _build_chat_tools()
+
+    if AI_PROVIDER == "anthropic":
+        result = _anthropic_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
+    else:
+        result = _openai_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
+
+    return jsonify({
+        "success": result.get("stop_reason") not in ("error",),
+        "messages": result.get("messages", []),
+        "tool_calls": result.get("tool_calls", []),
+        "stop_reason": result.get("stop_reason"),
+        "provider": AI_PROVIDER,
+        "model": AI_MODEL,
+        **({"error": result["error"]} if result.get("error") else {}),
+    })
+
+
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():
