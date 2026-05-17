@@ -1167,6 +1167,24 @@ Groups are bidirectionally synced with QLC+ workspace, making them visible in QL
 
 ---
 
+## 🧪 Tests
+
+The control server ships a pytest suite for its pure-function helpers (time
+parsing, CCT-to-RGB, palette / cue / strobe normalization, run-order
+parsing). About 180 tests, runs in under a second.
+
+```bash
+cd control-server
+pip install -r requirements-dev.txt
+pytest -v
+```
+
+CI runs the same suite on every PR via `.github/workflows/test.yml` —
+matrix on Python 3.11 + 3.12, plus `ast.parse` on both servers, `node --check`
+on the inline JS, and HTML tag-balance verification on the Flask template.
+
+---
+
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details

@@ -1,0 +1,99 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # Python: pytest + ast.parse on both servers
+  # ──────────────────────────────────────────────────────────────────
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install control-server dev dependencies
+        working-directory: control-server
+        run: pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        working-directory: control-server
+        run: pytest -v
+
+      - name: Syntax check — control-server/app.py
+        run: python -c "import ast; ast.parse(open('control-server/app.py').read())"
+
+      - name: Syntax check — mcp-server/server.py
+        run: python -c "import ast; ast.parse(open('mcp-server/server.py').read())"
+
+  # ──────────────────────────────────────────────────────────────────
+  # JS: extract inline script from the Flask template and lint with Node
+  # ──────────────────────────────────────────────────────────────────
+  js:
+    name: Template inline JS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Extract inline <script> and node --check
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          text = open('control-server/templates/index.html').read()
+          m = re.search(r'<script>(.*)</script>', text, re.DOTALL)
+          if not m:
+              print("No <script> block found")
+              sys.exit(1)
+          with open('/tmp/index.js', 'w') as f:
+              f.write(m.group(1))
+          print(f"Extracted {len(m.group(1))} chars of inline JS")
+          PY
+          node --check /tmp/index.js
+
+  # ──────────────────────────────────────────────────────────────────
+  # HTML structural sanity — balanced tags
+  # ──────────────────────────────────────────────────────────────────
+  html:
+    name: HTML tag balance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag balance in templates/index.html
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          text = open('control-server/templates/index.html').read()
+          errors = []
+          for tag in ['div', 'script', 'style', 'button', 'select']:
+              # void elements are filtered separately; these aren't void
+              opens = len(re.findall(r'<' + tag + r'(?:\s|>)', text))
+              closes = text.count(f'</{tag}>')
+              if opens != closes:
+                  errors.append(f'<{tag}>: {opens} opens vs {closes} closes')
+          if errors:
+              print('Tag balance errors:')
+              for e in errors:
+                  print(' ', e)
+              sys.exit(1)
+          print('All checked tags balanced.')
+          PY
