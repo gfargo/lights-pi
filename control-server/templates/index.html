@@ -13,13 +13,62 @@
     <meta name="apple-mobile-web-app-title" content="Lights">
     <title>Lighting Control</title>
     <style>
+        /* ══════════════════════════════════════════════════════════════
+           v2.13 visual identity pass — matches the .www marketing site
+           (Geist Sans + Mono, tungsten accent, hairlines, filament dot).
+           ══════════════════════════════════════════════════════════════ */
+
+        /* Geist fonts — CDN-hosted; gracefully degrades to system stack
+           if the Pi is offline or the browser blocks third-party fonts. */
+        @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+
+        :root {
+            /* ── Surface palette ── */
+            --ink:           #0a0a0a;          /* page background */
+            --ink-1:         #0f0f0f;          /* raised surface (cards, modals) */
+            --ink-2:         #111111;          /* second-tier surface */
+            --ink-3:         #161616;          /* tool panel headers */
+
+            /* ── Foreground palette (paper = primary text colour) ── */
+            --paper:         #f0f0f0;
+            --paper-80:      rgba(240, 240, 240, 0.80);
+            --paper-60:      rgba(240, 240, 240, 0.60);
+            --paper-50:      rgba(240, 240, 240, 0.50);
+            --paper-40:      rgba(240, 240, 240, 0.40);
+            --paper-30:      rgba(240, 240, 240, 0.30);
+
+            /* ── Hairline rules — 6-12% opacity paper over ink ── */
+            --rule:          rgba(240, 240, 240, 0.06);
+            --rule-strong:   rgba(240, 240, 240, 0.12);
+
+            /* ── Brand accent — tungsten warm orange (matches .www) ── */
+            --amber-tungsten:      #d97757;
+            --amber-tungsten-soft: rgba(217, 119, 87, 0.18);
+            --amber-tungsten-glow: rgba(217, 119, 87, 0.30);
+
+            /* ── Cool accent — arc-lamp cyan (for "live" / streaming) ── */
+            --arc-cyan:      #76e8ff;
+
+            /* ── Signal colours (semantic, only) ── */
+            --signal-green:  #4ade80;
+            --signal-green-deep: #047857;
+            --signal-amber:  #facc15;
+            --signal-red:    #f87171;
+            --signal-red-deep:   #5a1818;
+
+            /* ── Type stack ── */
+            --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Fira Code", monospace;
+        }
+
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             min-height: 100vh;
-            background: #0a0a0a;
-            color: #f0f0f0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: var(--ink);
+            color: var(--paper);
+            font-family: var(--font-sans);
+            font-feature-settings: "ss01", "cv11";  /* Geist alt forms */
             padding: 2rem 1rem;
         }
 
@@ -30,9 +79,27 @@
 
         h1 {
             font-size: 1.75rem; font-weight: 600; letter-spacing: 0.08em;
-            text-transform: uppercase; color: #ffffff; margin-bottom: 0.5rem;
+            text-transform: uppercase; color: var(--paper); margin-bottom: 0.5rem;
         }
-        .subtitle { font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; color: #666; }
+        .subtitle {
+            font-family: var(--font-mono);
+            font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase;
+            color: var(--paper-40);
+            display: inline-flex; align-items: center; gap: 0.5rem;
+        }
+        /* Filament dot — small amber pulse signalling "rig is breathing". */
+        .filament {
+            display: inline-block;
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--amber-tungsten);
+            box-shadow: 0 0 6px var(--amber-tungsten-glow);
+            animation: filament-pulse 3.2s ease-in-out infinite;
+        }
+        @keyframes filament-pulse {
+            0%, 100% { opacity: 1;   box-shadow: 0 0 6px var(--amber-tungsten-glow); }
+            50%      { opacity: 0.55; box-shadow: 0 0 3px var(--amber-tungsten-glow); }
+        }
 
         /* ── Top bar: health + groups toggle ── */
         .top-bar {
@@ -43,53 +110,72 @@
         }
         .health-widget {
             flex: 1;
-            background: #1a1a1a;
-            border: 1px solid #333;
+            background: var(--ink-1);
+            border: 1px solid var(--rule-strong);
             border-right: none;
             overflow: hidden;
         }
         .groups-toggle-btn {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            color: #888;
+            background: var(--ink-1);
+            border: 1px solid var(--rule-strong);
+            color: var(--paper-60);
             padding: 0 1.25rem;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.06em;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 500;
+            letter-spacing: 0.14em;
             text-transform: uppercase;
             cursor: pointer;
             white-space: nowrap;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            transition: all 0.15s;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
             border-radius: 0;
         }
-        .groups-toggle-btn:hover { background: #222; color: #f0f0f0; }
-        .groups-toggle-btn.active { background: #f0f0f0; color: #0a0a0a; border-color: #f0f0f0; }
+        .groups-toggle-btn:hover { background: var(--ink-2); color: var(--paper); border-color: var(--amber-tungsten); }
+        .groups-toggle-btn.active {
+            background: var(--amber-tungsten-soft);
+            color: var(--amber-tungsten);
+            border-color: var(--amber-tungsten);
+        }
         .groups-toggle-btn .gt-icon { font-size: 1rem; line-height: 1; }
 
-        /* ── Health Widget internals ── */
+        /* ── Health widget internals ──
+           Console-readout register: mono labels, hairline pills, no
+           chunky chip backgrounds. */
         .health-summary {
             display: flex; align-items: center; justify-content: space-between;
             padding: 0.625rem 1rem; cursor: pointer; user-select: none; transition: background 0.15s;
         }
-        .health-summary:hover { background: #222; }
+        .health-summary:hover { background: var(--rule); }
         .health-left { display: flex; align-items: center; gap: 0.625rem; }
-        .health-dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex-shrink: 0; }
-        .health-dot.ok { background: #4ade80; }
-        .health-dot.warn { background: #facc15; }
-        .health-dot.err { background: #f87171; }
-        .health-label { font-size: 0.8rem; color: #ccc; letter-spacing: 0.03em; }
-        .health-pills { display: flex; gap: 0.375rem; flex-wrap: wrap; }
-        .health-pill {
-            display: flex; align-items: center; gap: 0.3rem;
-            font-size: 0.7rem; color: #888; background: #111; padding: 0.2rem 0.5rem; border-radius: 2px;
+        .health-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--paper-40); flex-shrink: 0;
+            box-shadow: 0 0 0 rgba(0,0,0,0);
         }
-        .health-pill .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-        .health-pill .dot.ok { background: #4ade80; }
-        .health-pill .dot.err { background: #f87171; }
-        .health-chevron { font-size: 0.7rem; color: #555; transition: transform 0.2s; margin-left: 0.5rem; }
+        .health-dot.ok   { background: var(--signal-green); box-shadow: 0 0 6px rgba(74, 222, 128, 0.45); }
+        .health-dot.warn { background: var(--signal-amber); box-shadow: 0 0 6px rgba(250, 204, 21, 0.45); }
+        .health-dot.err  { background: var(--signal-red);   box-shadow: 0 0 6px rgba(248, 113, 113, 0.45); }
+        .health-label {
+            font-family: var(--font-mono);
+            font-size: 0.74rem; color: var(--paper-80); letter-spacing: 0.04em;
+        }
+        .health-pills { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+        .health-pill {
+            display: flex; align-items: center; gap: 0.35rem;
+            font-family: var(--font-mono);
+            font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase;
+            color: var(--paper-60);
+            background: transparent;
+            padding: 0.2rem 0;
+            border-radius: 0;
+        }
+        .health-pill .dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+        .health-pill .dot.ok  { background: var(--signal-green); }
+        .health-pill .dot.err { background: var(--signal-red); }
+        .health-chevron { font-size: 0.7rem; color: var(--paper-40); transition: transform 0.2s; margin-left: 0.75rem; }
         .health-widget.expanded .health-chevron { transform: rotate(180deg); }
         .health-details { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
         .health-widget.expanded .health-details { max-height: 400px; }
@@ -113,7 +199,7 @@
         .groups-drawer {
             position: fixed; top: 0; right: 0; bottom: 0;
             width: 340px; max-width: 92vw;
-            background: #111; border-left: 1px solid #2a2a2a;
+            background: var(--ink-2); border-left: 1px solid var(--rule-strong);
             z-index: 101; display: flex; flex-direction: column;
             transform: translateX(100%); transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
             overflow: hidden;
@@ -122,14 +208,18 @@
 
         .drawer-header {
             display: flex; align-items: center; justify-content: space-between;
-            padding: 1rem 1.25rem; border-bottom: 1px solid #222; flex-shrink: 0;
+            padding: 1rem 1.25rem; border-bottom: 1px solid var(--rule); flex-shrink: 0;
         }
-        .drawer-title { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #ccc; }
+        .drawer-title {
+            font-family: var(--font-mono);
+            font-size: 0.74rem; font-weight: 500; letter-spacing: 0.2em;
+            text-transform: uppercase; color: var(--amber-tungsten);
+        }
         .drawer-close {
-            background: none; border: none; color: #555; font-size: 1.2rem;
+            background: none; border: none; color: var(--paper-50); font-size: 1.2rem;
             cursor: pointer; padding: 0.25rem; line-height: 1; transition: color 0.15s;
         }
-        .drawer-close:hover { color: #f0f0f0; }
+        .drawer-close:hover { color: var(--paper); }
 
         .drawer-body { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; }
         .drawer-body::-webkit-scrollbar { width: 4px; }
@@ -154,11 +244,15 @@
             padding: 0.75rem 1rem; border-top: 1px solid #1e1e1e; background: #131313;
         }
         .drawer-scene-btn {
-            background: #1e1e1e; border: 1px solid #2a2a2a; color: #aaa;
-            padding: 0.35rem 0.75rem; font-size: 0.75rem; font-weight: 600;
-            cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; border-radius: 0;
+            background: var(--ink-2); border: 1px solid var(--rule-strong); color: var(--paper-80);
+            padding: 0.35rem 0.75rem; font-size: 0.75rem; font-weight: 500;
+            cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+            letter-spacing: 0.02em; border-radius: 0;
+            font-family: var(--font-sans);
         }
-        .drawer-scene-btn:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
+        .drawer-scene-btn:hover {
+            background: var(--amber-tungsten); border-color: var(--amber-tungsten); color: var(--ink);
+        }
 
         .drawer-fixture-list {
             max-height: 0; overflow: hidden; transition: max-height 0.2s ease;
@@ -171,19 +265,32 @@
         }
         .drawer-fixture-dot { width: 5px; height: 5px; border-radius: 50%; background: #333; flex-shrink: 0; }
 
-        /* ── Tabs ── */
+        /* ── Tabs ──
+           Active state is signalled by a tungsten underline that grows
+           from the centre. Slightly more theatrical than a border swap. */
         .tabs {
             display: flex; gap: 0.5rem; margin-bottom: 2rem;
-            border-bottom: 1px solid #333; overflow-x: auto;
+            border-bottom: 1px solid var(--rule); overflow-x: auto;
         }
         .tab {
+            position: relative;
             padding: 0.75rem 1.5rem; background: transparent; border: none;
-            border-bottom: 2px solid transparent; cursor: pointer;
-            font-size: 0.85rem; font-weight: 600; letter-spacing: 0.05em;
-            text-transform: uppercase; color: #666; transition: all 0.2s; white-space: nowrap;
+            cursor: pointer;
+            font-family: var(--font-mono);
+            font-size: 0.78rem; font-weight: 500; letter-spacing: 0.12em;
+            text-transform: uppercase; color: var(--paper-50);
+            transition: color 0.2s; white-space: nowrap;
         }
-        .tab:hover { color: #f0f0f0; }
-        .tab.active { color: #f0f0f0; border-bottom-color: #f0f0f0; }
+        .tab::after {
+            content: "";
+            position: absolute; left: 50%; right: 50%; bottom: -1px;
+            height: 2px; background: var(--amber-tungsten);
+            transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                        right 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .tab:hover { color: var(--paper); }
+        .tab.active { color: var(--paper); }
+        .tab.active::after { left: 0; right: 0; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
@@ -211,24 +318,28 @@
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
 
         .section-title {
-            font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase;
-            color: #666; margin-bottom: 0.75rem;
+            font-family: var(--font-mono);
+            font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase;
+            color: var(--amber-tungsten); margin-bottom: 0.85rem;
+            opacity: 0.85;
         }
 
         /* ── Quick Commands ── */
         .example-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
         .chip {
-            background: #1a1a1a; border: 1px solid #333; padding: 0.5rem 1rem;
-            border-radius: 0; font-size: 0.85rem; color: #999; cursor: pointer; transition: all 0.2s;
+            background: var(--ink-1); border: 1px solid var(--rule-strong); padding: 0.5rem 1rem;
+            border-radius: 0; font-size: 0.85rem; color: var(--paper-80); cursor: pointer;
+            transition: background 0.18s, color 0.18s, border-color 0.18s;
         }
-        .chip:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
+        .chip:hover { background: var(--amber-tungsten); border-color: var(--amber-tungsten); color: var(--ink); }
         .scene-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
         .scene-btn {
-            background: #111; border: 1px solid #2a2a2a; padding: 0.5rem 0.875rem;
-            border-radius: 0; font-size: 0.8rem; color: #aaa; cursor: pointer; transition: all 0.2s;
+            background: var(--ink-2); border: 1px solid var(--rule-strong); padding: 0.5rem 0.875rem;
+            border-radius: 0; font-size: 0.8rem; color: var(--paper-80); cursor: pointer;
+            transition: background 0.18s, color 0.18s, border-color 0.18s;
             max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        .scene-btn:hover { background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a; }
+        .scene-btn:hover { background: var(--amber-tungsten); border-color: var(--amber-tungsten); color: var(--ink); }
 
         /* ── Target Groups (AI tab) ── */
         .target-groups-row {
@@ -240,14 +351,18 @@
             color: #555; margin-right: 0.25rem; white-space: nowrap;
         }
         .group-chip {
-            background: #1a1a1a; border: 1px solid #2a2a2a; color: #666;
-            padding: 0.35rem 0.875rem; font-size: 0.78rem; font-weight: 600;
-            cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; border-radius: 0;
+            background: var(--ink-1); border: 1px solid var(--rule-strong); color: var(--paper-60);
+            padding: 0.35rem 0.875rem; font-size: 0.78rem; font-weight: 500;
+            cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+            letter-spacing: 0.02em; border-radius: 0;
             user-select: none;
+            font-family: var(--font-sans);
         }
-        .group-chip:hover { border-color: #555; color: #ccc; }
+        .group-chip:hover { border-color: var(--paper-40); color: var(--paper); }
         .group-chip.active {
-            background: #f0f0f0; border-color: #f0f0f0; color: #0a0a0a;
+            background: var(--amber-tungsten);
+            border-color: var(--amber-tungsten);
+            color: var(--ink);
         }
         .group-chip-all {
             background: #1a1a1a; border: 1px solid #2a2a2a; color: #555;
@@ -497,65 +612,93 @@
            v2.10 web UI catches up — new styles
            ══════════════════════════════════════════════════════════════ */
 
-        /* ── BLACKOUT header button (always visible kill switch) ── */
+        /* ── BLACKOUT — the kill switch on the console.
+           Always visible, deliberately heavier than every other control.
+           Hover: red bar erupts behind the label, ambient glow. */
         .blackout-btn {
             position: absolute; top: 1rem; right: 1rem;
-            background: #2a0a0a; border: 1px solid #5a1818;
-            color: #f87171; padding: 0.5rem 1rem;
-            font-size: 0.75rem; font-weight: 700; letter-spacing: 0.15em;
+            background: var(--ink-2);
+            border: 1px solid var(--signal-red-deep);
+            color: var(--signal-red);
+            padding: 0.6rem 1.15rem;
+            font-family: var(--font-mono);
+            font-size: 0.78rem; font-weight: 600; letter-spacing: 0.22em;
             text-transform: uppercase; cursor: pointer;
-            display: flex; align-items: center; gap: 0.5rem;
-            transition: all 0.15s; border-radius: 0;
+            display: flex; align-items: center; gap: 0.65rem;
+            transition: background 0.18s, color 0.18s, border-color 0.18s, box-shadow 0.18s;
+            border-radius: 0;
+            box-shadow: 0 0 0 rgba(248, 113, 113, 0);
+        }
+        .blackout-btn::before {
+            /* Hairline tungsten line above the label — reads as a console rail. */
+            content: ""; position: absolute; top: -1px; left: 0; right: 0;
+            height: 1px; background: var(--signal-red-deep);
+            opacity: 0.7;
         }
         .blackout-btn:hover {
-            background: #f87171; color: #0a0a0a;
-            border-color: #f87171; box-shadow: 0 0 12px rgba(248,113,113,0.4);
+            background: var(--signal-red);
+            color: var(--ink);
+            border-color: var(--signal-red);
+            box-shadow: 0 0 18px rgba(248, 113, 113, 0.45),
+                        inset 0 0 0 1px rgba(255, 255, 255, 0.08);
         }
         .blackout-btn:active { transform: scale(0.97); }
         .blackout-dot {
             width: 8px; height: 8px; border-radius: 50%;
-            background: #f87171; flex-shrink: 0;
+            background: var(--signal-red); flex-shrink: 0;
             animation: blackout-pulse 2s ease-in-out infinite;
+            box-shadow: 0 0 4px rgba(248, 113, 113, 0.6);
         }
-        .blackout-btn:hover .blackout-dot { background: #0a0a0a; animation: none; }
+        .blackout-btn:hover .blackout-dot { background: var(--ink); animation: none; box-shadow: none; }
         @keyframes blackout-pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
+            0%, 100% { opacity: 1;   box-shadow: 0 0 4px rgba(248, 113, 113, 0.6); }
+            50%      { opacity: 0.45; box-shadow: 0 0 2px rgba(248, 113, 113, 0.3); }
         }
         .header { position: relative; }
 
-        /* ── Buttons (shared button vocab for new tabs) ── */
+        /* ── Buttons (shared vocabulary) ──
+           • btn-primary  = highest-contrast action (white-on-ink)
+           • btn-secondary = neutral fallback action
+           • btn-ghost    = tertiary / cancel
+           • btn-danger   = destructive (red palette)
+           • btn-go / btn-stop = transport (green / red, transport bar register) */
         .btn-primary, .btn-secondary, .btn-ghost {
-            font-size: 0.8rem; font-weight: 600; letter-spacing: 0.05em;
+            font-family: var(--font-mono);
+            font-size: 0.74rem; font-weight: 500; letter-spacing: 0.12em;
             text-transform: uppercase; padding: 0.55rem 1rem;
-            cursor: pointer; transition: all 0.15s; border-radius: 0;
-            font-family: inherit;
+            cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+            border-radius: 0;
         }
         .btn-primary {
-            background: #f0f0f0; color: #0a0a0a; border: 1px solid #f0f0f0;
+            background: var(--paper); color: var(--ink); border: 1px solid var(--paper);
         }
-        .btn-primary:hover { background: #ffffff; }
+        .btn-primary:hover {
+            background: var(--amber-tungsten);
+            border-color: var(--amber-tungsten);
+            color: var(--ink);
+            box-shadow: 0 0 12px var(--amber-tungsten-glow);
+        }
         .btn-secondary {
-            background: #1a1a1a; color: #ccc; border: 1px solid #333;
+            background: var(--ink-1); color: var(--paper-80); border: 1px solid var(--rule-strong);
         }
-        .btn-secondary:hover { background: #222; color: #fff; border-color: #555; }
+        .btn-secondary:hover { background: var(--ink-2); color: var(--paper); border-color: var(--amber-tungsten); }
         .btn-ghost {
-            background: transparent; color: #888; border: 1px solid transparent;
+            background: transparent; color: var(--paper-60); border: 1px solid transparent;
         }
-        .btn-ghost:hover { color: #f0f0f0; border-color: #333; }
-        .btn-tiny { padding: 0.3rem 0.6rem; font-size: 0.7rem; }
+        .btn-ghost:hover { color: var(--paper); border-color: var(--rule-strong); }
+        .btn-tiny { padding: 0.3rem 0.6rem; font-size: 0.66rem; letter-spacing: 0.1em; }
         .btn-danger {
-            background: #2a0a0a; color: #f87171; border: 1px solid #5a1818;
+            background: var(--ink-2); color: var(--signal-red); border: 1px solid var(--signal-red-deep);
         }
-        .btn-danger:hover { background: #5a1818; color: #fff; }
+        .btn-danger:hover { background: var(--signal-red-deep); color: var(--paper); }
         .btn-go {
-            background: #064e3b; color: #6ee7b7; border: 1px solid #047857;
+            background: #064e3b; color: #6ee7b7; border: 1px solid var(--signal-green-deep);
         }
-        .btn-go:hover { background: #047857; color: #fff; }
+        .btn-go:hover { background: var(--signal-green-deep); color: var(--paper); box-shadow: 0 0 12px rgba(4, 120, 87, 0.4); }
         .btn-stop {
-            background: #1f1f1f; color: #f87171; border: 1px solid #3a3a3a;
+            background: var(--ink-2); color: var(--signal-red); border: 1px solid var(--rule-strong);
         }
-        .btn-stop:hover { background: #2a0a0a; border-color: #5a1818; }
+        .btn-stop:hover { background: var(--ink-2); border-color: var(--signal-red-deep); }
 
         /* ── Section headers + form fields ── */
         .cuelists-header {
@@ -564,17 +707,24 @@
         }
         .hint { font-size: 0.75rem; color: #666; letter-spacing: 0.03em; }
         .field-label {
-            display: block; font-size: 0.7rem; font-weight: 600;
-            letter-spacing: 0.1em; text-transform: uppercase; color: #888;
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 0.66rem; font-weight: 500;
+            letter-spacing: 0.16em; text-transform: uppercase; color: var(--paper-60);
             margin: 0.75rem 0 0.4rem;
         }
-        .field-hint { color: #555; font-weight: 400; text-transform: none; letter-spacing: 0.02em; margin-left: 0.4rem; }
+        .field-hint { color: var(--paper-40); font-weight: 400; text-transform: none; letter-spacing: 0.02em; margin-left: 0.4rem; font-family: var(--font-sans); }
         .field-input {
-            width: 100%; background: #0f0f0f; border: 1px solid #2a2a2a;
-            color: #f0f0f0; padding: 0.55rem 0.75rem;
+            width: 100%; background: var(--ink-1); border: 1px solid var(--rule-strong);
+            color: var(--paper); padding: 0.55rem 0.75rem;
             font-family: inherit; font-size: 0.85rem; border-radius: 0;
+            transition: border-color 0.15s, box-shadow 0.15s;
         }
-        .field-input:focus { outline: none; border-color: #555; }
+        .field-input:focus {
+            outline: none;
+            border-color: var(--amber-tungsten);
+            box-shadow: 0 0 0 1px var(--amber-tungsten-soft);
+        }
         .form-row {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             gap: 0.75rem;
@@ -619,24 +769,28 @@
             position: absolute; inset: 0; background: rgba(0,0,0,0.7);
         }
         .modal-panel {
-            position: relative; background: #0f0f0f; border: 1px solid #2a2a2a;
+            position: relative; background: var(--ink-1); border: 1px solid var(--rule-strong);
             width: 92vw; max-width: 600px; max-height: 88vh;
             display: flex; flex-direction: column;
         }
         .modal-header {
             display: flex; align-items: center; justify-content: space-between;
-            padding: 1rem 1.25rem; border-bottom: 1px solid #222; flex-shrink: 0;
+            padding: 1rem 1.25rem; border-bottom: 1px solid var(--rule); flex-shrink: 0;
         }
-        .modal-title { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #ccc; }
+        .modal-title {
+            font-family: var(--font-mono);
+            font-size: 0.74rem; font-weight: 500; letter-spacing: 0.2em;
+            text-transform: uppercase; color: var(--amber-tungsten);
+        }
         .modal-close {
-            background: none; border: none; color: #666; font-size: 1.1rem;
+            background: none; border: none; color: var(--paper-50); font-size: 1.1rem;
             cursor: pointer; padding: 0.3rem 0.5rem;
         }
-        .modal-close:hover { color: #f0f0f0; }
+        .modal-close:hover { color: var(--paper); }
         .modal-body { padding: 1rem 1.25rem; overflow-y: auto; }
         .modal-footer {
             display: flex; gap: 0.5rem; justify-content: flex-end;
-            padding: 1rem 1.25rem; border-top: 1px solid #222; flex-shrink: 0;
+            padding: 1rem 1.25rem; border-top: 1px solid var(--rule); flex-shrink: 0;
         }
 
         /* ── Cue builder rows ── */
@@ -680,19 +834,37 @@
         }
         .scene-pick-btn:hover { background: #222; color: #fff; border-color: #444; }
 
-        /* ── Quick Tools panels (Kelvin / Strobe / Palette) ── */
+        /* ── Quick Tools panels (Kelvin / Strobe / Palette / Pi health) ──
+           Eyebrow label is rendered from a `data-eyebrow` attribute so the
+           HTML stays semantic — apply data-eyebrow="..." to .tool-panel. */
         .tool-panel {
-            background: #111; border: 1px solid #222; padding: 1rem 1.25rem;
+            position: relative;
+            background: var(--ink-1); border: 1px solid var(--rule);
+            padding: 1.1rem 1.25rem 1rem;
             margin-bottom: 1rem;
+        }
+        .tool-panel[data-eyebrow]::before {
+            content: attr(data-eyebrow);
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: var(--amber-tungsten);
+            margin-bottom: 0.4rem;
+            opacity: 0.85;
         }
         .tool-header {
             display: flex; align-items: center; justify-content: space-between;
             margin-bottom: 0.75rem;
         }
-        .tool-title { font-size: 0.85rem; font-weight: 600; color: #f0f0f0; }
+        .tool-title {
+            font-size: 0.95rem; font-weight: 600; color: var(--paper);
+            letter-spacing: 0.005em;
+        }
         .tool-value {
-            font-family: ui-monospace, "SF Mono", monospace;
-            font-size: 0.85rem; color: #facc15;
+            font-family: var(--font-mono);
+            font-size: 0.85rem; color: var(--amber-tungsten);
         }
         .tool-tick-row {
             display: flex; justify-content: space-between;
@@ -820,8 +992,12 @@
             font-size: 0.7rem; padding: 0.2rem 0.5rem; cursor: pointer;
             transition: all 0.15s;
         }
-        .fixture-picker-chip:hover { background: #222; color: #ccc; }
-        .fixture-picker-chip.selected { background: #f0f0f0; color: #0a0a0a; border-color: #f0f0f0; }
+        .fixture-picker-chip:hover { background: var(--ink-2); color: var(--paper); border-color: var(--rule-strong); }
+        .fixture-picker-chip.selected {
+            background: var(--amber-tungsten);
+            color: var(--ink);
+            border-color: var(--amber-tungsten);
+        }
         .drawer-group-actions {
             display: flex; gap: 0.3rem; margin-top: 0.4rem;
             padding-top: 0.4rem; border-top: 1px solid #1a1a1a;
@@ -831,8 +1007,8 @@
            v2.11 agentic chat — message list, tool calls, composer
            ══════════════════════════════════════════════════════════════ */
         .chat-pane {
-            background: #0a0a0a;
-            border: 1px solid #1f1f1f;
+            background: var(--ink);
+            border: 1px solid var(--rule);
             min-height: 380px;
             max-height: calc(100vh - 360px);
             overflow-y: auto;
@@ -841,30 +1017,31 @@
         .chat-welcome {
             text-align: center;
             padding: 2rem 1rem 1.5rem;
-            color: #888;
+            color: var(--paper-60);
         }
         .chat-welcome-title {
-            font-size: 1rem; font-weight: 600;
-            color: #f0f0f0; letter-spacing: 0.05em;
+            font-size: 1.15rem; font-weight: 600;
+            color: var(--paper); letter-spacing: 0.005em;
             margin-bottom: 0.5rem;
         }
         .chat-welcome-sub {
-            font-size: 0.85rem; line-height: 1.5;
-            max-width: 480px; margin: 0 auto 1.25rem;
-            color: #888;
+            font-size: 0.88rem; line-height: 1.55;
+            max-width: 480px; margin: 0 auto 1.5rem;
+            color: var(--paper-60);
         }
         .chat-suggestions {
             display: flex; flex-wrap: wrap; gap: 0.5rem;
             justify-content: center; max-width: 540px; margin: 0 auto;
         }
         .chat-suggest {
-            background: #161616; border: 1px solid #2a2a2a;
-            color: #ccc; padding: 0.5rem 0.85rem;
+            background: var(--ink-1); border: 1px solid var(--rule-strong);
+            color: var(--paper-80); padding: 0.5rem 0.95rem;
             font-size: 0.78rem; cursor: pointer;
-            transition: all 0.15s; font-family: inherit;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+            font-family: var(--font-sans);
         }
         .chat-suggest:hover {
-            background: #1f1f1f; color: #fff; border-color: #444;
+            background: var(--amber-tungsten-soft); color: var(--paper); border-color: var(--amber-tungsten);
         }
         .chat-messages {
             display: flex; flex-direction: column; gap: 0.85rem;
@@ -900,22 +1077,22 @@
         }
         .chat-tool-block {
             align-self: flex-start;
-            background: #0f0f0f; border: 1px solid #1f1f1f;
-            border-left: 2px solid #facc15;
-            padding: 0.45rem 0.7rem; max-width: 92%;
-            font-family: ui-monospace, "SF Mono", monospace;
-            font-size: 0.75rem; color: #ccc;
+            background: var(--ink-1); border: 1px solid var(--rule);
+            border-left: 2px solid var(--amber-tungsten);
+            padding: 0.5rem 0.75rem; max-width: 92%;
+            font-family: var(--font-mono);
+            font-size: 0.75rem; color: var(--paper-80);
         }
         .chat-tool-summary {
             display: flex; align-items: center; gap: 0.5rem;
             cursor: pointer; user-select: none;
         }
         .chat-tool-summary .tool-chev {
-            color: #555; font-size: 0.6rem; transition: transform 0.2s;
+            color: var(--paper-50); font-size: 0.6rem; transition: transform 0.2s;
         }
         .chat-tool-block.open .tool-chev { transform: rotate(90deg); }
         .chat-tool-name {
-            color: #facc15; font-weight: 600;
+            color: var(--amber-tungsten); font-weight: 600; letter-spacing: 0.04em;
         }
         .chat-tool-input { color: #888; font-size: 0.7rem; }
         .chat-tool-detail {
@@ -968,7 +1145,10 @@
                 <line x1="22.4" y1="49.6" x2="14.1" y2="57.9" stroke="#555" stroke-width="2" stroke-linecap="round"/>
             </svg>
             <h1>Lighting Control</h1>
-            <p class="subtitle">Advanced Control Interface</p>
+            <p class="subtitle">
+                <span class="filament" aria-hidden="true"></span>
+                <span>Live · Riversway</span>
+            </p>
             <!-- Always-visible kill switch. Clears every channel including
                  strobe/macro state — different from fade(0). -->
             <button class="blackout-btn" id="blackoutBtn" onclick="emergencyBlackout()" title="Instantly zero every channel (clears strobe/macro state too)">
@@ -1260,7 +1440,7 @@
         <div id="tools-tab" class="tab-content">
             <div class="section-title">Quick Tools</div>
 
-            <div class="tool-panel">
+            <div class="tool-panel" data-eyebrow="Colour temperature">
                 <div class="tool-header">
                     <span class="tool-title">White balance · Kelvin</span>
                     <span class="tool-value" id="kelvinValue">3200K</span>
@@ -1280,7 +1460,7 @@
                 </div>
             </div>
 
-            <div class="tool-panel">
+            <div class="tool-panel" data-eyebrow="Rate · global">
                 <div class="tool-header">
                     <span class="tool-title">Strobe</span>
                     <span class="tool-value" id="strobeValue">8 Hz</span>
@@ -1301,7 +1481,7 @@
                 </div>
             </div>
 
-            <div class="tool-panel">
+            <div class="tool-panel" data-eyebrow="Scene · key / fill / back">
                 <div class="tool-header">
                     <span class="tool-title">Palette · three-point lighting</span>
                 </div>
@@ -1319,7 +1499,7 @@
         <div id="diag-tab" class="tab-content">
             <div class="section-title">System Diagnostics</div>
 
-            <div class="tool-panel">
+            <div class="tool-panel" data-eyebrow="System · live">
                 <div class="tool-header">
                     <span class="tool-title">Pi health</span>
                     <button class="btn-secondary btn-tiny" onclick="loadSystemInfo()">Refresh</button>
@@ -1329,7 +1509,7 @@
                 </div>
             </div>
 
-            <div class="tool-panel">
+            <div class="tool-panel" data-eyebrow="Diagnostic · sweep">
                 <div class="tool-header">
                     <span class="tool-title">Test DMX</span>
                     <span class="field-hint">Runs an R → G → B → restore sweep. Snapshots + restores channel state.</span>
@@ -1345,7 +1525,7 @@
                 <div id="testDmxResult" class="result-bar"></div>
             </div>
 
-            <div class="tool-panel">
+            <div class="tool-panel" data-eyebrow="journalctl · tail">
                 <div class="tool-header">
                     <span class="tool-title">Service logs</span>
                 </div>
