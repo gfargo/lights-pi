@@ -176,6 +176,41 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | DELETE | `/api/cue_lists/<id>` | Remove (stops playback first if running) |
 | POST | `/api/cue_lists/<id>/go` | GO — start cue-list playback from the top |
 | POST | `/api/cue_lists/<id>/stop` | Halt running cue list |
+| POST | `/api/chat` | Agentic chat — server-side tool-use loop over Anthropic/OpenAI with access to ~39 tools |
+
+### `/api/chat` — agentic conversation
+
+The web UI's Chat tab posts the full message history here, the server runs
+an Anthropic `tool_use` or OpenAI function-calling loop (provider selected
+by `AI_PROVIDER`), and returns the updated history plus a trace of which
+tools were dispatched. Stateless — the client owns the conversation.
+
+Tools internally dispatch via Flask's test client back into our own
+endpoints (`POST /api/blackout`, `POST /api/cue_lists/<id>/go`, etc.), so
+the chat agent behaves exactly the same as the MCP server (which is also
+a thin wrapper over the same endpoints). 39-tool curated registry built
+in `_build_chat_tools()`; mirrors the MCP catalog with a few power-user
+tools omitted (`set_channel`, `batch_action`).
+
+Provider support:
+
+- `anthropic` — native `tool_use` blocks, recommended
+- `openai`    — native function-calling, supported
+- `ollama`    — not supported (tool-calling support varies by model)
+
+Body:
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Set the key lights to 3200K." }
+  ]
+}
+```
+
+Response includes the full updated `messages` array (assistant text +
+tool_use blocks + tool_result blocks), a flat `tool_calls` summary for
+telemetry, and `stop_reason` (`end_turn` / `max_iters` / `error`).
+Bounded `max_iters=10` per call to prevent runaway loops.
 
 ### `/api/action` vs `/api/command`
 
