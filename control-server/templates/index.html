@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="color-scheme" content="dark">
+    <!-- PWA / install-to-homescreen support -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Lights">
     <title>Lighting Control</title>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -309,13 +317,180 @@
         footer { text-align: center; margin-top: 3rem; font-size: 0.7rem; color: #333; letter-spacing: 0.05em; }
 
         @media (max-width: 600px) {
-            body { padding: 1rem 0.75rem; }
-            h1 { font-size: 1.25rem; }
+            body { padding: 0.75rem 0.5rem; }
+            .container { max-width: 100%; }
+            h1 { font-size: 1.1rem; }
+            .subtitle { font-size: 0.65rem; }
+            .logo-icon { width: 36px; height: 36px; margin-bottom: 0.5rem; }
             .input-group { flex-direction: column; }
             #voiceBtn { width: 100%; }
-            .tab { padding: 0.75rem 1rem; font-size: 0.75rem; }
             .health-pills { display: none; }
             .groups-drawer { width: 100%; max-width: 100vw; }
+            .header { padding-top: 3rem; /* room for the absolutely-positioned BLACKOUT */ }
+
+            /* ── BLACKOUT — pin to top-right of viewport, slightly smaller ── */
+            .blackout-btn {
+                top: 0.5rem; right: 0.5rem;
+                padding: 0.45rem 0.7rem;
+                font-size: 0.7rem;
+                letter-spacing: 0.1em;
+            }
+
+            /* ── Tabs row: horizontally scrollable ── */
+            .tabs {
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                scrollbar-width: none;       /* Firefox */
+                -webkit-overflow-scrolling: touch;
+            }
+            .tabs::-webkit-scrollbar { display: none; }
+            .tab {
+                padding: 0.6rem 0.85rem;
+                font-size: 0.7rem;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+
+            /* ── Top bar: stack health + groups-toggle ── */
+            .top-bar { flex-direction: column; }
+            .health-widget { border-right: 1px solid #333; }
+            .groups-toggle-btn { border-top: none; width: 100%; justify-content: center; padding: 0.75rem 1rem; }
+
+            /* ── Cue Lists / Chases headers stack ── */
+            .cuelists-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.75rem;
+            }
+            .cuelists-header .btn-primary { width: 100%; text-align: center; }
+
+            /* ── Resource rows (cue lists / chases): stack actions below ── */
+            .resource-row {
+                grid-template-columns: 1fr;
+                gap: 0.75rem;
+            }
+            .resource-actions {
+                justify-content: flex-start;
+                flex-wrap: wrap;
+            }
+
+            /* ── Tool panel sliders + selects stack ── */
+            .tool-panel { padding: 0.75rem; }
+            .tool-actions { flex-direction: column; align-items: stretch; }
+            .tool-actions .field-input,
+            .tool-actions .btn-primary,
+            .tool-actions .btn-secondary { width: 100%; }
+            .tool-tick-row { font-size: 0.55rem; gap: 0.2rem; }
+
+            /* ── Modal: take full screen on mobile ── */
+            .modal-panel {
+                width: 100vw;
+                max-width: 100vw;
+                max-height: 100vh;
+                height: 100vh;
+                border: none;
+            }
+            .modal-header, .modal-footer { padding: 0.85rem 1rem; }
+            .modal-body { padding: 0.85rem 1rem; }
+            .modal-footer { flex-direction: column-reverse; }
+            .modal-footer .btn-primary,
+            .modal-footer .btn-ghost { width: 100%; text-align: center; }
+
+            /* ── Cue builder rows: stack time/kind/value vertically ── */
+            .cue-row {
+                grid-template-columns: 1fr auto;
+                grid-template-areas:
+                    "time   remove"
+                    "kind   remove"
+                    "value  remove";
+                gap: 0.4rem 0.5rem;
+            }
+            .cue-row > input.cue-time { grid-area: time; }
+            .cue-row > select { grid-area: kind; }
+            .cue-row > input:not(.cue-time),
+            .cue-row > select:nth-of-type(2) { grid-area: value; }
+            .cue-row .remove-btn { grid-area: remove; align-self: start; }
+
+            /* ── Chase builder: form-row already grid, just tighten ── */
+            .form-row { grid-template-columns: 1fr; gap: 0.5rem; }
+            .step-row { grid-template-columns: 1.5rem 1fr auto; }
+            .step-row .step-name { font-size: 0.8rem; }
+
+            /* ── Palette rows ── */
+            .palette-row {
+                grid-template-columns: 1fr;
+                gap: 0.3rem;
+            }
+
+            /* ── System info grid: 2 across instead of auto-fit minmax ── */
+            .system-grid { grid-template-columns: repeat(2, 1fr); gap: 0.4rem; }
+            .system-card { padding: 0.6rem; }
+            .system-card .sc-value { font-size: 0.95rem; }
+            .system-card .sc-detail { font-size: 0.62rem; line-height: 1.3; }
+
+            /* ── Logs viewer: shorter on mobile to leave room for the input ── */
+            .logs-viewer { max-height: 220px; font-size: 0.7rem; }
+
+            /* ── Chat tab: edge-to-edge composer + bigger touch targets ── */
+            .chat-pane {
+                max-height: calc(100vh - 280px);
+                padding: 0.75rem;
+            }
+            .chat-welcome { padding: 1rem 0.5rem; }
+            .chat-welcome-title { font-size: 0.95rem; }
+            .chat-welcome-sub { font-size: 0.78rem; }
+            .chat-suggest { padding: 0.6rem 0.7rem; font-size: 0.75rem; }
+            .chat-msg { max-width: 95%; font-size: 0.88rem; }
+            .chat-tool-block { max-width: 95%; }
+            .chat-composer { padding: 0.4rem; }
+            .chat-composer textarea { font-size: 16px; /* prevents iOS zoom on focus */ min-height: 60px; }
+            .chat-actions { padding-top: 0.4rem; }
+            .chat-actions .btn-primary { min-width: 80px; }
+
+            /* ── Fixture identify button shifts to inline so it doesn't crowd ── */
+            .fixture-actions {
+                position: static;
+                margin-bottom: 0.5rem;
+                justify-content: flex-start;
+            }
+            .identify-btn { padding: 0.4rem 0.7rem; font-size: 0.7rem; }
+
+            /* ── Scene grid stays auto-fit but tiles + menu sized for touch ── */
+            .scene-btn { min-height: 44px; }    /* iOS recommended touch target */
+            .scene-menu-btn {
+                opacity: 1;                       /* hover doesn't exist on touch */
+                background: rgba(0,0,0,0.4);
+                padding: 0.25rem 0.5rem;
+            }
+            .scene-menu { right: 0; left: auto; }
+            .scene-menu button { padding: 0.7rem 0.85rem; font-size: 0.8rem; }
+
+            /* ── Drawer create-group: keep readable on phones ── */
+            .drawer-create-toggle { padding: 0.9rem 1rem; }
+            .fixture-picker { max-height: 180px; }
+            .fixture-picker-chip { padding: 0.35rem 0.6rem; font-size: 0.75rem; }
+
+            /* ── Inputs: prevent iOS auto-zoom on focus by ensuring 16px+ ── */
+            .field-input,
+            input[type="text"],
+            input[type="number"],
+            select,
+            textarea { font-size: 16px; }
+
+            /* ── Active banner: tighter on small screens ── */
+            .active-row { font-size: 0.78rem; flex-wrap: wrap; gap: 0.4rem; }
+            .active-row .elapsed { font-size: 0.72rem; }
+
+            footer { margin-top: 1.5rem; padding-bottom: env(safe-area-inset-bottom); }
+        }
+
+        /* ── Safe-area / standalone-PWA-specific adjustments ── */
+        @media (display-mode: standalone) {
+            body {
+                /* When installed as a PWA, claim the whole viewport */
+                padding-top: env(safe-area-inset-top, 0.75rem);
+                padding-bottom: env(safe-area-inset-bottom, 0.75rem);
+            }
         }
 
         /* ══════════════════════════════════════════════════════════════
@@ -2889,6 +3064,15 @@
 
         /* Auto-render history on initial page load (chat is the default tab) */
         renderChatHistory();
+
+        /* ══════════════════════════════════════════════════════════════
+           PWA — register service worker (silently no-op if unsupported)
+           ══════════════════════════════════════════════════════════════ */
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').catch(() => {});
+            });
+        }
     </script>
 </body>
 </html>
