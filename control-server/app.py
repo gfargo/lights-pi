@@ -3390,6 +3390,53 @@ LOG_ALLOWED_SERVICES = {
 }
 
 
+def _parse_systemd_load_state(output: str) -> str:
+    """Extract the value of `LoadState=` from `systemctl show` output.
+
+    `systemctl show -p LoadState <unit>` returns a single key=value line on
+    its own line, e.g.:
+        LoadState=loaded
+        LoadState=not-found
+        LoadState=masked
+
+    Returns the value (without the prefix), or an empty string if the line
+    is missing / malformed. Pure / testable — no subprocess invocation.
+    """
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if line.startswith("LoadState="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _systemd_unit_state(unit: str, exec_fn=execute_command) -> str:
+    """Return one of the diagnostic states for a systemd unit:
+
+      - "not_installed"  — unit file is missing (LoadState=not-found)
+      - "masked"         — unit file is masked (LoadState=masked)
+      - "active"         — running
+      - "inactive"       — loaded but stopped
+      - "failed"         — start failed
+      - "activating" / "deactivating"
+      - "unknown"        — couldn't determine
+
+    We check `LoadState` first because `systemctl is-active` returns
+    "inactive" for *both* a stopped unit AND a missing unit — which made
+    the UI's "lighting-mcp: inactive" warning indistinguishable from
+    "you never installed it." Now the UI can render those two cases
+    differently.
+    """
+    load = _parse_systemd_load_state(
+        (exec_fn(f"systemctl show -p LoadState {unit}").get("output") or "")
+    )
+    if load == "not-found":
+        return "not_installed"
+    if load == "masked":
+        return "masked"
+    active = (exec_fn(f"systemctl is-active {unit}").get("output") or "").strip()
+    return active or "unknown"
+
+
 @app.route("/api/diagnostics/logs/<service>", methods=["GET"])
 def diagnostics_logs(service):
     """Return the last N lines of a service's systemd journal.
@@ -3570,14 +3617,16 @@ def diagnostics_system():
     else:
         out["usb"] = None
 
-    # Service status for the three units (only when local)
+    # Service status for the three units (only when local).
+    # Distinguishes "not_installed" (unit file missing) from "inactive"
+    # (loaded but stopped) — see _systemd_unit_state. Lets the UI render
+    # an "install MCP" affordance instead of just a red dot.
     services_status = {}
     if IS_LOCAL:
         for label, unit in LOG_ALLOWED_SERVICES.items():
             if label == "nginx":
                 continue  # nginx is optional and reporting failure noisy
-            check = execute_command(f"systemctl is-active {unit}")
-            services_status[label] = (check.get("output") or "").strip() or "unknown"
+            services_status[label] = _systemd_unit_state(unit)
     out["services"] = services_status or None
 
     return jsonify({"success": True, **out})

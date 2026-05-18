@@ -921,6 +921,14 @@
         .system-card .sc-detail { font-size: 0.7rem; color: #666; margin-top: 0.25rem; }
         .system-card.warn .sc-value { color: #facc15; }
         .system-card.err .sc-value { color: #f87171; }
+
+        /* Service-status entries in the Pi-health card. Lets us distinguish
+           "running" / "broken" / "not installed" inline. */
+        .svc-detail { line-height: 1.5; }
+        .svc-entry { display: inline-block; }
+        .svc-bad { color: var(--signal-red); }
+        .svc-missing { color: var(--paper-40); font-style: italic; cursor: help; }
+        .svc-sep { color: var(--paper-30); margin: 0 0.15rem; }
         .result-bar {
             margin-top: 0.75rem; padding: 0.5rem 0.75rem; min-height: 1.5rem;
             font-size: 0.8rem; color: #888; background: #0a0a0a; border-left: 2px solid #333;
@@ -2914,10 +2922,25 @@
                     cards.push(`<div class="system-card"><div class="sc-label">DMX USB</div><div class="sc-value">✓ ${data.usb.dmx_related.length}</div><div class="sc-detail">${escHtml(data.usb.dmx_related[0]).slice(0, 50)}…</div></div>`);
                 }
                 if (data.services) {
-                    const ok = Object.values(data.services).filter(s => s === 'active').length;
-                    const total = Object.keys(data.services).length;
+                    // Partition services into installed-and-running, installed-but-broken,
+                    // and not-installed. Optional units (lighting-mcp) shouldn't drag the
+                    // health count to red if the user opted out of installing them.
+                    const entries = Object.entries(data.services);
+                    const installed = entries.filter(([, v]) => v !== 'not_installed');
+                    const notInstalled = entries.filter(([, v]) => v === 'not_installed');
+                    const ok = installed.filter(([, v]) => v === 'active').length;
+                    const total = installed.length;
+                    // Warn only if an installed service is broken — missing optional units don't warn.
                     const cls = ok < total ? 'warn' : '';
-                    cards.push(`<div class="system-card ${cls}"><div class="sc-label">Services</div><div class="sc-value">${ok}/${total}</div><div class="sc-detail">${Object.entries(data.services).map(([k, v]) => `${k}: ${v}`).join('  ·  ')}</div></div>`);
+                    const detailParts = installed.map(([k, v]) => {
+                        const stateCls = v === 'active' ? '' : 'svc-bad';
+                        return `<span class="svc-entry ${stateCls}">${k}: ${v}</span>`;
+                    });
+                    const missingParts = notInstalled.map(([k]) =>
+                        `<span class="svc-entry svc-missing" title="Optional — install with ./lightsctl.sh mcp-install">${k}: not installed</span>`
+                    );
+                    const detailHtml = [...detailParts, ...missingParts].join('<span class="svc-sep"> · </span>');
+                    cards.push(`<div class="system-card ${cls}"><div class="sc-label">Services</div><div class="sc-value">${ok}/${total}</div><div class="sc-detail svc-detail">${detailHtml}</div></div>`);
                 }
                 grid.innerHTML = cards.join('') || '<p class="empty-state">No diagnostic data available.</p>';
             } catch (e) {
