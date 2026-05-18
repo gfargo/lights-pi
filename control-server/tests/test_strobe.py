@@ -1,6 +1,5 @@
 """Tests for the strobe rate → DMX value mapping (_strobe_dmx_value)."""
 import pytest
-
 from app import _strobe_dmx_value
 
 

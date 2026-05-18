@@ -1,6 +1,5 @@
 """Tests for cue normalization (_normalize_cue) — the cue list builder
 input format → canonical internal cue shape."""
-import pytest
 
 from app import _normalize_cue
 

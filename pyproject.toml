@@ -1,0 +1,37 @@
+# Ruff configuration — lints the two Python servers (control-server,
+# mcp-server) plus the pytest suite. Tests live alongside the Flask
+# code in control-server/tests/.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+# Where to lint. The repo root has docs/ and scripts/ that don't ship
+# Python the linter cares about; explicitly include the two servers and
+# the test suite so we don't accidentally try to lint shell wrappers'
+# inline Python heredocs.
+include = [
+    "control-server/**/*.py",
+    "mcp-server/**/*.py",
+]
+
+[tool.ruff.lint]
+# Rulesets we opt into:
+#   E   - pycodestyle errors (the basics)
+#   F   - pyflakes (unused imports, redefined names — catches real bugs)
+#   W   - pycodestyle warnings
+#   I   - isort (import sorting, kept deterministic)
+#   B   - flake8-bugbear (likely bugs / footguns)
+#   UP  - pyupgrade (modernize syntax for our target Python version)
+select = ["E", "F", "W", "I", "B", "UP"]
+
+# Per-file overrides. Tests are allowed to import things we don't use
+# directly in their bodies (helper imports for fixtures, etc.) and the
+# `assert ... == "specific string"` pattern can run long.
+[tool.ruff.lint.per-file-ignores]
+"control-server/tests/*.py" = ["E501"]
+
+[tool.ruff.format]
+# We're not adopting the auto-formatter in this PR — just the linter.
+# If we want to flip the switch later, this section is the seam.
+quote-style = "preserve"

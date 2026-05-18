@@ -6,8 +6,7 @@ seconds. Edge cases (bool, empty string, None, garbage) should all return
 None cleanly rather than raising.
 """
 import pytest
-
-from app import _parse_time_ms, _format_time_ms
+from app import _format_time_ms, _parse_time_ms
 
 
 class TestParseTimeMs:
