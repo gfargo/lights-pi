@@ -1671,11 +1671,25 @@
 
         /* ══════════════════════════════════════
            Tab switching
+           Updates the URL with ?tab=<name> via replaceState so a refresh
+           lands you back where you were. replaceState (vs. pushState) keeps
+           the back button useful — tab clicks don't become history entries.
            ══════════════════════════════════════ */
+        const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'tools', 'diag'];
+
         function switchTab(tabName, btn) {
+            // Allow programmatic calls (no event / no button) by resolving
+            // the matching tab button from the DOM.
+            if (!btn) {
+                btn = document.querySelector(`.tab[onclick*="switchTab('${tabName}'"]`);
+                if (!btn) return;  // unknown tab name — bail
+            }
+            const content = document.getElementById(`${tabName}-tab`);
+            if (!content) return;  // tab content missing — bail
+
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected','false'); });
-            document.getElementById(`${tabName}-tab`).classList.add('active');
+            content.classList.add('active');
             btn.classList.add('active');
             btn.setAttribute('aria-selected','true');
             consoleActive = (tabName === 'console');
@@ -1684,6 +1698,13 @@
             } else {
                 stopConsolePolling();
             }
+
+            // Persist the active tab in the URL so refresh / share-link works.
+            try {
+                const url = new URL(window.location);
+                url.searchParams.set('tab', tabName);
+                history.replaceState({}, '', url);
+            } catch (e) { /* old browsers — silently skip */ }
         }
 
         /* ══════════════════════════════════════
@@ -3316,6 +3337,17 @@
             loadScenes();
             loadFixtures();
             loadGroups();
+
+            // Restore the active tab from ?tab=<name> if present, so a refresh
+            // (or a shared URL) lands the user where they were. The default
+            // active tab (Quick Commands) is set in the HTML, so we only
+            // need to switch when the URL asks for something else.
+            try {
+                const requested = new URLSearchParams(window.location.search).get('tab');
+                if (requested && VALID_TABS.includes(requested) && requested !== 'ai') {
+                    switchTab(requested);
+                }
+            } catch (e) { /* malformed URL — leave default */ }
         })();
     </script>
 </body>
