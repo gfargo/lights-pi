@@ -30,6 +30,11 @@ jobs:
         working-directory: control-server
         run: pip install -r requirements-dev.txt
 
+      - name: Lint with ruff
+        # Repo-root pyproject.toml controls the ruleset + line length.
+        # Only runs once across both servers — fast (~150ms).
+        run: ruff check
+
       - name: Run pytest
         working-directory: control-server
         run: pytest -v

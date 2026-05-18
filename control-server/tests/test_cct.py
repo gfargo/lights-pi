@@ -6,7 +6,6 @@ correctness vs reality (the algorithm is itself an approximation) but
 "the values we shipped to users in v2.5 don't shift unintentionally."
 """
 import pytest
-
 from app import _cct_to_rgb, _wwa_mix
 
 

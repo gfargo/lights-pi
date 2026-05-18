@@ -288,9 +288,12 @@ def update_cue_list(
         cues:        Optional replacement cue array.
     """
     payload: dict[str, Any] = {}
-    if new_name is not None: payload["name"] = new_name
-    if description is not None: payload["description"] = description
-    if cues is not None: payload["cues"] = cues
+    if new_name is not None:
+        payload["name"] = new_name
+    if description is not None:
+        payload["description"] = description
+    if cues is not None:
+        payload["cues"] = cues
     r = _http().patch(f"/api/cue_lists/{cue_list}", json=payload)
     try:
         return r.json()
@@ -969,7 +972,10 @@ def main() -> None:
         # Reserved for future use — wire bearer-token auth here when needed.
         # FastMCP supports an OAuth/auth provider; a simple bearer-check ASGI
         # middleware can be attached to mcp.streamable_http_app() instead.
-        print(f"[mcp] bearer token configured (length={len(MCP_BEARER_TOKEN)}) — auth enforcement not yet wired", file=sys.stderr)
+        print(
+            f"[mcp] bearer token configured (length={len(MCP_BEARER_TOKEN)}) — auth enforcement not yet wired",
+            file=sys.stderr,
+        )
 
     print(f"[mcp] backend: {CONTROL_URL}", file=sys.stderr)
     print(f"[mcp] listening: http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}", file=sys.stderr)

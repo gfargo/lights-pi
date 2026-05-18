@@ -22,7 +22,6 @@ import os
 import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional
 
 QLC_NS = "http://www.qlcplus.org/FixtureDefinition"
 
@@ -36,7 +35,7 @@ USER_FIXTURE_DIR = Path.home() / ".qlcplus" / "fixtures"
 # ---------------------------------------------------------------------------
 
 # Mapping from QLC+ preset names → semantic role used by the control server
-PRESET_TO_ROLE: Dict[str, str] = {
+PRESET_TO_ROLE: dict[str, str] = {
     "IntensityMasterDimmer": "dimmer",
     "IntensityDimmer": "dimmer",
     "IntensityRed": "red",
@@ -58,7 +57,7 @@ PRESET_TO_ROLE: Dict[str, str] = {
 }
 
 # Lower-cased channel names → role (fallback when no Preset attribute)
-NAME_TO_ROLE: Dict[str, str] = {
+NAME_TO_ROLE: dict[str, str] = {
     "master dimmer": "dimmer",
     "dimmer": "dimmer",
     "intensity": "dimmer",
@@ -87,7 +86,7 @@ NAME_TO_ROLE: Dict[str, str] = {
 }
 
 # Colour subtag values → role
-COLOUR_TO_ROLE: Dict[str, str] = {
+COLOUR_TO_ROLE: dict[str, str] = {
     "red": "red",
     "green": "green",
     "blue": "blue",
@@ -105,7 +104,7 @@ COLOUR_TO_ROLE: Dict[str, str] = {
 }
 
 
-def _classify_channel(name: str, preset: Optional[str], group: Optional[str], colour: Optional[str]) -> Optional[str]:
+def _classify_channel(name: str, preset: str | None, group: str | None, colour: str | None) -> str | None:
     """Determine the semantic role for a single channel.
 
     Order of precedence: explicit Preset → Colour subtag → exact Channel name →
@@ -168,7 +167,7 @@ def _classify_channel(name: str, preset: Optional[str], group: Optional[str], co
 # .qxf cache and lookup
 # ---------------------------------------------------------------------------
 
-_definition_cache: Dict[str, "FixtureDefinition"] = {}
+_definition_cache: dict[str, FixtureDefinition] = {}
 _index_built = False
 _cache_lock = threading.Lock()
 
@@ -178,8 +177,8 @@ class FixtureChannel:
 
     __slots__ = ("offset", "name", "preset", "group", "colour", "role")
 
-    def __init__(self, offset: int, name: str, preset: Optional[str],
-                 group: Optional[str], colour: Optional[str], role: Optional[str]):
+    def __init__(self, offset: int, name: str, preset: str | None,
+                 group: str | None, colour: str | None, role: str | None):
         self.offset = offset
         self.name = name
         self.preset = preset
@@ -203,16 +202,16 @@ class FixtureMode:
 
     __slots__ = ("name", "channels")
 
-    def __init__(self, name: str, channels: List[FixtureChannel]):
+    def __init__(self, name: str, channels: list[FixtureChannel]):
         self.name = name
         self.channels = channels
 
     def channel_count(self) -> int:
         return len(self.channels)
 
-    def role_offsets(self) -> Dict[str, object]:
+    def role_offsets(self) -> dict[str, object]:
         """Return {role: offset} (or {role: [offsets]} for brightness)."""
-        roles: Dict[str, object] = {}
+        roles: dict[str, object] = {}
         for ch in self.channels:
             if ch.role and ch.role not in roles:
                 roles[ch.role] = ch.offset
@@ -239,8 +238,8 @@ class FixtureDefinition:
     __slots__ = ("manufacturer", "model", "type", "modes", "channel_defs", "source_path")
 
     def __init__(self, manufacturer: str, model: str, fixture_type: str,
-                 modes: Dict[str, FixtureMode],
-                 channel_defs: Dict[str, FixtureChannel],
+                 modes: dict[str, FixtureMode],
+                 channel_defs: dict[str, FixtureChannel],
                  source_path: Path):
         self.manufacturer = manufacturer
         self.model = model
@@ -249,7 +248,7 @@ class FixtureDefinition:
         self.channel_defs = channel_defs
         self.source_path = source_path
 
-    def get_mode(self, mode_name: str) -> Optional[FixtureMode]:
+    def get_mode(self, mode_name: str) -> FixtureMode | None:
         # Exact match first
         if mode_name in self.modes:
             return self.modes[mode_name]
@@ -273,7 +272,7 @@ def _local_name(tag: str) -> str:
     return tag.split("}", 1)[-1] if "}" in tag else tag
 
 
-def _parse_qxf(path: Path) -> Optional[FixtureDefinition]:
+def _parse_qxf(path: Path) -> FixtureDefinition | None:
     """Parse a .qxf file. Returns None on parse error."""
     try:
         tree = ET.parse(path)
@@ -292,7 +291,7 @@ def _parse_qxf(path: Path) -> Optional[FixtureDefinition]:
     fixture_type = find_text(root, "Type")
 
     # First pass: parse channel definitions keyed by Name attribute
-    channel_defs: Dict[str, FixtureChannel] = {}
+    channel_defs: dict[str, FixtureChannel] = {}
     for child in root:
         if _local_name(child.tag) != "Channel":
             continue
@@ -300,8 +299,8 @@ def _parse_qxf(path: Path) -> Optional[FixtureDefinition]:
         if not ch_name:
             continue
         preset = child.get("Preset")
-        group_text: Optional[str] = None
-        colour_text: Optional[str] = None
+        group_text: str | None = None
+        colour_text: str | None = None
         for sub in child:
             local = _local_name(sub.tag)
             if local == "Group" and sub.text:
@@ -319,14 +318,14 @@ def _parse_qxf(path: Path) -> Optional[FixtureDefinition]:
         )
 
     # Second pass: build modes from <Mode><Channel Number="...">name</Channel></Mode>
-    modes: Dict[str, FixtureMode] = {}
+    modes: dict[str, FixtureMode] = {}
     for child in root:
         if _local_name(child.tag) != "Mode":
             continue
         mode_name = child.get("Name", "").strip()
         if not mode_name:
             continue
-        mode_channels: List[FixtureChannel] = []
+        mode_channels: list[FixtureChannel] = []
         for sub in child:
             if _local_name(sub.tag) != "Channel":
                 continue
@@ -395,14 +394,14 @@ def _build_index(force: bool = False) -> None:
         _index_built = True
 
 
-def get_definition(manufacturer: str, model: str) -> Optional[FixtureDefinition]:
+def get_definition(manufacturer: str, model: str) -> FixtureDefinition | None:
     """Look up a parsed .qxf by manufacturer + model."""
     if not _index_built:
         _build_index()
     return _definition_cache.get(_cache_key(manufacturer, model))
 
 
-def get_mode(manufacturer: str, model: str, mode_name: str) -> Optional[FixtureMode]:
+def get_mode(manufacturer: str, model: str, mode_name: str) -> FixtureMode | None:
     """Look up a specific mode within a fixture definition."""
     definition = get_definition(manufacturer, model)
     if definition is None:

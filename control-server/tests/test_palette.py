@@ -5,7 +5,6 @@ turns each into a uniform routing dict that the apply_palette_live
 dispatcher can act on.
 """
 import pytest
-
 from app import _normalize_palette_value
 
 

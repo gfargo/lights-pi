@@ -5,22 +5,24 @@ Interprets natural language commands and adjusts QLC+ workspace in real-time
 Also provides direct fixture/group controls with QLC+ WebSocket integration
 """
 
-import os
-import sys
+import asyncio
+import concurrent.futures
 import json
+import math
+import os
 import socket
 import subprocess
-import xml.etree.ElementTree as ET
-import asyncio
-import math
-import time
+import sys
 import tempfile
-import websockets
+import threading
+import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict
-from flask import Flask, render_template, request, jsonify
+
+import websockets
+from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -49,7 +51,10 @@ QLC_WS_URL = f"ws://{QLC_HOST}:{QLC_PORT}/qlcplusWS"
 # AI Configuration from environment
 AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
-AI_MODEL = os.getenv("AI_MODEL", "gpt-4.1" if os.getenv("AI_PROVIDER", "openai") == "openai" else "claude-3-5-sonnet-20241022")
+AI_MODEL = os.getenv(
+    "AI_MODEL",
+    "gpt-4.1" if os.getenv("AI_PROVIDER", "openai") == "openai" else "claude-3-5-sonnet-20241022",
+)
 
 SERVICE_NAME = os.getenv("SERVICE", "qlcplus-web.service")
 
@@ -99,9 +104,6 @@ IS_LOCAL = _is_local()
 # The fix: maintain ONE long-lived WebSocket on a dedicated asyncio loop in a
 # background thread. All Flask requests dispatch sends to that loop via a
 # thread-safe call. The connection auto-reconnects if QLC+ drops it.
-
-import threading
-import concurrent.futures
 
 _qlc_loop: asyncio.AbstractEventLoop = None  # type: ignore
 _qlc_loop_thread: threading.Thread = None  # type: ignore
@@ -518,7 +520,7 @@ async def _fetch_channel_values(max_ch):
             response_marker="getChannelsValues",
             timeout=2.0,
         )
-    except (asyncio.TimeoutError, Exception) as e:
+    except (TimeoutError, Exception) as e:
         print(f"channel_values fetch error: {e}")
         return values
 
@@ -559,7 +561,7 @@ def _fixture_channels_info(fixture):
     if mode is None or not mode.channels:
         # Fall back: synthesize generic channel info from the heuristic roles
         roles = _fixture_roles_heuristic(fixture)
-        offset_to_role: Dict[int, str] = {}
+        offset_to_role: dict[int, str] = {}
         for role, val in roles.items():
             if role == "brightness":
                 continue
@@ -1309,7 +1311,10 @@ def apply_strobe_live(rate, intensity=None, target_groups=None):
                 "id": fixture["id"],
                 "name": fixture.get("name", ""),
                 "status": "skipped",
-                "reason": "no dedicated strobe channel — use batch_action with blackout/adjust_color for brightness-cycled effects",
+                "reason": (
+                    "no dedicated strobe channel — use batch_action with "
+                    "blackout/adjust_color for brightness-cycled effects"
+                ),
             })
             continue
 
@@ -1460,21 +1465,21 @@ def execute_command(command):
 def interpret_command(user_input):
     """
     Use AI to interpret natural language command and convert to lighting action
-    
+
     Args:
         user_input: Natural language command from user
-    
+
     Returns:
         dict: Action data with action type, parameters, and explanation
     """
-    
+
     if not user_input or not user_input.strip():
         return {
             "action": "error",
             "parameters": {},
             "explanation": "Empty command"
         }
-    
+
     # Check AI configuration
     if AI_PROVIDER not in ["anthropic", "openai", "ollama"]:
         return {
@@ -1482,24 +1487,28 @@ def interpret_command(user_input):
             "parameters": {},
             "explanation": f"Invalid AI provider: {AI_PROVIDER}"
         }
-    
+
     if AI_PROVIDER != "ollama" and not AI_API_KEY:
         return {
             "action": "error",
             "parameters": {},
             "explanation": "AI_API_KEY not configured"
         }
-    
+
     # Build prompt for AI
-    system_prompt = """You are a lighting control assistant. Convert natural language commands into structured lighting actions.
+    system_prompt = """\
+You are a lighting control assistant.
+Convert natural language commands into structured lighting actions.
 
 Available actions:
 1. adjust_brightness: Change overall brightness (value: -100 to +100 or absolute 0-255)
 2. adjust_color: Change color (color: red/green/blue/warm/cool/etc, intensity: 0-255)
-3. apply_template: Use a template (template: youtube-studio/party/ambient/spotlight/work-light/warm-white/cool-white)
+3. apply_template: Use a template (template: youtube-studio/party/ambient/
+   spotlight/work-light/warm-white/cool-white)
 4. generate_scene: Create new scene from description (description: text)
 5. fade: Fade to black or specific level (duration: seconds, target: 0-255)
-6. activate_scene: Apply an existing named scene (scene: Red/Blue/Green/Lights ON/Lights OFF/Work Light/Purple/Warm Amber/Spotlight/etc)
+6. activate_scene: Apply an existing named scene (scene: Red/Blue/Green/
+   Lights ON/Lights OFF/Work Light/Purple/Warm Amber/Spotlight/etc)
 
 Respond ONLY with valid JSON in this format:
 {
@@ -1513,25 +1522,31 @@ Respond ONLY with valid JSON in this format:
 
 Examples:
 Input: "make it brighter"
-Output: {"action": "adjust_brightness", "parameters": {"value": "+50"}, "explanation": "Increasing brightness by 50"}
+Output: {"action": "adjust_brightness", "parameters": {"value": "+50"},
+         "explanation": "Increasing brightness by 50"}
 
 Input: "add more blue"
-Output: {"action": "adjust_color", "parameters": {"color": "blue", "intensity": "+50"}, "explanation": "Adding more blue to the scene"}
+Output: {"action": "adjust_color", "parameters": {"color": "blue", "intensity": "+50"},
+         "explanation": "Adding more blue to the scene"}
 
 Input: "switch to party mode"
-Output: {"action": "apply_template", "parameters": {"template": "party"}, "explanation": "Applying party template"}
+Output: {"action": "apply_template", "parameters": {"template": "party"},
+         "explanation": "Applying party template"}
 
 Input: "warm sunset ambiance"
-Output: {"action": "generate_scene", "parameters": {"description": "warm sunset ambiance"}, "explanation": "Generating warm sunset scene"}
+Output: {"action": "generate_scene", "parameters": {"description": "warm sunset ambiance"},
+         "explanation": "Generating warm sunset scene"}
 
 Input: "fade to black over 5 seconds"
-Output: {"action": "fade", "parameters": {"duration": "5", "target": "0"}, "explanation": "Fading to black over 5 seconds"}
+Output: {"action": "fade", "parameters": {"duration": "5", "target": "0"},
+         "explanation": "Fading to black over 5 seconds"}
 
 Input: "turn on red scene"
-Output: {"action": "activate_scene", "parameters": {"scene": "Red"}, "explanation": "Applying the Red scene"}"""
+Output: {"action": "activate_scene", "parameters": {"scene": "Red"},
+         "explanation": "Applying the Red scene"}"""
 
     user_prompt = f"Convert this command: {user_input}"
-    
+
     # Call AI based on provider
     try:
         if AI_PROVIDER == "anthropic":
@@ -1552,7 +1567,7 @@ Output: {"action": "activate_scene", "parameters": {"scene": "Red"}, "explanatio
             "parameters": {},
             "explanation": f"AI API error: {str(e)}"
         }
-    
+
     # Parse JSON response
     try:
         # Extract JSON from response (handle markdown code blocks)
@@ -1560,7 +1575,7 @@ Output: {"action": "activate_scene", "parameters": {"scene": "Red"}, "explanatio
             response = response.split("```json")[1].split("```")[0].strip()
         elif "```" in response:
             response = response.split("```")[1].split("```")[0].strip()
-        
+
         return json.loads(response)
     except json.JSONDecodeError:
         return {
@@ -1573,7 +1588,7 @@ Output: {"action": "activate_scene", "parameters": {"scene": "Red"}, "explanatio
 def call_anthropic(system_prompt, user_prompt):
     """Call Anthropic Claude API"""
     import requests
-    
+
     try:
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -1595,13 +1610,13 @@ def call_anthropic(system_prompt, user_prompt):
         response.raise_for_status()
         return response.json()["content"][0]["text"]
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Anthropic API error: {str(e)}")
+        raise Exception(f"Anthropic API error: {str(e)}") from e
 
 
 def call_openai(system_prompt, user_prompt):
     """Call OpenAI API"""
     import requests
-    
+
     try:
         response = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -1628,15 +1643,15 @@ def call_openai(system_prompt, user_prompt):
             text = text.split("```")[1].split("```")[0].strip()
         return text
     except requests.exceptions.RequestException as e:
-        raise Exception(f"OpenAI API error: {str(e)}")
+        raise Exception(f"OpenAI API error: {str(e)}") from e
 
 
 def call_ollama(system_prompt, user_prompt):
     """Call Ollama local API"""
     import requests
-    
+
     combined_prompt = f"{system_prompt}\n\n{user_prompt}"
-    
+
     try:
         response = requests.post(
             "http://localhost:11434/api/generate",
@@ -1649,10 +1664,10 @@ def call_ollama(system_prompt, user_prompt):
         )
         response.raise_for_status()
         return response.json()["response"]
-    except requests.exceptions.ConnectionError:
-        raise Exception("Ollama not running. Start with: ollama serve")
+    except requests.exceptions.ConnectionError as e:
+        raise Exception("Ollama not running. Start with: ollama serve") from e
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Ollama API error: {str(e)}")
+        raise Exception(f"Ollama API error: {str(e)}") from e
 
 
 def execute_lighting_action(action_data, target_groups=None):
@@ -2157,7 +2172,7 @@ def list_templates():
         {"name": "warm-white", "description": "Warm white (2700K-3000K)"},
         {"name": "cool-white", "description": "Cool white (5000K-6500K)"}
     ]
-    
+
     return jsonify({"templates": templates})
 
 
@@ -2382,16 +2397,16 @@ def list_groups():
     try:
         if not GROUPS_FILE.exists():
             return jsonify({"groups": []})
-        
-        with open(GROUPS_FILE, 'r') as f:
+
+        with open(GROUPS_FILE) as f:
             groups_data = json.load(f)
-        
+
         # Handle both formats: {"groups": {...}} and direct {...}
         if "groups" in groups_data:
             groups_dict = groups_data["groups"]
         else:
             groups_dict = groups_data
-        
+
         groups = []
         for group_name, group_info in groups_dict.items():
             groups.append({
@@ -2399,7 +2414,7 @@ def list_groups():
                 "fixtures": group_info.get("fixtures", []),
                 "description": group_info.get("description", "")
             })
-        
+
         return jsonify({"groups": groups})
     except Exception as e:
         return jsonify({"error": str(e), "groups": []}), 500
@@ -2411,10 +2426,10 @@ def apply_group_template(group_name):
     try:
         data = request.get_json()
         template = data.get("template")
-        
+
         if not template:
             return jsonify({"success": False, "error": "Template name required"}), 400
-        
+
         safe_name = group_name.replace("'", "'\\''")
         scene_file = tempfile.NamedTemporaryFile(prefix="qlc-group-template-", suffix=".xml", delete=False)
         scene_path = Path(scene_file.name)
@@ -2425,9 +2440,9 @@ def apply_group_template(group_name):
                    f" --output '{scene_path}'")
         else:
             cmd = f"{LIGHTSCTL} group-template '{safe_name}' {template} --add-to-workspace"
-        
+
         result = execute_command(cmd)
-        
+
         # If local, apply the generated template scene immediately with no QLC+ restart.
         if IS_LOCAL and WORKSPACE_PATH.exists() and result["success"]:
             if scene_path.exists() and scene_path.read_text().strip():
@@ -2441,7 +2456,7 @@ def apply_group_template(group_name):
                 result["success"] = False
                 result["error"] = "Scene file not created"
         scene_path.unlink(missing_ok=True)
-        
+
         success = result["success"]
         return jsonify({
             "success": success,
@@ -2518,31 +2533,31 @@ def set_channel():
         fixture_id = data.get("fixture_id")
         channel_offset = data.get("channel", 0)  # 0-based offset within fixture
         value = data.get("value", 0)
-        
+
         if fixture_id is None or value is None:
             return jsonify({"success": False, "error": "Missing fixture_id or value"}), 400
-        
+
         # Get fixture info from workspace
         tree = ET.parse(WORKSPACE_PATH)
         root = tree.getroot()
         ns = {'qlc': 'http://www.qlcplus.org/Workspace'}
-        
+
         fixture = root.find(f".//qlc:Fixture[qlc:ID='{fixture_id}']", ns)
         if fixture is None:
             return jsonify({"success": False, "error": f"Fixture {fixture_id} not found"}), 404
-        
+
         universe_elem = fixture.find("qlc:Universe", ns)
         address_elem = fixture.find("qlc:Address", ns)
-        
+
         universe = int(universe_elem.text) if universe_elem is not None else 0
         base_address = int(address_elem.text) if address_elem is not None else 0
-        
+
         # Calculate actual DMX address (1-based)
         dmx_address = base_address + channel_offset + 1
-        
+
         # Set channel value
         success = set_channel_value(universe, dmx_address, int(value))
-        
+
         return jsonify({
             "success": success,
             "fixture_id": fixture_id,
@@ -3427,7 +3442,7 @@ def _systemd_unit_state(unit: str, exec_fn=execute_command) -> str:
     differently.
     """
     load = _parse_systemd_load_state(
-        (exec_fn(f"systemctl show -p LoadState {unit}").get("output") or "")
+        exec_fn(f"systemctl show -p LoadState {unit}").get("output") or ""
     )
     if load == "not-found":
         return "not_installed"
@@ -3976,9 +3991,12 @@ def create_chase():
             continue
 
         normalized = {"scene_id": scene_id}
-        if step_fade_in  is not None: normalized["fade_in_ms"]  = max(0, int(step_fade_in))
-        if step_hold     is not None: normalized["hold_ms"]     = max(0, int(step_hold))
-        if step_fade_out is not None: normalized["fade_out_ms"] = max(0, int(step_fade_out))
+        if step_fade_in is not None:
+            normalized["fade_in_ms"] = max(0, int(step_fade_in))
+        if step_hold is not None:
+            normalized["hold_ms"] = max(0, int(step_hold))
+        if step_fade_out is not None:
+            normalized["fade_out_ms"] = max(0, int(step_fade_out))
         normalized_steps.append(normalized)
 
     if unknown_refs:
@@ -4694,7 +4712,11 @@ def _build_chat_tools() -> list[dict]:
     """Build the tool registry. Mirrors the MCP catalog so the agentic chat
     feels identical to using Claude Desktop against the MCP server."""
 
-    GROUPS_OPTIONAL = {"type": "array", "items": {"type": "string"}, "description": "Optional list of group names to target. Omit for all fixtures."}
+    GROUPS_OPTIONAL = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Optional list of group names to target. Omit for all fixtures.",
+    }
 
     return [
         # ── Discovery ─────────────────────────────────────────────────────
@@ -4766,7 +4788,10 @@ def _build_chat_tools() -> list[dict]:
         },
         {
             "name": "apply_template",
-            "description": "Apply a built-in template (party, ambient, youtube-studio, spotlight, work-light, warm-white, cool-white).",
+            "description": (
+                "Apply a built-in template (party, ambient, youtube-studio, "
+                "spotlight, work-light, warm-white, cool-white)."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -4836,13 +4861,20 @@ def _build_chat_tools() -> list[dict]:
         },
         {
             "name": "palette",
-            "description": "Assign different colors / Kelvin values to different groups in one call. Values: color preset name (\"warm\"), Kelvin number (3200), or dict with intensity.",
+            "description": (
+                "Assign different colors / Kelvin values to different groups in one call. "
+                "Values: color preset name (\"warm\"), Kelvin number (3200), "
+                "or dict with intensity."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "assignments": {
                         "type": "object",
-                        "description": "Map of group name → value (color preset, Kelvin number, or {color/kelvin, intensity})",
+                        "description": (
+                            "Map of group name → value (color preset, Kelvin number, "
+                            "or {color/kelvin, intensity})"
+                        ),
                         "additionalProperties": True,
                     },
                 },
@@ -4901,7 +4933,10 @@ def _build_chat_tools() -> list[dict]:
         },
         {
             "name": "generate_scene",
-            "description": "AI-synthesize a new scene from a description and apply it live. Result includes scene_xml — pass to save_scene to persist.",
+            "description": (
+                "AI-synthesize a new scene from a description and apply it live. "
+                "Result includes scene_xml — pass to save_scene to persist."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -5077,12 +5112,18 @@ def _build_chat_tools() -> list[dict]:
         },
         {
             "name": "create_chase",
-            "description": "Build a QLC+ chase from a name + ordered list of scene references. Steps can be scene names, IDs, or {scene, hold_ms} dicts.",
+            "description": (
+                "Build a QLC+ chase from a name + ordered list of scene references. "
+                "Steps can be scene names, IDs, or {scene, hold_ms} dicts."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
-                    "steps": {"type": "array", "description": "Ordered scene refs (strings, ints, or dicts with per-step timing)"},
+                    "steps": {
+                        "type": "array",
+                        "description": "Ordered scene refs (strings, ints, or dicts with per-step timing)",
+                    },
                     "fade_in_ms": {"type": "integer"},
                     "hold_ms": {"type": "integer"},
                     "fade_out_ms": {"type": "integer"},
@@ -5137,7 +5178,11 @@ def _build_chat_tools() -> list[dict]:
         },
         {
             "name": "create_cue_list",
-            "description": "Build a cue list (audio-synced show). Each cue: {at: '0:32', scene/chase/action: ...}. Timestamps accept '0:32.500', '32s', '32500ms', or integer ms.",
+            "description": (
+                "Build a cue list (audio-synced show). Each cue: "
+                "{at: '0:32', scene/chase/action: ...}. Timestamps accept "
+                "'0:32.500', '32s', '32500ms', or integer ms."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -5202,7 +5247,10 @@ def _build_chat_tools() -> list[dict]:
         },
         {
             "name": "get_logs",
-            "description": "Tail systemd journal for an allowlisted service: qlcplus-web, lighting-control, lighting-mcp, nginx.",
+            "description": (
+                "Tail systemd journal for an allowlisted service: "
+                "qlcplus-web, lighting-control, lighting-mcp, nginx."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -5217,7 +5265,10 @@ def _build_chat_tools() -> list[dict]:
         # ── Setup utility ────────────────────────────────────────────────
         {
             "name": "identify_fixture",
-            "description": "Flash a single fixture so the operator can locate it physically. Pulses 2s × 4 then restores prior state.",
+            "description": (
+                "Flash a single fixture so the operator can locate it physically. "
+                "Pulses 2s × 4 then restores prior state."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -5545,7 +5596,10 @@ def handle_chat():
     if AI_PROVIDER not in ("anthropic", "openai"):
         return jsonify({
             "success": False,
-            "error": f"Agentic chat requires AI_PROVIDER=anthropic or openai (got {AI_PROVIDER!r}). Ollama tool-calling is not supported yet.",
+            "error": (
+                f"Agentic chat requires AI_PROVIDER=anthropic or openai (got {AI_PROVIDER!r}). "
+                "Ollama tool-calling is not supported yet."
+            ),
         }), 400
     if not AI_API_KEY:
         return jsonify({"success": False, "error": "AI_API_KEY not configured"}), 400

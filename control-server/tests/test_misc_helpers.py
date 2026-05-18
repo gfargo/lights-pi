@@ -1,11 +1,10 @@
 """Miscellaneous small helper tests — direction / run-order normalization,
 fixture ID coercion, level parser."""
 import pytest
-
 from app import (
     _normalize_direction,
-    _normalize_run_order,
     _normalize_fixture_ids,
+    _normalize_run_order,
     _parse_level,
 )
 
