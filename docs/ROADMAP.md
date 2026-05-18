@@ -804,11 +804,43 @@ Lights Pi started as a simple Raspberry Pi lighting controller. The vision is to
 - Professional quality
 - Accessible to all skill levels
 
-**Next Steps:**
-1. ✅ Implement auto-load workspace
-2. Launch marketing website
-3. Build AI scene generation
-4. Grow community
-5. Iterate based on feedback
+## Current Backlog — What's Next
+
+The v1.x "Next Steps" list is shipped: auto-load workspace, marketing site,
+AI scene generation, and the wider v2.x feature set (chases, cue lists,
+agentic chat, mobile + PWA, visual identity, MCP). The work below is the
+live backlog as of v2.13.x, filed as GitHub issues and triaged into three
+tiers by leverage.
+
+### Tier 1 — Highest leverage
+
+The features that unlock the most new behaviour for the least effort.
+
+- **[#26 MIDI controller input](https://github.com/gfargo/lights-pi/issues/26)** — physical faders and pads driving DMX. Top recommendation; transforms the rig from "AI-controlled" to "playable instrument."
+- **[#24 Integration test layer](https://github.com/gfargo/lights-pi/issues/24)** — end-to-end coverage that exercises Flask + MCP + cue playback together. Unblocks confident refactors of the chat/agent loop and the cue engine.
+- **[#25 Authentication](https://github.com/gfargo/lights-pi/issues/25)** — shared password + session cookie in front of the control server. Needed before remote access or any non-trusted-LAN deployment.
+- **[#27 OSC support](https://github.com/gfargo/lights-pi/issues/27)** — receive OSC from TouchOSC, QLab, and the rest of the show-control ecosystem.
+
+### Tier 2 — Strong follow-ups
+
+Worthwhile features that depend on a Tier 1 milestone or have a narrower audience.
+
+- **[#28 Audio reactivity + BPM detection](https://github.com/gfargo/lights-pi/issues/28)** — real-time audio-driven scenes and beat-matched effects.
+- **[#29 Visual cue list timeline editor](https://github.com/gfargo/lights-pi/issues/29)** — drag-and-drop cue sequencing in the web UI.
+- **[#30 Structured logging + deep health endpoint](https://github.com/gfargo/lights-pi/issues/30)** — machine-readable JSON logs and a richer `/health` payload.
+- **[#31 Automated workspace backups](https://github.com/gfargo/lights-pi/issues/31)** — scheduled snapshots beyond the manual `lightsctl.sh backup`.
+- **[#32 Chat memory + history persistence](https://github.com/gfargo/lights-pi/issues/32)** — server-side conversation store so chats survive a reload.
+- **[#33 AI provider failover](https://github.com/gfargo/lights-pi/issues/33)** — automatic Anthropic ↔ OpenAI fallback when one provider is degraded.
+- **[#34 Mock DMX device for local development](https://github.com/gfargo/lights-pi/issues/34)** — pretend ENTTEC so the stack runs end-to-end without hardware.
+- **[#35 Tap tempo for chases](https://github.com/gfargo/lights-pi/issues/35)** — set chase BPM from a tapped button or MIDI input.
+
+### Tier 3 — Speculative
+
+Higher cost, narrower wins, or unproven demand. Worth scoping but not ahead of Tier 1/2.
+
+- **[#36 Visual stage layout editor](https://github.com/gfargo/lights-pi/issues/36)** — drag fixtures around a 2-D stage plan.
+- **[#37 Scene preview swatches](https://github.com/gfargo/lights-pi/issues/37)** — server-rendered thumbnails of saved scenes.
+
+---
 
 Let's build something amazing together.
