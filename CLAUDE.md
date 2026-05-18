@@ -19,8 +19,12 @@ Applies to both human contributors and AI agents driving the codebase.
   `chore: summary`. The scope is the area touched (`ui`, `chat`, `mcp`,
   `diag`, `mobile+pwa`, etc.).
 - **Never push directly to `main`.** Open a PR with `gh pr create` and let
-  the maintainer review/merge. (The marketing-site sibling repo
-  `lights-pi-www` is the only exception — that one commits directly to `main`.)
+  the maintainer review/merge. Two exceptions, both narrow:
+  - **`lights-pi-www`** (marketing site) — commits directly to `main`. The
+    user treats it as low-stakes content and doesn't want PR ceremony.
+  - **`lights-pi.wiki`** (GitHub wiki) — commits directly to `master`.
+    GitHub wikis don't support pull requests by design; direct push is
+    the only way to update them. Prior wiki history is all direct pushes.
 
 ---
 
