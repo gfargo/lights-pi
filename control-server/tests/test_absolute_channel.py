@@ -8,7 +8,6 @@ internally everything else is 0-based. Getting this wrong by one corrupts
 every DMX frame, so it's worth covering.
 """
 import pytest
-
 from app import _absolute_channel
 
 

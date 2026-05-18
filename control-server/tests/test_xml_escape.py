@@ -7,7 +7,6 @@ substitutions matters too: `&` must be escaped first, or `&amp;` would
 become `&amp;amp;`.
 """
 import pytest
-
 from app import _xml_escape
 
 
