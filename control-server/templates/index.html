@@ -1679,11 +1679,23 @@
 
         /* ══════════════════════════════════════
            Tab switching
-           Updates the URL with ?tab=<name> via replaceState so a refresh
-           lands you back where you were. replaceState (vs. pushState) keeps
-           the back button useful — tab clicks don't become history entries.
+           Single source of truth — previously this was three nested
+           function-replace wrappers (base + currentTab tracking + chat
+           render). Collapsed into one because the layers had grown
+           harder to follow than the work they did.
+
+           Responsibilities:
+             1. Swap active state on .tab + .tab-content (aria included)
+             2. Stop/start the console-polling side effect
+             3. Track currentTab so polling code knows what's visible
+             4. Lazy-load tab data on first switch (cuelists / chases /
+                tools / diag) and re-render chat history when chat opens
+             5. Persist the active tab in the URL via history.replaceState
+                — replaceState (vs. pushState) keeps the back button useful
+                because tab clicks don't become history entries.
            ══════════════════════════════════════ */
         const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'tools', 'diag'];
+        let currentTab = 'ai';
 
         function switchTab(tabName, btn) {
             // Allow programmatic calls (no event / no button) by resolving
@@ -1695,17 +1707,28 @@
             const content = document.getElementById(`${tabName}-tab`);
             if (!content) return;  // tab content missing — bail
 
+            // Active-state swap.
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected','false'); });
             content.classList.add('active');
             btn.classList.add('active');
             btn.setAttribute('aria-selected','true');
+            currentTab = tabName;
+
+            // Console-polling side effect (only run while console tab is visible).
             consoleActive = (tabName === 'console');
             if (tabName === 'console') {
                 loadFixtures();
             } else {
                 stopConsolePolling();
             }
+
+            // Lazy-load tab content on switch (idempotent — each loader is safe to re-call).
+            if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
+            else if (tabName === 'chases') loadChases();
+            else if (tabName === 'tools') populateToolsGroupSelects();
+            else if (tabName === 'diag')  loadSystemInfo();
+            else if (tabName === 'chat')  renderChatHistory();
 
             // Persist the active tab in the URL so refresh / share-link works.
             try {
@@ -1768,13 +1791,6 @@
         let historyCounter = 0;
         const HISTORY_KEY = 'qlc_command_history';
         const MAX_HISTORY = 50;
-
-        function loadPersistedHistory() {
-            try {
-                const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-                saved.slice().reverse().forEach(entry => renderHistoryItem(entry.command, entry.result, entry.time));
-            } catch (e) {}
-        }
 
         function persistHistory(command, result, time) {
             try {
@@ -2132,10 +2148,6 @@
                     if (v) v.textContent = value;
                 }
             });
-        }
-
-        function updateSliderByAbsAddr(absAddr, value) {
-            updateSliderByQlcCh(absAddr, value);
         }
 
         function getChannelNames(fixture) {
@@ -3051,22 +3063,6 @@
         }
 
         /* ══════════════════════════════════════
-           Track current tab so polling knows what's active
-           ══════════════════════════════════════ */
-        let currentTab = 'ai';
-        // Wrap the existing switchTab so we know which tab is active.
-        const _origSwitchTab = switchTab;
-        switchTab = function(tabName, btn) {
-            currentTab = tabName;
-            _origSwitchTab(tabName, btn);
-            // Lazy-load tab content on first switch
-            if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
-            else if (tabName === 'chases') loadChases();
-            else if (tabName === 'tools') populateToolsGroupSelects();
-            else if (tabName === 'diag')  loadSystemInfo();
-        };
-
-        /* ══════════════════════════════════════
            Boot extensions
            ══════════════════════════════════════ */
         setupQuickTools();
@@ -3313,13 +3309,6 @@
                 input.focus();
             }
         }
-
-        /* Hook into tab switching so the chat history renders on first open */
-        const _prevSwitchTab = switchTab;
-        switchTab = function(tabName, btn) {
-            _prevSwitchTab(tabName, btn);
-            if (tabName === 'chat') renderChatHistory();
-        };
 
         /* Wire up textarea keybindings: Enter to send, Shift+Enter for newline */
         document.getElementById('chatInput').addEventListener('keydown', (e) => {
