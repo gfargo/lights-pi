@@ -490,6 +490,32 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 ./lightsctl.sh test-dmx
 ```
 
+### Updating the Control Server — Common Pitfalls
+
+> **⚠️ `./lightsctl.sh update` does NOT deploy lights-pi code.**
+> It only runs `sudo apt update && apt upgrade` on the Pi. To push your
+> latest `control-server/` changes from the workstation, use:
+>
+> ```bash
+> bash scripts/deploy.sh
+> ```
+>
+> That rsyncs `control-server/`, `scripts/`, and `lightsctl.sh` to the Pi
+> and restarts `lighting-control.service`. Without it, the Pi keeps running
+> whatever code was last deployed.
+
+A few related gotchas worth knowing:
+
+- **MCP server installs separately.** `./lightsctl.sh mcp-install` is not
+  part of initial provisioning. Until you run it, Pi-health will report
+  `lighting-mcp: not_installed` (post-v2.13.1). See [docs/MCP_SERVER.md](docs/MCP_SERVER.md).
+- **Hard-refresh the browser after deploy.** ⌘⇧R (macOS) or Ctrl⇧R (Win/Linux)
+  to bust the cached CSS/JS — otherwise you'll keep seeing the old UI even
+  after the service restarts.
+- **Don't edit `.env` on the workstation expecting it to deploy.** `deploy.sh`
+  excludes `.env` so production secrets on the Pi aren't clobbered. Edit it
+  on the Pi directly (`./lightsctl.sh ssh`, then `nano ~/control-server/.env`).
+
 ---
 
 ## ⚙️ Configuration
@@ -1005,6 +1031,43 @@ AI_SCENE_VARIATIONS=1          # Default number of variations
 ```
 
 See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete documentation.
+
+---
+
+## 🆕 Recent Releases
+
+The web UI and platform layer have evolved quickly since the original v1.x roadmap.
+Below is a quick orientation to the most recent ground covered — see the
+[full release notes on GitHub](https://github.com/gfargo/lights-pi/releases)
+for everything else.
+
+**v2.13.2 — Tab URL persistence.** Active tab now syncs to a `?tab=<name>`
+query param via `history.replaceState`, so tab links are bookmarkable and the
+back button stays clean.
+
+**v2.13.1 — Boot init + diagnostics fix.** Restores `loadScenes()`,
+`checkStatus()`, and the 15-second status poll on page load (regression from
+v2.13.0). Pi-health now distinguishes `not_installed` from `inactive` via a
+new `_systemd_unit_state` helper that inspects `LoadState` before `ActiveState`.
+
+**v2.13.0 — Visual identity pass.** Geist Sans + Mono via Google Fonts; a
+`:root` CSS token system (`--ink`, `--paper`, `--rule`, `--amber-tungsten`,
+`--signal-*`); amber-tungsten replaces white for active/selected states; a
+filament dot in the header; animated tab indicator; eyebrow labels on tool
+panels; redesigned BLACKOUT button with theatrical hover; hairlines instead
+of literal greys.
+
+**v2.12.0 — Mobile audit, installable PWA, tests + CI.**
+- **Mobile redesign:** 44 px touch targets, 16 px form inputs (prevents iOS
+  zoom), safe-area insets, horizontal-scroll tabs, full-screen modals on
+  phones.
+- **Installable PWA:** `/manifest.json`, `/icon.svg`, `/sw.js` service worker,
+  Apple-touch meta tags. iOS and Android "Add to Home Screen" gives a
+  chromeless app shell.
+- **Test suite + CI:** ~195 pytest tests cover the pure helpers under
+  `control-server/tests/`. `.github/workflows/test.yml` runs pytest on
+  Python 3.11 + 3.12, `node --check` on inline JS, and an HTML tag-balance
+  check on the single-page template.
 
 ---
 
