@@ -8,6 +8,7 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 import asyncio
 import concurrent.futures
 import json
+import logging
 import math
 import os
 import socket
@@ -5636,6 +5637,24 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Warning: initial QLC+ connect failed (will retry on demand): {e}")
 
-    # Run server with SocketIO (debug=False to avoid stat reloader doubling connections)
+    # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
+    #
+    # NOTE on `allow_unsafe_werkzeug=True`:
+    # We intentionally use Werkzeug's WSGI server for the single-user studio
+    # LAN deploy. For a "real" production WSGI (gunicorn + eventlet/gevent
+    # worker), see issue #47 — that migration needs Pi-side testing because
+    # of the persistent QLC+ asyncio loop that lives in a thread.
+    #
+    # Silence Werkzeug's own "development server" warning (still visible on
+    # service start otherwise). The flask-socketio "appears to be used in a
+    # production deployment" line lands one level higher (a plain print() in
+    # the library) and is harder to filter — left in place as the visible
+    # marker that we're on the dev server.
+    class _SilenceDevServerWarning(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "development server" not in record.getMessage().lower()
+
+    logging.getLogger("werkzeug").addFilter(_SilenceDevServerWarning())
+
     port = int(os.getenv("CONTROL_PORT", "5000"))
     socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
