@@ -267,17 +267,24 @@
 
         /* ── Tabs ──
            Active state is signalled by a tungsten underline that grows
-           from the centre. Slightly more theatrical than a border swap. */
+           from the centre. Slightly more theatrical than a border swap.
+           Scrollbar is hidden cross-browser (the row still scrolls via
+           touch / shift-wheel — we just don't render the ugly default
+           scrollbar on desktop). */
         .tabs {
-            display: flex; gap: 0.5rem; margin-bottom: 2rem;
-            border-bottom: 1px solid var(--rule); overflow-x: auto;
+            display: flex; gap: 0.25rem; margin-bottom: 2rem;
+            border-bottom: 1px solid var(--rule);
+            overflow-x: auto;
+            scrollbar-width: none;     /* Firefox */
+            -ms-overflow-style: none;  /* IE / old Edge */
         }
+        .tabs::-webkit-scrollbar { display: none; height: 0; }  /* Chrome / Safari */
         .tab {
             position: relative;
-            padding: 0.75rem 1.5rem; background: transparent; border: none;
+            padding: 0.75rem 1.05rem; background: transparent; border: none;
             cursor: pointer;
             font-family: var(--font-mono);
-            font-size: 0.78rem; font-weight: 500; letter-spacing: 0.12em;
+            font-size: 0.72rem; font-weight: 500; letter-spacing: 0.1em;
             text-transform: uppercase; color: var(--paper-50);
             transition: color 0.2s; white-space: nowrap;
         }
@@ -1215,10 +1222,11 @@
             </div>
         </div>
 
-        <!-- Tabs: full surface — chat-first, then control/build/inspect -->
+        <!-- Tabs: full surface — Quick Commands is the landing tab; chat
+             and the deeper builders sit alongside. -->
         <div class="tabs" role="tablist">
-            <button class="tab active" onclick="switchTab('chat', this)" role="tab" aria-selected="true">Chat</button>
-            <button class="tab" onclick="switchTab('ai', this)" role="tab" aria-selected="false">Quick Commands</button>
+            <button class="tab" onclick="switchTab('chat', this)" role="tab" aria-selected="false">Chat</button>
+            <button class="tab active" onclick="switchTab('ai', this)" role="tab" aria-selected="true">Quick Commands</button>
             <button class="tab" onclick="switchTab('console', this)" role="tab" aria-selected="false">Virtual Console</button>
             <button class="tab" onclick="switchTab('cuelists', this)" role="tab" aria-selected="false">Cue Lists</button>
             <button class="tab" onclick="switchTab('chases', this)" role="tab" aria-selected="false">Chases</button>
@@ -1230,7 +1238,7 @@
              Chat tab — agentic conversation (v2.11)
              Full conversational agent with access to all 48 MCP tools
              ══════════════════════════════════════ -->
-        <div id="chat-tab" class="tab-content active">
+        <div id="chat-tab" class="tab-content">
             <div class="chat-pane" id="chatPane">
                 <div class="chat-welcome" id="chatWelcome">
                     <div class="chat-welcome-title">Talk to your rig</div>
@@ -1263,7 +1271,7 @@
             </div>
         </div>
 
-        <div id="ai-tab" class="tab-content">
+        <div id="ai-tab" class="tab-content active">
             <div class="input-group">
                 <input type="text" id="commandInput" placeholder="Try: 'make it warmer' or 'party mode'" autocomplete="off" aria-label="Lighting command">
                 <button id="voiceBtn" title="Voice input" aria-label="Voice input">🎤</button>
@@ -1528,6 +1536,7 @@
             <div class="tool-panel" data-eyebrow="journalctl · tail">
                 <div class="tool-header">
                     <span class="tool-title">Service logs</span>
+                    <button class="btn-secondary btn-tiny" id="logsCopyBtn" onclick="copyLogs()" title="Copy log output to clipboard">Copy</button>
                 </div>
                 <div class="tool-actions" style="margin-bottom:0.75rem;">
                     <select id="logService" class="field-input" style="flex:1;">
@@ -2963,6 +2972,40 @@
             }
         }
 
+        /**
+         * Copy the current log buffer to the clipboard. Uses the async
+         * Clipboard API where available, with a textarea-fallback for older
+         * browsers / non-HTTPS contexts (the Pi is usually served plain http
+         * on the LAN, where navigator.clipboard may be blocked).
+         */
+        async function copyLogs() {
+            const viewer = document.getElementById('logsViewer');
+            const btn = document.getElementById('logsCopyBtn');
+            const text = viewer.textContent || '';
+            if (!text.trim()) return;
+            const original = btn.textContent;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    // Fallback for plain http://lights.local:5000
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
+                btn.textContent = 'Copied ✓';
+                setTimeout(() => { btn.textContent = original; }, 1400);
+            } catch (e) {
+                btn.textContent = 'Copy failed';
+                setTimeout(() => { btn.textContent = original; }, 1800);
+            }
+        }
+
         /* ══════════════════════════════════════
            Track current tab so polling knows what's active
            ══════════════════════════════════════ */
@@ -3242,7 +3285,9 @@
             }
         });
 
-        /* Auto-render history on initial page load (chat is the default tab) */
+        /* Render chat history into the hidden chat-tab DOM so it's instant
+           when the user switches to it. (Quick Commands is now the landing
+           tab, but we still want chat to feel snappy on first activation.) */
         renderChatHistory();
 
         /* ══════════════════════════════════════════════════════════════
@@ -3253,6 +3298,25 @@
                 navigator.serviceWorker.register('/sw.js').catch(() => {});
             });
         }
+
+        /* ══════════════════════════════════════════════════════════════
+           Boot init — fires once per page load.
+           Regression fix (v2.13.1): commit 8d47b55 (v2.10 web-ui catchup)
+           accidentally orphaned these calls. The health widget polling and
+           first-paint data loads have been silently broken since then —
+           anyone with an old session cached kept seeing it work; fresh
+           loads showed "Checking services…" forever and empty scene grids.
+           ══════════════════════════════════════════════════════════════ */
+        (function boot() {
+            // Health widget: initial check + 15s poll for service status.
+            checkStatus();
+            setInterval(checkStatus, 15000);
+
+            // First-paint data the user expects regardless of starting tab.
+            loadScenes();
+            loadFixtures();
+            loadGroups();
+        })();
     </script>
 </body>
 </html>
