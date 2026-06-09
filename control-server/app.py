@@ -1933,6 +1933,32 @@ def pwa_icon():
     return response
 
 
+@app.route("/logo", methods=["GET"])
+def serve_logo():
+    """Serve a custom logo from the static/ directory.
+
+    Convention: drop a file named 'logo.png', 'logo.webp', 'logo.svg', or
+    'logo.jpg' into control-server/static/ to brand the interface. The file
+    is gitignored so each deployment can have its own identity.
+
+    Returns 404 if no logo file is present (the template falls back to the
+    built-in SVG icon).
+    """
+    from flask import send_from_directory, abort
+    static_dir = Path(__file__).parent / "static"
+    for ext in ("webp", "png", "svg", "jpg", "jpeg", "gif"):
+        logo_file = static_dir / f"logo.{ext}"
+        if logo_file.exists():
+            mime_map = {
+                "webp": "image/webp", "png": "image/png", "svg": "image/svg+xml",
+                "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+            }
+            response = send_from_directory(str(static_dir), f"logo.{ext}", mimetype=mime_map[ext])
+            response.headers["Cache-Control"] = "public, max-age=86400"
+            return response
+    abort(404)
+
+
 @app.route("/sw.js", methods=["GET"])
 def pwa_service_worker():
     """Tiny service worker — installability requirement on Chrome/Android.

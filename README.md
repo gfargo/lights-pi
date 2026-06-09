@@ -23,6 +23,8 @@
 - [Natural Language Control](#-natural-language-control-beta)
 - [MCP Server (LLM Agent Access)](#-mcp-server-llm-agent-access)
 - [Fixture Groups / Zones](#-fixture-groupszones)
+- [Customization & Branding](#-customization--branding)
+- [Tailscale (Remote Access)](#-tailscale-remote-access)
 - [Project Structure](#-project-structure)
 - [Troubleshooting](#-troubleshooting)
 
@@ -30,6 +32,8 @@ For the deeper internals of the natural-language control layer and the
 single-WebSocket QLC+ bridge, see
 [docs/CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md).
 For the MCP server (LLM agent access), see [docs/MCP_SERVER.md](docs/MCP_SERVER.md).
+For remote access via Tailscale, see [docs/TAILSCALE.md](docs/TAILSCALE.md).
+For branding and customization, see [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md).
 
 ---
 
@@ -672,6 +676,83 @@ Backups include `.config/qlcplus` and `.qlcplus` directories from the Pi.
 
 ---
 
+## 🎨 Customization & Branding
+
+Both the landing page and control server support custom logos and branding
+without modifying tracked source files. See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)
+for the full guide.
+
+### Custom Logo (Quick Start)
+
+Drop a logo file into the standard locations:
+
+```bash
+# Control server (port 5000)
+cp your-logo.webp control-server/static/logo.webp
+
+# Landing page (port 80)
+cp your-logo.webp landing/logo.webp
+```
+
+Supported formats: `.webp`, `.png`, `.svg`, `.jpg` (checked in that priority order).
+
+Logo files are **gitignored** — each deployment maintains its own branding.
+If no logo is present, both interfaces show the default light-bulb SVG icon.
+
+### Landing Page Text
+
+Customize text via `.env`:
+
+```bash
+LANDING_STUDIO_NAME="Your Studio"
+LANDING_SUBTITLE="Lighting Controller"
+LANDING_FOOTER_TEXT="lights.local"
+```
+
+Then redeploy: `./lightsctl.sh landing-deploy`
+
+### QLC+ Workspace Compatibility
+
+The Pi runs QLC+ **4.14.1**. Workspaces saved from QLC+ 5.x will not load
+(the web UI appears blank). Convert by changing the version tag, removing
+`BeatGenerator` and `Palette` elements. See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md#qlc-workspace)
+for details.
+
+---
+
+## 🌐 Tailscale (Remote Access)
+
+[Tailscale](https://tailscale.com) gives you secure remote access to the Pi
+from anywhere — no port forwarding or dynamic DNS required.
+See [docs/TAILSCALE.md](docs/TAILSCALE.md) for the full setup guide.
+
+### Quick Setup
+
+```bash
+# SSH into the Pi
+./lightsctl.sh ssh
+
+# Install and authenticate
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo systemctl enable --now tailscaled
+sudo tailscale up
+# → Opens a URL to authorize the device on your tailnet
+```
+
+After authorization, the Pi is reachable from any device on your tailnet:
+
+| Service | Tailscale URL |
+|---------|---------------|
+| Landing page | `http://lights.<tailnet>.ts.net` |
+| QLC+ Web UI | `http://lights.<tailnet>.ts.net:9999` |
+| Control Server | `http://lights.<tailnet>.ts.net:5000` |
+| MCP Server | `http://lights.<tailnet>.ts.net:5001` |
+
+Tailscale bypasses `ufw` rules via the `tailscale0` interface — your local
+firewall config remains unchanged.
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -682,6 +763,7 @@ lights-pi/
 ├── control-server/           # Flask control server (deployed to Pi at port 5000)
 │   ├── app.py                # Routes, persistent QLC+ WebSocket, AI dispatch
 │   ├── fixture_definitions.py # .qxf parser → authoritative channel roles
+│   ├── static/               # Custom branding assets (gitignored logo.*)
 │   ├── templates/index.html  # Live control UI (AI chat, virtual console, groups)
 │   └── requirements.txt      # Python dependencies
 ├── scripts/
@@ -937,6 +1019,66 @@ sudo systemctl restart dhcpcd5
 
 </details>
 
+<details>
+<summary><b>QLC+ web UI loads blank (no fixtures or scenes)</b></summary>
+
+This usually means the workspace file is in QLC+ 5.x format but the Pi runs
+4.14.1. Check the version:
+
+```bash
+ssh pi@lights.local "head -10 ~/.qlcplus/default.qxw"
+```
+
+If you see `<Version>5.x.x</Version>`, the workspace needs converting:
+1. Change `<Version>` to `4.14.1`
+2. Remove `<BeatGenerator>` elements
+3. Remove `<Palette>` elements
+4. Ensure `<SimpleDesk><Engine/></SimpleDesk>` exists before `</Workspace>`
+
+See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md#qlc-workspace) for full details.
+
+Also verify autostart.qxw is a **real file** (not a symlink — QLC+ 4.14.1
+ignores symlinks):
+
+```bash
+ssh pi@lights.local "ls -la ~/.qlcplus/autostart.qxw"
+# Should show a regular file, not a symlink (l→)
+```
+
+</details>
+
+<details>
+<summary><b>USB DMX device keeps disconnecting</b></summary>
+
+Check kernel messages for the FTDI driver:
+
+```bash
+ssh pi@lights.local "dmesg | grep -i ftdi | tail -10"
+```
+
+**If ttyUSB0 disconnects when QLC+ starts**: This is normal. QLC+'s DMX USB
+plugin uses libftdi which detaches the kernel `ftdi_sio` driver to talk to the
+chip directly. The device disappearing from `/dev/ttyUSB*` is expected when
+QLC+ has the output active.
+
+**If ttyUSB0 drops randomly (Pi 3 power issue)**: Reset the USB port via sysfs:
+
+```bash
+# Find the USB device path
+ssh pi@lights.local "grep -l 0403 /sys/bus/usb/devices/*/idVendor"
+# Reset it (replace 1-1.2 with your path)
+ssh pi@lights.local "sudo sh -c 'echo 0 > /sys/bus/usb/devices/1-1.2/authorized && sleep 1 && echo 1 > /sys/bus/usb/devices/1-1.2/authorized'"
+```
+
+Ensure the udev rule for raw USB access is in place:
+
+```bash
+# /etc/udev/rules.d/98-ftdi-dmx.rules
+SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="6001", MODE="0666", GROUP="plugdev"
+```
+
+</details>
+
 ---
 
 ## 🚀 Future Enhancements
@@ -951,6 +1093,9 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
 - ✅ `.qxf`-aware fixture channel parsing (no more guessing RGB vs warm/cool)
 - ✅ Persistent WebSocket architecture (no CLOSE_WAIT leaks)
 - ✅ WiFi watchdog for auto-recovery
+- ✅ Custom branding/logo support (control server + landing page)
+- ✅ Tailscale remote access documentation
+- ✅ QLC+ workspace v4/v5 compatibility tooling
 
 **Planned:**
 - Multi-device fleet management
@@ -962,6 +1107,8 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
 For detailed information on AI scene generation, see [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md).
 For the control server architecture, see [docs/CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md).
 For WiFi reliability and troubleshooting, see [docs/WIFI_RELIABILITY.md](docs/WIFI_RELIABILITY.md).
+For remote access setup, see [docs/TAILSCALE.md](docs/TAILSCALE.md).
+For branding and customization, see [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md).
 
 ---
 

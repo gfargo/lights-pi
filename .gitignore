@@ -15,6 +15,11 @@ scenes/*.xml
 # Python files
 __pycache__/
 
+# Custom branding — user-specific logos, not tracked in git
+# Drop your logo into control-server/static/ as logo.webp, logo.png, or logo.svg
+control-server/static/logo.*
+landing/logo.*
+
 # Codex
 .codex
 

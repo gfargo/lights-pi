@@ -75,7 +75,7 @@
         .container { max-width: 900px; margin: 0 auto; }
 
         .header { text-align: center; margin-bottom: 2rem; }
-        .logo-icon { width: 48px; height: 48px; opacity: 0.9; margin-bottom: 1rem; }
+        .logo-icon { width: 48px; height: 48px; opacity: 0.9; margin-bottom: 1rem; border-radius: 50%; object-fit: cover; }
 
         h1 {
             font-size: 1.75rem; font-weight: 600; letter-spacing: 0.08em;
@@ -1147,7 +1147,11 @@
 <body>
     <div class="container">
         <div class="header">
-            <svg class="logo-icon" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Custom logo: drop logo.webp/png/svg into control-server/static/
+                 The /logo endpoint serves it; falls back to the inline SVG if absent. -->
+            <img class="logo-icon" src="/logo" alt="Studio logo"
+                 onerror="this.style.display='none';this.nextElementSibling.style.display='block';" />
+            <svg class="logo-icon" style="display:none" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="36" cy="36" r="34" stroke="#444" stroke-width="2"/>
                 <circle cx="36" cy="36" r="10" fill="#f0f0f0" opacity="0.9"/>
                 <line x1="36" y1="4"  x2="36" y2="16" stroke="#555" stroke-width="2" stroke-linecap="round"/>
