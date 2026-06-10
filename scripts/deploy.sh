@@ -9,6 +9,9 @@
 
 set -euo pipefail
 
+# Save any explicitly-passed PI_HOST before sourcing .env
+_EXPLICIT_PI_HOST="${PI_HOST:-}"
+
 if [ -f ".env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -16,8 +19,13 @@ if [ -f ".env" ]; then
   set +a
 fi
 
+# Explicit CLI override takes priority over .env
 PI_USER="${PI_USER:-riversway}"
-PI_HOST="${PI_HOST:-${TAILSCALE_HOST:-lights.local}}"
+if [ -n "$_EXPLICIT_PI_HOST" ]; then
+  PI_HOST="$_EXPLICIT_PI_HOST"
+else
+  PI_HOST="${PI_HOST:-${TAILSCALE_HOST:-lights.local}}"
+fi
 PI_HOME="/home/${PI_USER}"
 
 SSH_OPTIONS=()
