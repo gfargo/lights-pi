@@ -116,16 +116,16 @@
   </div>
 
   <div class="buttons">
-    <a class="btn" href="__CONTROL_URL__">
+    <a class="btn" id="controlLink" href="/control/">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="3" width="18" height="18" rx="2"/>
         <path d="M8 8h3v3H8zM13 8h3v3h-3zM8 13h3v3H8zM13 13h3v3h-3z"/>
       </svg>
-      Advanced Control
+      __LANDING_BUTTON_TEXT__
     </a>
 
-    <a class="btn btn-secondary" href="__QLC_URL__">
+    <a class="btn btn-secondary" id="qlcLink" href="/qlc/">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="5"/>
@@ -135,6 +135,17 @@
       QLC+ Dashboard
     </a>
   </div>
+
+  <script>
+    // Resolve links based on current origin so they work from lights.local,
+    // Tailscale, or any IP — no hardcoded hostnames needed.
+    (function() {
+      var host = location.hostname;
+      var proto = location.protocol;
+      document.getElementById('controlLink').href = proto + '//' + host + ':__CONTROL_PORT__/';
+      document.getElementById('qlcLink').href = proto + '//' + host + ':__QLC_PORT__/';
+    })();
+  </script>
 
   <footer>__LANDING_FOOTER_TEXT__</footer>
 

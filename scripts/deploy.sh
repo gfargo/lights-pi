@@ -17,7 +17,7 @@ if [ -f ".env" ]; then
 fi
 
 PI_USER="${PI_USER:-riversway}"
-PI_HOST="${PI_HOST:-lights.local}"
+PI_HOST="${PI_HOST:-${TAILSCALE_HOST:-lights.local}}"
 PI_HOME="/home/${PI_USER}"
 
 SSH_OPTIONS=()

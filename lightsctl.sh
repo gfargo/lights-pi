@@ -31,7 +31,7 @@ if [[ -f "$ENV_FILE" ]]; then
   load_env_file
 fi
 
-PI_HOST="${PI_HOST:-lights.local}"
+PI_HOST="${PI_HOST:-${TAILSCALE_HOST:-lights.local}}"
 PI_USER="${PI_USER:-pi}"
 PI_HOSTNAME="${PI_HOSTNAME:-lights}"
 QLC_PORT="${QLC_PORT:-9999}"

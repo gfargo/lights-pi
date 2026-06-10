@@ -33,8 +33,53 @@ sys.path.insert(0, str(Path(__file__).parent))
 import fixture_definitions
 
 app = Flask(__name__)
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+
+# ---------------------------------------------------------------------------
+# Security hardening (quick wins from security audit)
+# ---------------------------------------------------------------------------
+
+# 1. Restrict CORS to known origins (audit item #3)
+_ALLOWED_ORIGINS = [
+    "http://lights.local",
+    "http://lights.local:5000",
+    "https://lights.local",
+    f"http://localhost:{os.getenv('CONTROL_PORT', '5000')}",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+]
+# Allow Tailscale hostname (default to known tailnet, override via env)
+_ts_host = os.getenv("TAILSCALE_HOST", "lights.tailb82ead.ts.net")
+if _ts_host:
+    _ALLOWED_ORIGINS.append(f"http://{_ts_host}")
+    _ALLOWED_ORIGINS.append(f"http://{_ts_host}:5000")
+    _ALLOWED_ORIGINS.append(f"https://{_ts_host}")
+# Allow PI_HOST if set (covers direct-IP access)
+_pi_host = os.getenv("PI_HOST", "")
+if _pi_host and _pi_host not in ("lights.local", _ts_host):
+    _ALLOWED_ORIGINS.append(f"http://{_pi_host}")
+    _ALLOWED_ORIGINS.append(f"http://{_pi_host}:5000")
+
+CORS(app, origins=_ALLOWED_ORIGINS)
+socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS)
+
+# 2. Set SECRET_KEY for session signing (audit item #21)
+app.config["SECRET_KEY"] = os.getenv(
+    "FLASK_SECRET_KEY",
+    os.urandom(32).hex(),  # random per restart if not configured
+)
+
+# 3. Limit request body size to 1MB (audit item #8)
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB
+
+
+@app.after_request
+def _security_headers(response):
+    """Strip version info and add basic security headers (audit items #29, #13)."""
+    response.headers.pop("Server", None)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.parent
@@ -1579,10 +1624,13 @@ Output: {"action": "activate_scene", "parameters": {"scene": "Red"},
 
         return json.loads(response)
     except json.JSONDecodeError:
+        # Log the full response server-side for debugging, but don't leak it to the client
+        # (audit item #33 — prevents AI response/system prompt disclosure)
+        print(f"[interpret_command] Failed to parse AI response: {response[:200]}")
         return {
             "action": "error",
             "parameters": {},
-            "explanation": f"Failed to parse AI response: {response}"
+            "explanation": "AI returned an invalid response format. Please try again."
         }
 
 
@@ -1739,6 +1787,17 @@ def execute_lighting_action(action_data, target_groups=None):
 
     if action == "apply_template":
         template = params.get("template")
+        # Validate template against known whitelist (audit item #5 — prevents shell injection)
+        VALID_TEMPLATES = {
+            "youtube-studio", "party", "ambient", "spotlight",
+            "work-light", "warm-white", "cool-white",
+        }
+        if not template or template not in VALID_TEMPLATES:
+            return {
+                "success": False,
+                "output": "",
+                "error": f"Unknown template: {template}. Valid: {sorted(VALID_TEMPLATES)}",
+            }
         groups = target_groups if target_groups else []
         if groups:
             # Apply template to each selected group
@@ -2456,6 +2515,17 @@ def apply_group_template(group_name):
 
         if not template:
             return jsonify({"success": False, "error": "Template name required"}), 400
+
+        # Validate template against known whitelist (audit item #5)
+        VALID_TEMPLATES = {
+            "youtube-studio", "party", "ambient", "spotlight",
+            "work-light", "warm-white", "cool-white",
+        }
+        if template not in VALID_TEMPLATES:
+            return jsonify({
+                "success": False,
+                "error": f"Unknown template: {template}. Valid: {sorted(VALID_TEMPLATES)}",
+            }), 400
 
         safe_name = group_name.replace("'", "'\\''")
         scene_file = tempfile.NamedTemporaryFile(prefix="qlc-group-template-", suffix=".xml", delete=False)
@@ -3205,6 +3275,14 @@ def batch_action():
 
     if not isinstance(actions, list) or not actions:
         return jsonify({"success": False, "error": "Provide non-empty 'actions' array"}), 400
+
+    # Cap batch size to prevent amplification abuse (audit item #32)
+    MAX_BATCH_SIZE = 20
+    if len(actions) > MAX_BATCH_SIZE:
+        return jsonify({
+            "success": False,
+            "error": f"Too many actions ({len(actions)}). Maximum is {MAX_BATCH_SIZE} per request.",
+        }), 400
 
     results = []
     overall_success = True

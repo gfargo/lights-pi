@@ -37,8 +37,8 @@ NGINX_SITE="/etc/nginx/sites-available/lights"
 # Inject all variables into the HTML before uploading
 RENDERED="$(mktemp /tmp/qlc-landing-XXXXXX.html)"
 trap "rm -f '$RENDERED'" EXIT
-sed -e "s|__QLC_URL__|${QLC_URL}|g" \
-    -e "s|__CONTROL_URL__|${CONTROL_URL}|g" \
+sed -e "s|__QLC_PORT__|${QLC_PORT}|g" \
+    -e "s|__CONTROL_PORT__|${CONTROL_PORT}|g" \
     -e "s|__LANDING_TITLE__|${LANDING_TITLE}|g" \
     -e "s|__LANDING_STUDIO_NAME__|${LANDING_STUDIO_NAME}|g" \
     -e "s|__LANDING_SUBTITLE__|${LANDING_SUBTITLE}|g" \
@@ -89,8 +89,9 @@ fi
 EOF
 
 echo "Landing page live at http://${PI_HOST}"
-echo "Control links to:  ${CONTROL_URL}"
-echo "QLC+ links to:     ${QLC_URL}"
+echo "Control server:    http://<origin>:${CONTROL_PORT}/"
+echo "QLC+ dashboard:    http://<origin>:${QLC_PORT}/"
+echo "(Links resolve dynamically based on visitor's hostname)"
 echo ""
 echo "Branding:"
 echo "  Title: ${LANDING_TITLE}"
