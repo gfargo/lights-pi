@@ -157,6 +157,27 @@ _qlc_ws = None  # the actual websocket connection (lives on _qlc_loop)
 _qlc_ws_lock: asyncio.Lock = None  # type: ignore
 _qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
 
+# ---------------------------------------------------------------------------
+# Audio-reactive mode — beat detection + BPM-synced lighting
+# ---------------------------------------------------------------------------
+
+_AUDIO_VALID_MODES = frozenset({"beat_pulse", "amplitude_color", "bpm_sync_chase", "spectrum_split"})
+
+_audio_state: dict = {
+    "enabled": False,
+    "source": "default",
+    "sensitivity": 0.5,
+    "mode": "beat_pulse",
+    "bpm": None,
+    "last_beat_time": 0.0,
+    "noise_floor": 0.02,
+    "target_groups": None,
+    "error": None,
+}
+_audio_lock = threading.Lock()
+_audio_stop = threading.Event()
+_audio_thread: threading.Thread = None  # type: ignore
+
 
 def _start_qlc_loop():
     """Start the dedicated background event loop used for QLC+ comms."""
@@ -1423,6 +1444,169 @@ def apply_strobe_live(rate, intensity=None, target_groups=None):
         "dmx_value": dmx_value,
         "fixtures": per_fixture,
     }
+
+
+# ---------------------------------------------------------------------------
+# Audio-reactive helpers (pure — no I/O, safe to unit test)
+# ---------------------------------------------------------------------------
+
+def _audio_normalize_sensitivity(value):
+    """Normalize sensitivity to [0.0, 1.0]; accepts float or '75%' string."""
+    if isinstance(value, str) and value.strip().endswith("%"):
+        try:
+            return max(0.0, min(1.0, float(value.strip()[:-1]) / 100.0))
+        except ValueError:
+            return 0.5
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _audio_mode_valid(mode):
+    return mode in _AUDIO_VALID_MODES
+
+
+def _audio_compute_rms(samples):
+    """RMS energy of an iterable of float audio samples."""
+    buf = list(samples)
+    if not buf:
+        return 0.0
+    return math.sqrt(sum(s * s for s in buf) / len(buf))
+
+
+def _audio_bpm_from_intervals(intervals_sec, max_beats=8):
+    """Estimate BPM from a sequence of beat-to-beat intervals (seconds).
+
+    Uses the median of the most recent ``max_beats`` intervals to reject
+    outliers.  Returns None when fewer than 2 intervals are provided.
+    """
+    if len(intervals_sec) < 2:
+        return None
+    recent = list(intervals_sec[-max_beats:])
+    recent.sort()
+    mid = len(recent) // 2
+    median_iv = (recent[mid - 1] + recent[mid]) / 2 if len(recent) % 2 == 0 else recent[mid]
+    if median_iv <= 0:
+        return None
+    return round(60.0 / median_iv, 1)
+
+
+def _audio_pulse_updates(fixtures, intensity=200):
+    """Build a DMX update list (absolute_ch, value) for a beat-pulse flash."""
+    updates = []
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        for offset in roles.get("brightness", []):
+            updates.append((_absolute_channel(fixture, offset), int(max(0, min(255, intensity)))))
+    return updates
+
+
+def _audio_amplitude_updates(fixtures, normalized):
+    """Build DMX updates for amplitude_color mode.
+
+    ``normalized`` is a float in [0, 1]: 0 = silence, 1 = peak.
+    Quiet maps to warm light; loud maps to cool / energetic.
+    """
+    warm_val = int((1.0 - normalized) * 200)
+    cool_val = int(normalized * 200)
+    red_val = int(normalized * 200)
+    blue_val = int((1.0 - normalized) * 200)
+    updates = []
+    for fixture in fixtures:
+        roles = _fixture_roles(fixture)
+        for role, val in (("warm", warm_val), ("cool", cool_val),
+                          ("red", red_val), ("blue", blue_val)):
+            offset = roles.get(role)
+            if isinstance(offset, int):
+                updates.append((_absolute_channel(fixture, offset), val))
+    return updates
+
+
+# ---------------------------------------------------------------------------
+# Audio capture thread
+# ---------------------------------------------------------------------------
+
+def _audio_beat_thread(source, sensitivity, mode, target_groups):
+    """Background thread: captures audio and dispatches DMX on beats/amplitude."""
+    try:
+        import sounddevice as sd  # noqa: PLC0415
+    except ImportError:
+        logging.error("[audio] sounddevice not installed — install it with: pip install sounddevice")
+        with _audio_lock:
+            _audio_state["enabled"] = False
+            _audio_state["error"] = "sounddevice not installed"
+        return
+
+    device = None if source == "default" else source
+    RATE = 22050
+    CHUNK = 1024
+
+    beat_times: list = []
+    prev_energy = 0.0
+
+    try:
+        with sd.InputStream(
+            device=device,
+            channels=1,
+            samplerate=RATE,
+            blocksize=CHUNK,
+            dtype="float32",
+        ) as stream:
+            while not _audio_stop.is_set():
+                frames, _ = stream.read(CHUNK)
+                samples = frames[:, 0].tolist()
+
+                with _audio_lock:
+                    if not _audio_state["enabled"]:
+                        break
+                    noise_floor = _audio_state["noise_floor"]
+                    sensitivity = _audio_state["sensitivity"]
+                    mode = _audio_state["mode"]
+
+                energy = _audio_compute_rms(samples)
+                threshold = noise_floor * (1.0 + sensitivity * 10.0)
+                now = time.time()
+
+                if energy > threshold and energy > prev_energy * 1.3:
+                    beat_times.append(now)
+                    beat_times = [t for t in beat_times if now - t < 10.0]
+                    intervals = [beat_times[i + 1] - beat_times[i]
+                                 for i in range(len(beat_times) - 1)]
+                    bpm = _audio_bpm_from_intervals(intervals)
+                    with _audio_lock:
+                        _audio_state["bpm"] = bpm
+                        _audio_state["last_beat_time"] = now
+
+                    fixtures = _target_fixtures(target_groups)
+                    if mode == "beat_pulse":
+                        intensity = max(80, min(255, int(energy * 2000)))
+                        updates = _audio_pulse_updates(fixtures, intensity)
+                        if updates:
+                            set_channel_values(updates)
+                    elif mode == "bpm_sync_chase" and bpm:
+                        logging.info("[audio] BPM: %.1f", bpm)
+
+                elif mode == "amplitude_color":
+                    with _audio_lock:
+                        noise_floor = _audio_state["noise_floor"]
+                        sensitivity = _audio_state["sensitivity"]
+                    denom = max(noise_floor * (1.0 + sensitivity * 5.0), 1e-6)
+                    normalized = min(1.0, energy / denom)
+                    fixtures = _target_fixtures(target_groups)
+                    updates = _audio_amplitude_updates(fixtures, normalized)
+                    if updates:
+                        set_channel_values(updates)
+
+                prev_energy = energy
+
+    except Exception as exc:
+        logging.error("[audio] thread error: %s", exc)
+    finally:
+        with _audio_lock:
+            if _audio_state["enabled"]:
+                _audio_state["enabled"] = False
+                _audio_state["bpm"] = None
 
 
 async def _fade_brightness_async(channels, target_value, seconds, steps):
@@ -4757,6 +4941,138 @@ def stop_cue_list(cl_id_or_name):
         "cue_list": {"id": cl["id"], "name": cl["name"]},
         "was_running": was_running,
     })
+
+
+# =============================================================================
+# Audio-reactive mode API
+# =============================================================================
+
+
+@app.route("/api/audio", methods=["GET"])
+def audio_get_state():
+    """Return the current audio-reactive mode state."""
+    with _audio_lock:
+        state = dict(_audio_state)
+    return jsonify(state)
+
+
+@app.route("/api/audio/enable", methods=["POST"])
+def audio_enable():
+    """Enable audio-reactive lighting.
+
+    Body (all optional):
+        source      — sounddevice device index or "default"
+        sensitivity — 0.0–1.0 (or "75%"); higher = more responsive
+        mode        — beat_pulse | amplitude_color | bpm_sync_chase | spectrum_split
+        groups      — list of fixture group names to target
+    """
+    global _audio_thread
+    body = request.get_json(silent=True) or {}
+    source = str(body.get("source", "default"))
+    sensitivity = _audio_normalize_sensitivity(body.get("sensitivity", 0.5))
+    mode = str(body.get("mode", "beat_pulse"))
+    target_groups = body.get("groups") or None
+
+    if not _audio_mode_valid(mode):
+        return jsonify({
+            "success": False,
+            "error": f"Unknown mode '{mode}'. Valid: {sorted(_AUDIO_VALID_MODES)}",
+        }), 400
+
+    try:
+        import sounddevice  # noqa: F401, PLC0415
+    except ImportError:
+        return jsonify({
+            "success": False,
+            "error": "sounddevice not installed — run: pip install sounddevice",
+        }), 503
+
+    with _audio_lock:
+        already_running = _audio_state["enabled"] and _audio_thread is not None and _audio_thread.is_alive()
+        _audio_state.update({
+            "enabled": True,
+            "source": source,
+            "sensitivity": sensitivity,
+            "mode": mode,
+            "bpm": None,
+            "last_beat_time": 0.0,
+            "target_groups": target_groups,
+            "error": None,
+        })
+
+    if already_running:
+        return jsonify({
+            "success": True,
+            "output": f"Audio-reactive mode updated (mode={mode}, sensitivity={sensitivity:.2f})",
+            "state": {"enabled": True, "mode": mode, "sensitivity": sensitivity, "source": source},
+        })
+
+    _audio_stop.clear()
+    _audio_thread = threading.Thread(
+        target=_audio_beat_thread,
+        args=(source, sensitivity, mode, target_groups),
+        daemon=True,
+        name="audio-reactive",
+    )
+    _audio_thread.start()
+    return jsonify({
+        "success": True,
+        "output": f"Audio-reactive mode enabled (mode={mode}, sensitivity={sensitivity:.2f})",
+        "state": {"enabled": True, "mode": mode, "sensitivity": sensitivity, "source": source},
+    })
+
+
+@app.route("/api/audio/disable", methods=["POST"])
+def audio_disable():
+    """Disable audio-reactive lighting."""
+    global _audio_thread
+    _audio_stop.set()
+    with _audio_lock:
+        _audio_state["enabled"] = False
+        _audio_state["bpm"] = None
+    if _audio_thread is not None and _audio_thread.is_alive():
+        _audio_thread.join(timeout=2)
+    _audio_thread = None
+    _audio_stop.clear()
+    return jsonify({"success": True, "output": "Audio-reactive mode disabled"})
+
+
+@app.route("/api/audio/calibrate", methods=["POST"])
+def audio_calibrate():
+    """Record ~2 s of ambient audio to auto-set the noise floor."""
+    try:
+        import sounddevice as sd  # noqa: PLC0415
+    except ImportError:
+        return jsonify({
+            "success": False,
+            "error": "sounddevice not installed — run: pip install sounddevice",
+        }), 503
+
+    with _audio_lock:
+        source = _audio_state.get("source", "default")
+    device = None if source == "default" else source
+
+    try:
+        RATE = 22050
+        DURATION = 2.0
+        frames = sd.rec(
+            int(RATE * DURATION),
+            samplerate=RATE,
+            channels=1,
+            dtype="float32",
+            device=device,
+            blocking=True,
+        )
+        noise_floor = max(_audio_compute_rms(frames[:, 0].tolist()), 0.001)
+        with _audio_lock:
+            _audio_state["noise_floor"] = noise_floor
+        return jsonify({
+            "success": True,
+            "noise_floor": round(noise_floor, 6),
+            "output": f"Noise floor calibrated to {noise_floor:.6f}",
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 # =============================================================================

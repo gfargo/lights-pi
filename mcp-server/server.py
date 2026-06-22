@@ -964,6 +964,73 @@ def _safe_get(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Audio-reactive tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_audio_state() -> dict:
+    """Return the current audio-reactive mode state.
+
+    Fields include: enabled, mode, sensitivity, source, bpm (detected BPM or
+    null), last_beat_time, noise_floor, and error (if any).
+    """
+    return _get("/api/audio")
+
+
+@mcp.tool()
+def enable_audio_react(
+    mode: str = "beat_pulse",
+    sensitivity: float = 0.5,
+    source: str = "default",
+    groups: list[str] | None = None,
+) -> dict:
+    """Enable audio-reactive lighting that responds to live microphone input.
+
+    Modes:
+        beat_pulse      — flash fixtures on each detected beat (default)
+        amplitude_color — shift colour smoothly with audio amplitude
+        bpm_sync_chase  — log detected BPM; pair with a chase for full sync
+        spectrum_split  — reserved for future frequency-band routing
+
+    Args:
+        mode:        One of the modes listed above.
+        sensitivity: 0.0 (least reactive) to 1.0 (most reactive).
+        source:      sounddevice input device index or "default".
+        groups:      Fixture group names to target; omit to affect all fixtures.
+    """
+    payload: dict = {"mode": mode, "sensitivity": sensitivity, "source": source}
+    if groups:
+        payload["groups"] = groups
+    return _post("/api/audio/enable", payload)
+
+
+@mcp.tool()
+def disable_audio_react() -> dict:
+    """Stop audio-reactive lighting and return fixtures to manual control."""
+    return _post("/api/audio/disable")
+
+
+@mcp.tool()
+def set_audio_sensitivity(level: float) -> dict:
+    """Adjust audio sensitivity without restarting the capture thread.
+
+    Args:
+        level: 0.0 (least reactive) to 1.0 (most reactive).
+    """
+    return _post("/api/audio/enable", {"sensitivity": level})
+
+
+@mcp.tool()
+def calibrate_audio_noise_floor() -> dict:
+    """Record ~2 seconds of ambient audio to auto-set the noise floor.
+
+    Call this in a quiet room before enabling audio-reactive mode so the
+    beat detector starts with an accurate baseline.
+    """
+    return _post("/api/audio/calibrate")
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
