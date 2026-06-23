@@ -1,10 +1,6 @@
 """Tests for chat_store — pure SQLite helpers (no Flask, no AI calls)."""
-import json
-import tempfile
-from pathlib import Path
-
-import pytest
 import chat_store
+import pytest
 
 
 @pytest.fixture()
@@ -62,7 +58,7 @@ class TestConversationCRUD:
 
     def test_list_returns_newest_first(self, db):
         c1 = chat_store.create_conversation(db, title="First")
-        c2 = chat_store.create_conversation(db, title="Second")
+        chat_store.create_conversation(db, title="Second")
         # Touch c1 by appending a message so its updated_at is newest
         chat_store.append_messages(db, c1, [{"role": "user", "content": "ping"}])
         convs = chat_store.list_conversations(db)

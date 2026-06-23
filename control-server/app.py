@@ -30,8 +30,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Local QLC+ fixture definition parser (.qxf)
 sys.path.insert(0, str(Path(__file__).parent))
-import fixture_definitions
 import chat_store
+import fixture_definitions
 
 app = Flask(__name__)
 
@@ -2009,7 +2009,7 @@ def serve_logo():
     Returns 404 if no logo file is present (the template falls back to the
     built-in SVG icon).
     """
-    from flask import send_from_directory, abort
+    from flask import abort, send_from_directory
     static_dir = Path(__file__).parent / "static"
     for ext in ("webp", "png", "svg", "jpg", "jpeg", "gif"):
         logo_file = static_dir / f"logo.{ext}"

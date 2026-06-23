@@ -8,11 +8,11 @@ plain strings and Anthropic-style block arrays (tool_use / tool_result) without
 any lossy conversion.
 """
 
+from datetime import UTC, datetime
 import json
+from pathlib import Path
 import sqlite3
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 
 
 # Module-level FTS5 flag; set once on first DB open.
@@ -102,7 +102,7 @@ def init_db(db_path) -> None:
 # ---------------------------------------------------------------------------
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _encode(content) -> str:
