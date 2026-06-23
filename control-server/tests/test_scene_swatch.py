@@ -1,6 +1,5 @@
 """Tests for scene-swatch pure helpers: _fixture_values_to_rgb and swatch SVG."""
 import pytest
-
 from app import _fixture_values_to_rgb, _neutral_swatch_svg
 
 
