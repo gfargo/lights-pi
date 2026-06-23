@@ -20,6 +20,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import structlog
 import websockets
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
@@ -31,6 +32,35 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Local QLC+ fixture definition parser (.qxf)
 sys.path.insert(0, str(Path(__file__).parent))
 import fixture_definitions
+
+# ---------------------------------------------------------------------------
+# Structured logging
+# LOG_FORMAT=json (default) → JSON lines for journald/prod
+# LOG_FORMAT=console        → human-readable for local dev
+# LOG_LEVEL=DEBUG|INFO|WARNING|ERROR (default INFO)
+# ---------------------------------------------------------------------------
+_LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
+_LOG_FORMAT = os.getenv("LOG_FORMAT", "json").lower()
+_LOG_LEVEL_INT = getattr(logging, _LOG_LEVEL_STR, logging.INFO)
+
+logging.basicConfig(format="%(message)s", stream=sys.stdout, level=_LOG_LEVEL_INT)
+
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.dev.ConsoleRenderer()
+        if _LOG_FORMAT == "console"
+        else structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(_LOG_LEVEL_INT),
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+log = structlog.get_logger("lights")
 
 app = Flask(__name__)
 
@@ -156,6 +186,8 @@ _qlc_loop_thread: threading.Thread = None  # type: ignore
 _qlc_ws = None  # the actual websocket connection (lives on _qlc_loop)
 _qlc_ws_lock: asyncio.Lock = None  # type: ignore
 _qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
+_last_dmx_write_ts: float = None  # type: ignore  # set after each successful send
+_ws_reconnect_count: int = 0  # monotonic count of successful (re)connections
 
 
 def _start_qlc_loop():
@@ -198,7 +230,7 @@ def _qlc_run(coro, timeout=10):
 
 async def _ensure_qlc_ws():
     """Open the persistent WebSocket if needed. Lock-protected."""
-    global _qlc_ws
+    global _qlc_ws, _ws_reconnect_count
     async with _qlc_ws_lock:
         # Treat both "missing" and "closed" cases as needing reconnect
         needs_connect = _qlc_ws is None
@@ -232,10 +264,11 @@ async def _ensure_qlc_ws():
                 )
                 # Start a background reader so QLC+ pushes don't fill the recv buffer
                 asyncio.create_task(_qlc_reader(_qlc_ws))
-                print(f"✓ QLC+ WebSocket connected at {QLC_WS_URL}")
+                _ws_reconnect_count += 1
+                log.info("qlc_ws_connected", url=QLC_WS_URL, reconnect_count=_ws_reconnect_count)
             except Exception as e:
                 _qlc_ws = None
-                print(f"✗ QLC+ WebSocket connect failed: {type(e).__name__}: {e}")
+                log.error("qlc_ws_connect_failed", error_type=type(e).__name__, error=str(e))
                 raise
         return _qlc_ws
 
@@ -257,7 +290,7 @@ async def _qlc_reader(ws):
                     _qlc_pending_responses.pop(key, None)
                     break
     except Exception as e:
-        print(f"QLC+ WebSocket reader exited: {type(e).__name__}: {e}")
+        log.warning("qlc_ws_reader_exited", error_type=type(e).__name__, error=str(e))
     finally:
         # Drop the global reference so the next caller reconnects, and
         # explicitly close the underlying connection so the OS frees the FD
@@ -273,10 +306,12 @@ async def _qlc_reader(ws):
 
 async def _qlc_send_commands(commands):
     """Send one or more raw QLC+ commands over the persistent WebSocket."""
+    global _last_dmx_write_ts
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
             await ws.send(command)
+    _last_dmx_write_ts = time.time()
 
 
 async def _qlc_request_reply(command, response_marker, timeout=2.0):
@@ -316,7 +351,7 @@ async def send_qlc_command(command):
         await _qlc_send_commands([command])
         return True
     except Exception as e:
-        print(f"send_qlc_command error: {e}")
+        log.error("qlc_command_failed", error=str(e))
         return False
 
 
@@ -342,7 +377,7 @@ async def send_qlc_commands(commands):
         await _qlc_send_commands(commands)
         return True
     except Exception as e:
-        print(f"send_qlc_commands error: {e}")
+        log.error("qlc_commands_failed", error=str(e))
         return False
 
 
@@ -367,7 +402,7 @@ def set_channel_values(channel_values):
         _qlc_run(_qlc_send_commands(commands), timeout=5)
         return True
     except Exception as e:
-        print(f"set_channel_values error: {e}")
+        log.error("set_channel_values_failed", error=str(e))
         return False
 
 
@@ -567,7 +602,7 @@ async def _fetch_channel_values(max_ch):
             timeout=2.0,
         )
     except (TimeoutError, Exception) as e:
-        print(f"channel_values fetch error: {e}")
+        log.warning("channel_values_fetch_failed", error=str(e))
         return values
 
     parts = msg.split("|")
@@ -589,7 +624,7 @@ def get_current_channel_values(max_ch=None):
     try:
         return _qlc_run(_fetch_channel_values(max_ch), timeout=4)
     except Exception as e:
-        print(f"channel_values fetch error: {e}")
+        log.warning("channel_values_fetch_failed", error=str(e))
         return {}
 
 
@@ -1442,7 +1477,7 @@ async def _fade_brightness_async(channels, target_value, seconds, steps):
                 await asyncio.sleep(seconds / steps)
         return True
     except Exception as e:
-        print(f"Fade WebSocket error: {e}")
+        log.error("fade_ws_failed", error=str(e))
         return False
 
 
@@ -1469,7 +1504,7 @@ def fade_brightness_live(target, duration, target_groups=None):
             timeout=seconds + 5,
         )
     except Exception as e:
-        print(f"fade error: {e}")
+        log.error("fade_failed", error=str(e))
         success = False
 
     return {
@@ -1624,9 +1659,8 @@ Output: {"action": "activate_scene", "parameters": {"scene": "Red"},
 
         return json.loads(response)
     except json.JSONDecodeError:
-        # Log the full response server-side for debugging, but don't leak it to the client
-        # (audit item #33 — prevents AI response/system prompt disclosure)
-        print(f"[interpret_command] Failed to parse AI response: {response[:200]}")
+        # Log server-side only — don't leak AI response to the client (audit item #33)
+        log.warning("ai_response_parse_failed", response_preview=response[:200])
         return {
             "action": "error",
             "parameters": {},
@@ -2140,6 +2174,81 @@ def handle_action():
     })
 
 
+_HEALTHZ_UNSET = object()
+
+
+def _healthz_status(
+    qlc_ws=_HEALTHZ_UNSET,
+    last_dmx_ts=_HEALTHZ_UNSET,
+    workspace_path=None,
+    dmx_device_glob=None,
+    now=None,
+):
+    """Aggregate health of all subsystems. Returns (payload_dict, all_critical_ok).
+
+    All parameters are injectable for unit testing; defaults pull from live globals.
+    """
+    import glob as _glob
+
+    if qlc_ws is _HEALTHZ_UNSET:
+        qlc_ws = _qlc_ws
+    if last_dmx_ts is _HEALTHZ_UNSET:
+        last_dmx_ts = _last_dmx_write_ts
+    if workspace_path is None:
+        workspace_path = WORKSPACE_PATH
+    if now is None:
+        now = time.time()
+
+    ws_ok = False
+    try:
+        if qlc_ws is not None and not getattr(qlc_ws, "closed", False):
+            ws_ok = True
+    except Exception:
+        pass
+
+    dmx_device = None
+    try:
+        devices = (
+            dmx_device_glob
+            if dmx_device_glob is not None
+            else _glob.glob("/dev/ttyUSB*") + _glob.glob("/dev/ttyACM*")
+        )
+        if devices:
+            dmx_device = devices[0]
+    except Exception:
+        pass
+
+    dmx_age = None
+    if last_dmx_ts is not None:
+        dmx_age = round(now - last_dmx_ts, 1)
+
+    workspace_ok = False
+    try:
+        if workspace_path.exists():
+            ET.parse(str(workspace_path))
+            workspace_ok = True
+    except Exception:
+        pass
+
+    payload = {
+        "flask": True,
+        "qlc_ws": ws_ok,
+        "dmx_device": dmx_device or False,
+        "last_dmx_write_age_s": dmx_age,
+        "workspace_loaded": workspace_ok,
+    }
+
+    all_ok = ws_ok and workspace_ok
+    return payload, all_ok
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Deep health endpoint. 200 = all critical checks green, 503 = any red."""
+    payload, all_ok = _healthz_status()
+    return jsonify(payload), 200 if all_ok else 503
+
+
 @app.route("/api/status", methods=["GET"])
 def get_status():
     """Get detailed multi-service health status"""
@@ -2456,7 +2565,7 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
         root = tree.getroot()
         engine = _engine_element(root)
         if engine is None:
-            print("Error: No Engine element in workspace")
+            log.error("workspace_missing_engine")
             return False
 
         # Parse the scene XML
@@ -2473,7 +2582,7 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
         tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
         return True
     except Exception as e:
-        print(f"Error injecting scene: {e}")
+        log.error("scene_inject_failed", error=str(e))
         return False
 
 
@@ -3170,7 +3279,7 @@ async def _identify_fixture_async(fixture, duration=2.0, pulses=4):
                 await ws.send(cmd)
         return True
     except Exception as e:
-        print(f"identify_fixture error: {e}")
+        log.error("identify_fixture_failed", error=str(e))
         return False
 
 
@@ -3452,7 +3561,7 @@ async def _test_dmx_async(fixtures, duration=5.0):
         await _send_frame(restore_commands)
         return True
     except Exception as e:
-        print(f"test_dmx error: {e}")
+        log.error("test_dmx_failed", error=str(e))
         return False
 
 
@@ -3992,7 +4101,7 @@ def _inject_chase_into_workspace(chase_xml: str) -> bool:
         tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
         return True
     except Exception as e:
-        print(f"_inject_chase_into_workspace error: {e}")
+        log.error("chase_inject_failed", error=str(e))
         return False
 
 
@@ -4494,13 +4603,13 @@ async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
                 # same event loop without re-entering).
                 execute_lighting_action(action_data, target_groups=cue.get("groups"))
             except Exception as e:
-                print(f"[cue-list {cue_list_id}] cue #{idx} ({cue['action']}) failed: {e}")
+                log.warning("cue_step_failed", cue_list_id=cue_list_id, cue_idx=idx, action=cue["action"], error=str(e))
             fired_indexes.append(idx)
     except asyncio.CancelledError:
         # Normal path for stop_cue_list — just exit cleanly
         raise
     except Exception as e:
-        print(f"[cue-list {cue_list_id}] playback engine error: {e}")
+        log.error("cue_list_playback_failed", cue_list_id=cue_list_id, error=str(e))
     finally:
         with _active_cue_lists_lock:
             _active_cue_lists.pop(cue_list_id, None)
@@ -5730,7 +5839,7 @@ def handle_chat():
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():
-        print(f"Error: lightsctl.sh not found at {LIGHTSCTL}")
+        log.error("lightsctl_not_found", path=str(LIGHTSCTL))
         sys.exit(1)
 
     # Start the dedicated QLC+ WebSocket loop in a background thread.
@@ -5739,7 +5848,7 @@ if __name__ == "__main__":
     try:
         _qlc_run(_ensure_qlc_ws(), timeout=5)
     except Exception as e:
-        print(f"Warning: initial QLC+ connect failed (will retry on demand): {e}")
+        log.warning("initial_qlc_connect_failed", error=str(e))
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #
