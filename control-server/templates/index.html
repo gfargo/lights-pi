@@ -553,11 +553,10 @@
             /* ── Logs viewer: shorter on mobile to leave room for the input ── */
             .logs-viewer { max-height: 220px; font-size: 0.7rem; }
 
-            /* ── Chat tab: edge-to-edge composer + bigger touch targets ── */
-            .chat-pane {
-                max-height: calc(100vh - 280px);
-                padding: 0.75rem;
-            }
+            /* ── Chat tab: edge-to-edge on mobile, sidebar hidden ── */
+            .chat-layout { max-height: calc(100vh - 280px); min-height: 300px; }
+            .chat-sidebar { display: none; }
+            .chat-main .chat-pane { padding: 0.75rem; }
             .chat-welcome { padding: 1rem 0.5rem; }
             .chat-welcome-title { font-size: 0.95rem; }
             .chat-welcome-sub { font-size: 0.78rem; }
@@ -1142,6 +1141,96 @@
         #chatSendBtn:disabled {
             background: #2a2a2a; color: #666; border-color: #2a2a2a; cursor: not-allowed;
         }
+
+        /* ── Chat layout: sidebar + main ── */
+        .chat-layout {
+            display: flex;
+            border: 1px solid var(--rule);
+            min-height: 380px;
+            max-height: calc(100vh - 360px);
+        }
+        .chat-sidebar {
+            width: 180px;
+            flex-shrink: 0;
+            border-right: 1px solid var(--rule);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--ink-1);
+        }
+        .sidebar-hdr {
+            padding: 0.45rem 0.5rem;
+            border-bottom: 1px solid var(--rule);
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            flex-shrink: 0;
+        }
+        #convSearch {
+            width: 100%;
+            background: var(--ink-2);
+            border: 1px solid var(--rule-strong);
+            color: var(--paper);
+            padding: 0.28rem 0.5rem;
+            font-size: 0.76rem;
+            font-family: var(--font-sans);
+            outline: none;
+        }
+        #convSearch::placeholder { color: var(--paper-30); }
+        #convSearch:focus { border-color: var(--amber-tungsten); }
+        .conv-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.2rem 0;
+        }
+        .conv-list::-webkit-scrollbar { width: 3px; }
+        .conv-list::-webkit-scrollbar-thumb { background: var(--rule-strong); }
+        .conv-item {
+            padding: 0.4rem 0.55rem;
+            cursor: pointer;
+            font-size: 0.75rem;
+            line-height: 1.3;
+            color: var(--paper-60);
+            border-left: 2px solid transparent;
+            transition: background 0.12s, color 0.12s;
+            user-select: none;
+        }
+        .conv-item:hover { background: var(--rule); color: var(--paper); }
+        .conv-item.active {
+            border-left-color: var(--amber-tungsten);
+            color: var(--paper);
+            background: var(--amber-tungsten-soft);
+        }
+        .conv-title {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .conv-date {
+            font-size: 0.65rem;
+            color: var(--paper-30);
+            margin-top: 0.1rem;
+            font-family: var(--font-mono);
+        }
+        .conv-empty {
+            padding: 0.75rem 0.6rem;
+            font-size: 0.72rem;
+            color: var(--paper-30);
+        }
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+        }
+        /* Override: chat-pane is now inside flex; remove standalone sizing */
+        .chat-main .chat-pane {
+            border: none;
+            flex: 1;
+            min-height: 0;
+            max-height: none;
+        }
     </style>
 </head>
 <body>
@@ -1247,38 +1336,56 @@
         </div>
 
         <!-- ══════════════════════════════════════
-             Chat tab — agentic conversation (v2.11)
-             Full conversational agent with access to all 48 MCP tools
+             Chat tab — agentic conversation (v2.11+)
+             Full conversational agent with server-side history persistence
              ══════════════════════════════════════ -->
         <div id="chat-tab" class="tab-content">
-            <div class="chat-pane" id="chatPane">
-                <div class="chat-welcome" id="chatWelcome">
-                    <div class="chat-welcome-title">Talk to your rig</div>
-                    <div class="chat-welcome-sub">
-                        Try natural language. The agent can list fixtures, build groups, create
-                        chases, run cue lists, and dispatch any of the 48 tools — it'll plan multi-step
-                        operations and report back.
+            <div class="chat-layout">
+                <!-- Sidebar: conversation history + search -->
+                <aside class="chat-sidebar" id="chatSidebar">
+                    <div class="sidebar-hdr">
+                        <button class="btn-ghost btn-tiny" onclick="startNewChat()" style="width:100%;text-align:left">+ New chat</button>
+                        <input type="search" id="convSearch" placeholder="Search…"
+                               oninput="searchConversations(this.value)"
+                               aria-label="Search conversations">
                     </div>
-                    <div class="chat-suggestions">
-                        <button class="chat-suggest" onclick="sendChatMessage('Show me what fixtures and groups are configured.')">Show me my rig</button>
-                        <button class="chat-suggest" onclick="sendChatMessage('Set up three-point lighting with tungsten key, daylight fill, and magenta back.')">Three-point lighting</button>
-                        <button class="chat-suggest" onclick="sendChatMessage('Build me a 30-second sunset cue list and save it.')">Sunset cue list</button>
-                        <button class="chat-suggest" onclick="sendChatMessage('Why are the lights not responding? Diagnose.')">Diagnose the rig</button>
+                    <div class="conv-list" id="convList">
+                        <div class="conv-empty">No conversations yet</div>
                     </div>
-                </div>
-                <div class="chat-messages" id="chatMessages"></div>
-            </div>
+                </aside>
 
-            <div class="chat-composer">
-                <textarea
-                    id="chatInput"
-                    placeholder="Ask the agent — Enter to send, Shift+Enter for new line"
-                    rows="2"
-                    aria-label="Chat message"
-                ></textarea>
-                <div class="chat-actions">
-                    <button class="btn-ghost btn-tiny" onclick="clearChat()" title="Clear conversation">Clear</button>
-                    <button class="btn-primary" id="chatSendBtn" onclick="sendChatMessage()">Send</button>
+                <!-- Main: message pane + composer -->
+                <div class="chat-main">
+                    <div class="chat-pane" id="chatPane">
+                        <div class="chat-welcome" id="chatWelcome">
+                            <div class="chat-welcome-title">Talk to your rig</div>
+                            <div class="chat-welcome-sub">
+                                Try natural language. The agent can list fixtures, build groups, create
+                                chases, run cue lists, and dispatch any of the 48 tools — it'll plan multi-step
+                                operations and report back.
+                            </div>
+                            <div class="chat-suggestions">
+                                <button class="chat-suggest" onclick="sendChatMessage('Show me what fixtures and groups are configured.')">Show me my rig</button>
+                                <button class="chat-suggest" onclick="sendChatMessage('Set up three-point lighting with tungsten key, daylight fill, and magenta back.')">Three-point lighting</button>
+                                <button class="chat-suggest" onclick="sendChatMessage('Build me a 30-second sunset cue list and save it.')">Sunset cue list</button>
+                                <button class="chat-suggest" onclick="sendChatMessage('Why are the lights not responding? Diagnose.')">Diagnose the rig</button>
+                            </div>
+                        </div>
+                        <div class="chat-messages" id="chatMessages"></div>
+                    </div>
+
+                    <div class="chat-composer">
+                        <textarea
+                            id="chatInput"
+                            placeholder="Ask the agent — Enter to send, Shift+Enter for new line"
+                            rows="2"
+                            aria-label="Chat message"
+                        ></textarea>
+                        <div class="chat-actions">
+                            <button class="btn-ghost btn-tiny" onclick="startNewChat()" title="Start a new conversation">New</button>
+                            <button class="btn-primary" id="chatSendBtn" onclick="sendChatMessage()">Send</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1732,7 +1839,7 @@
             else if (tabName === 'chases') loadChases();
             else if (tabName === 'tools') populateToolsGroupSelects();
             else if (tabName === 'diag')  loadSystemInfo();
-            else if (tabName === 'chat')  renderChatHistory();
+            else if (tabName === 'chat') { renderChatHistory(); loadConversations(); }
 
             // Persist the active tab in the URL so refresh / share-link works.
             try {
@@ -3079,32 +3186,108 @@
         };
 
         /* ══════════════════════════════════════════════════════════════
-           v2.11 agentic chat
+           v2.12 agentic chat — server-side history persistence
            ══════════════════════════════════════════════════════════════ */
-        const CHAT_HISTORY_KEY = 'lp_chat_history_v1';
-        let chatHistory = loadChatHistory();
+        let chatHistory = [];
         let chatBusy = false;
+        let currentConversationId = null;
 
-        function loadChatHistory() {
-            try {
-                const raw = localStorage.getItem(CHAT_HISTORY_KEY);
-                return raw ? JSON.parse(raw) : [];
-            } catch (e) { return []; }
-        }
-        function persistChatHistory() {
-            try {
-                localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(chatHistory));
-            } catch (e) { /* localStorage may be full or disabled */ }
+        // Restore conversation ID across page reloads
+        try { currentConversationId = localStorage.getItem('lp_conv_id_v1') || null; } catch(e) {}
+
+        function _persistConvId() {
+            try { localStorage.setItem('lp_conv_id_v1', currentConversationId || ''); } catch(e) {}
         }
 
-        function clearChat() {
-            if (chatHistory.length && !confirm('Clear the entire conversation?')) return;
+        /* ── Sidebar: conversation list ── */
+
+        async function loadConversations() {
+            try {
+                const r = await fetch('/api/conversations');
+                if (!r.ok) return;
+                renderConversationList(await r.json());
+            } catch(e) {}
+        }
+
+        function _fmtDate(iso) {
+            if (!iso) return '';
+            try {
+                const d = new Date(iso);
+                const diffH = (Date.now() - d) / 3600000;
+                if (diffH < 24) return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+                if (diffH < 168) return d.toLocaleDateString([], {weekday:'short'});
+                return d.toLocaleDateString([], {month:'short', day:'numeric'});
+            } catch(e) { return ''; }
+        }
+
+        function renderConversationList(convs) {
+            const list = document.getElementById('convList');
+            if (!convs || !convs.length) {
+                list.innerHTML = '<div class="conv-empty">No conversations yet</div>';
+                return;
+            }
+            list.innerHTML = convs.map(c => {
+                const active = c.id === currentConversationId ? ' active' : '';
+                const title = escHtml(c.title || 'Untitled');
+                const date = escHtml(_fmtDate(c.updated_at));
+                return `<div class="conv-item${active}" onclick="loadConversation('${escHtml(c.id)}')"
+                             title="${escHtml(c.summary || c.title || '')}">
+                    <div class="conv-title">${title}</div>
+                    <div class="conv-date">${date}</div>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadConversation(convId) {
+            try {
+                const r = await fetch(`/api/conversations/${convId}`);
+                if (!r.ok) return;
+                const data = await r.json();
+                chatHistory = data.messages || [];
+                currentConversationId = convId;
+                _persistConvId();
+                renderChatHistory();
+                // Update active state in sidebar without a full reload
+                document.querySelectorAll('.conv-item').forEach(el => {
+                    el.classList.toggle('active', el.getAttribute('onclick').includes(`'${convId}'`));
+                });
+            } catch(e) {}
+        }
+
+        function startNewChat() {
             chatHistory = [];
-            persistChatHistory();
+            currentConversationId = null;
+            _persistConvId();
             renderChatHistory();
+            document.querySelectorAll('.conv-item').forEach(el => el.classList.remove('active'));
+            document.getElementById('chatInput').focus();
         }
 
-        /* Render the persisted history when the chat tab is first shown. */
+        async function searchConversations(query) {
+            if (!query.trim()) { loadConversations(); return; }
+            try {
+                const r = await fetch(`/api/conversations/search?q=${encodeURIComponent(query)}`);
+                if (!r.ok) return;
+                const results = await r.json();
+                const list = document.getElementById('convList');
+                if (!results.length) {
+                    list.innerHTML = '<div class="conv-empty">No results</div>';
+                    return;
+                }
+                list.innerHTML = results.map(item => {
+                    const active = item.conversation_id === currentConversationId ? ' active' : '';
+                    const snippet = (item.snippets || []).slice(0,2).map(s => escHtml(s)).join(' · ');
+                    return `<div class="conv-item${active}"
+                                 onclick="loadConversation('${escHtml(item.conversation_id)}')">
+                        <div class="conv-title">${escHtml(item.title || 'Untitled')}</div>
+                        <div class="conv-date" style="white-space:normal">${snippet}</div>
+                    </div>`;
+                }).join('');
+            } catch(e) {}
+        }
+
+        /* ── Chat rendering ── */
+
         function renderChatHistory() {
             const container = document.getElementById('chatMessages');
             const welcome = document.getElementById('chatWelcome');
@@ -3117,36 +3300,27 @@
             for (const msg of chatHistory) {
                 appendChatMessage(msg, /* persist */ false);
             }
-            // Scroll to bottom
-            const pane = document.getElementById('chatPane');
-            pane.scrollTop = pane.scrollHeight;
+            document.getElementById('chatPane').scrollTop = 1e9;
         }
 
         /**
-         * Append a message to the visible chat. `msg` matches the server-
-         * side normalized shape: { role: 'user' | 'assistant', content: ... }
-         * where content can be a plain string OR an array of Anthropic-style
-         * blocks (text / tool_use / tool_result).
+         * Append a message to the visible chat.
+         * msg: { role: 'user' | 'assistant', content: string | block[] }
+         * When persist=false the message is already in chatHistory (don't push again).
          */
         function appendChatMessage(msg, persist = true) {
             const container = document.getElementById('chatMessages');
-            const welcome = document.getElementById('chatWelcome');
-            welcome.style.display = 'none';
+            document.getElementById('chatWelcome').style.display = 'none';
 
             if (msg.role === 'user') {
-                // User content is usually a string. If it's an array of tool_results
-                // from a previous turn, skip rendering (these were already shown
-                // inline next to the assistant's tool_use blocks).
                 if (typeof msg.content === 'string') {
                     const el = document.createElement('div');
                     el.className = 'chat-msg user';
                     el.textContent = msg.content;
                     container.appendChild(el);
                 }
-                // Array tool_result content: don't show as a user bubble — the
-                // assistant's tool_use blocks already display their outputs.
+                // Array tool_result content is not shown as a user bubble
             } else if (msg.role === 'assistant') {
-                // Assistant content may be a string OR array of {text, tool_use}
                 const blocks = Array.isArray(msg.content)
                     ? msg.content
                     : [{ type: 'text', text: msg.content }];
@@ -3157,23 +3331,21 @@
                         el.textContent = block.text;
                         container.appendChild(el);
                     } else if (block.type === 'tool_use') {
-                        // Look up the matching tool_result from the conversation
                         const toolResult = findToolResult(block.id);
                         const isError = toolResult && (
                             (typeof toolResult === 'object' && toolResult.error) ||
                             (typeof toolResult === 'string' && /^.*error/i.test(toolResult))
                         );
-                        const el = document.createElement('div');
-                        el.className = 'chat-tool-block' + (isError ? ' error' : '');
-                        const inputSummary = formatToolInputSummary(block.input);
                         const resultText = toolResult
                             ? (typeof toolResult === 'object' ? JSON.stringify(toolResult, null, 2) : String(toolResult))
                             : '(pending)';
+                        const el = document.createElement('div');
+                        el.className = 'chat-tool-block' + (isError ? ' error' : '');
                         el.innerHTML = `
                             <div class="chat-tool-summary" onclick="this.parentElement.classList.toggle('open')">
                                 <span class="tool-chev">▶</span>
                                 <span class="chat-tool-name">${escHtml(block.name)}</span>
-                                <span class="chat-tool-input">${escHtml(inputSummary)}</span>
+                                <span class="chat-tool-input">${escHtml(formatToolInputSummary(block.input))}</span>
                             </div>
                             <div class="chat-tool-detail">${escHtml(resultText)}</div>`;
                         container.appendChild(el);
@@ -3181,24 +3353,15 @@
                 }
             }
 
-            if (persist) {
-                chatHistory.push(msg);
-                persistChatHistory();
-            }
-
-            const pane = document.getElementById('chatPane');
-            pane.scrollTop = pane.scrollHeight;
+            if (persist) chatHistory.push(msg);
+            document.getElementById('chatPane').scrollTop = 1e9;
         }
 
         function findToolResult(toolUseId) {
-            // Tool results live in the NEXT user message after the assistant
-            // turn that contained the tool_use. Walk forward from the start of
-            // history looking for a {type: 'tool_result', tool_use_id} block.
             for (const msg of chatHistory) {
                 if (msg.role === 'user' && Array.isArray(msg.content)) {
                     for (const block of msg.content) {
                         if (block.type === 'tool_result' && block.tool_use_id === toolUseId) {
-                            // Parse as JSON when possible
                             try { return JSON.parse(block.content); }
                             catch (e) { return block.content; }
                         }
@@ -3212,13 +3375,13 @@
             if (!input || typeof input !== 'object') return '';
             const entries = Object.entries(input);
             if (!entries.length) return '()';
-            // Keep it compact for the inline summary
             return '(' + entries.map(([k, v]) => {
                 const val = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
-                const truncated = val.length > 30 ? val.slice(0, 27) + '…' : val;
-                return `${k}: ${truncated}`;
+                return `${k}: ${val.length > 30 ? val.slice(0, 27) + '…' : val}`;
             }).join(', ') + ')';
         }
+
+        /* ── Message send ── */
 
         async function sendChatMessage(prefilledText) {
             if (chatBusy) return;
@@ -3232,25 +3395,24 @@
             input.value = '';
             input.style.height = '';
 
-            // Echo the user's message immediately
             appendChatMessage({ role: 'user', content: text });
 
-            // Add a transient "thinking" indicator
             const pendingEl = document.createElement('div');
             pendingEl.className = 'chat-msg assistant pending';
-            pendingEl.id = 'chat-pending-' + Date.now();
             pendingEl.textContent = 'Thinking';
             document.getElementById('chatMessages').appendChild(pendingEl);
             document.getElementById('chatPane').scrollTop = 1e9;
 
             try {
+                const body = { messages: chatHistory };
+                if (currentConversationId) body.conversation_id = currentConversationId;
+
                 const r = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: chatHistory }),
+                    body: JSON.stringify(body),
                 });
                 const data = await r.json();
-
                 pendingEl.remove();
 
                 if (!data.success) {
@@ -3258,39 +3420,37 @@
                     err.className = 'chat-error';
                     err.textContent = data.error || 'Chat failed (unknown reason)';
                     document.getElementById('chatMessages').appendChild(err);
-                    // Roll the user message back so they can retry
                     chatHistory.pop();
-                    persistChatHistory();
                     return;
                 }
 
-                // The server returns the FULL updated history (including the
-                // user message we already echoed). Replace our local copy with
-                // the server's authoritative version, then re-render any new
-                // assistant + tool turns.
                 const oldLen = chatHistory.length;
                 chatHistory = data.messages || chatHistory;
-                persistChatHistory();
 
-                // Render the new messages (assistant + any tool_result turns)
+                // Persist/update conversation ID
+                if (data.conversation_id) {
+                    const isNew = !currentConversationId;
+                    currentConversationId = data.conversation_id;
+                    _persistConvId();
+                    // Refresh sidebar (new entry or updated timestamp)
+                    if (isNew) loadConversations();
+                    else loadConversations(); // refresh updated_at
+                }
+
+                // Render new assistant + tool turns
                 for (let i = oldLen; i < chatHistory.length; i++) {
                     appendChatMessage(chatHistory[i], /* persist */ false);
                 }
 
-                // Light up any controls that may have changed (groups, scenes,
-                // chases, cue lists may have been created/deleted by the agent)
+                // Refresh affected UI panels
                 if (data.tool_calls && data.tool_calls.length) {
                     const touched = new Set(data.tool_calls.map(t => t.name));
                     if (touched.has('create_group') || touched.has('delete_group') ||
                         touched.has('update_group') || touched.has('add_fixtures_to_group') ||
-                        touched.has('remove_fixtures_from_group')) {
-                        loadGroups();
-                    }
+                        touched.has('remove_fixtures_from_group')) loadGroups();
                     if (touched.has('snapshot_scene') || touched.has('delete_scene') ||
                         touched.has('rename_scene') || touched.has('duplicate_scene') ||
-                        touched.has('generate_scene')) {
-                        loadScenes();
-                    }
+                        touched.has('generate_scene')) loadScenes();
                     if (touched.has('create_cue_list') || touched.has('go_cue_list') ||
                         touched.has('stop_cue_list') || touched.has('delete_cue_list')) {
                         if (currentTab === 'cuelists') loadCueLists();
@@ -3306,7 +3466,6 @@
                 err.textContent = 'Network error: ' + e.message;
                 document.getElementById('chatMessages').appendChild(err);
                 chatHistory.pop();
-                persistChatHistory();
             } finally {
                 chatBusy = false;
                 sendBtn.disabled = false;
@@ -3321,11 +3480,6 @@
                 sendChatMessage();
             }
         });
-
-        /* Render chat history into the hidden chat-tab DOM so it's instant
-           when the user switches to it. (Quick Commands is now the landing
-           tab, but we still want chat to feel snappy on first activation.) */
-        renderChatHistory();
 
         /* ══════════════════════════════════════════════════════════════
            PWA — register service worker (silently no-op if unsupported)
@@ -3353,6 +3507,14 @@
             loadScenes();
             loadFixtures();
             loadGroups();
+
+            // Chat: populate sidebar and restore last conversation.
+            (async function initChat() {
+                await loadConversations();
+                if (currentConversationId) {
+                    await loadConversation(currentConversationId);
+                }
+            })();
 
             // Restore the active tab from ?tab=<name> if present, so a refresh
             // (or a shared URL) lands the user where they were. The default
