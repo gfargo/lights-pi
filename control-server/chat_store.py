@@ -8,11 +8,11 @@ plain strings and Anthropic-style block arrays (tool_use / tool_result) without
 any lossy conversion.
 """
 
-from datetime import UTC, datetime
 import json
-from pathlib import Path
 import sqlite3
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 
 
 # Module-level FTS5 flag; set once on first DB open.
