@@ -1,6 +1,7 @@
 """Tests for scene-swatch pure helpers: _fixture_values_to_rgb and swatch SVG."""
 import pytest
-from app import _fixture_values_to_rgb, _scene_swatch_svg, _neutral_swatch_svg
+
+from app import _fixture_values_to_rgb, _neutral_swatch_svg
 
 
 def ch(role, value, offset=0, name=""):

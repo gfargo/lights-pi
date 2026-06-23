@@ -2068,7 +2068,7 @@ def serve_logo():
     Returns 404 if no logo file is present (the template falls back to the
     built-in SVG icon).
     """
-    from flask import send_from_directory, abort
+    from flask import abort, send_from_directory
     static_dir = Path(__file__).parent / "static"
     for ext in ("webp", "png", "svg", "jpg", "jpeg", "gif"):
         logo_file = static_dir / f"logo.{ext}"
@@ -3093,7 +3093,10 @@ def _scene_swatch_svg(scene_root) -> str:
 
 
 def _neutral_swatch_svg() -> str:
-    svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1' fill='rgb(34,34,34)'/></svg>"
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'>"
+        "<rect width='1' height='1' fill='rgb(34,34,34)'/></svg>"
+    )
     encoded = svg.replace("<", "%3C").replace(">", "%3E").replace("'", "%27")
     return f"data:image/svg+xml;charset=utf-8,{encoded}"
 
