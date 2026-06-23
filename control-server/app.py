@@ -22,7 +22,7 @@ from pathlib import Path
 
 import structlog
 import websockets
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -2037,7 +2037,6 @@ def serve_logo():
     Returns 404 if no logo file is present (the template falls back to the
     built-in SVG icon).
     """
-    from flask import send_from_directory, abort
     static_dir = Path(__file__).parent / "static"
     for ext in ("webp", "png", "svg", "jpg", "jpeg", "gif"):
         logo_file = static_dir / f"logo.{ext}"
