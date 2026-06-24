@@ -310,6 +310,7 @@ async def _qlc_send_commands(commands):
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
+            log.debug("dmx_frame", command=command)
             await ws.send(command)
     _last_dmx_write_ts = time.time()
 
@@ -1753,7 +1754,7 @@ def call_ollama(system_prompt, user_prompt):
         raise Exception(f"Ollama API error: {str(e)}") from e
 
 
-def execute_lighting_action(action_data, target_groups=None):
+def execute_lighting_action(action_data, target_groups=None, source="web"):
     """Execute the interpreted lighting action.
 
     When running locally on the Pi (IS_LOCAL=True), generated scenes are
@@ -1913,7 +1914,10 @@ def execute_lighting_action(action_data, target_groups=None):
 
     elif action == "activate_scene":
         scene = params.get("scene") or params.get("name") or params.get("id")
-        return apply_existing_scene_live(scene)
+        result = apply_existing_scene_live(scene)
+        if result["success"]:
+            log.info("scene_activated", scene=scene, source=source)
+        return result
 
     elif action == "start_chase":
         # Dispatch through the same helper the /api/chases/<id>/start endpoint uses.
@@ -1928,6 +1932,8 @@ def execute_lighting_action(action_data, target_groups=None):
         if not (fid and fid.isdigit()):
             return {"success": False, "output": "", "error": f"Chase has no numeric ID: {chase.get('Name')}"}
         ok, raw = set_function_status(int(fid), running=True)
+        if ok:
+            log.info("chase_started", chase=chase.get("Name"), chase_id=fid, source=source)
         return {
             "success": ok,
             "output": f"Started chase '{chase.get('Name')}'" if ok else "",
@@ -1945,6 +1951,8 @@ def execute_lighting_action(action_data, target_groups=None):
         if not (fid and fid.isdigit()):
             return {"success": False, "output": "", "error": f"Chase has no numeric ID: {chase.get('Name')}"}
         ok, raw = set_function_status(int(fid), running=False)
+        if ok:
+            log.info("chase_stopped", chase=chase.get("Name"), chase_id=fid, source=source)
         return {
             "success": ok,
             "output": f"Stopped chase '{chase.get('Name')}'" if ok else "",
@@ -2176,16 +2184,22 @@ def handle_action():
 _HEALTHZ_UNSET = object()
 
 
+def _dmx_device_readable(dev):
+    return os.access(dev, os.R_OK)
+
+
 def _healthz_status(
     qlc_ws=_HEALTHZ_UNSET,
     last_dmx_ts=_HEALTHZ_UNSET,
     workspace_path=None,
     dmx_device_glob=None,
+    dmx_readable_fn=None,
     now=None,
 ):
     """Aggregate health of all subsystems. Returns (payload_dict, all_critical_ok).
 
     All parameters are injectable for unit testing; defaults pull from live globals.
+    dmx_readable_fn: optional callable(path) -> bool; defaults to os.access(path, os.R_OK).
     """
     import glob as _glob
 
@@ -2197,6 +2211,8 @@ def _healthz_status(
         workspace_path = WORKSPACE_PATH
     if now is None:
         now = time.time()
+    if dmx_readable_fn is None:
+        dmx_readable_fn = _dmx_device_readable
 
     ws_ok = False
     try:
@@ -2213,7 +2229,8 @@ def _healthz_status(
             else _glob.glob("/dev/ttyUSB*") + _glob.glob("/dev/ttyACM*")
         )
         if devices:
-            dmx_device = devices[0]
+            dev = devices[0]
+            dmx_device = dev if dmx_readable_fn(dev) else None
     except Exception:
         pass
 
@@ -4600,7 +4617,7 @@ async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
                 # internally for channel writes; it's safe to call from
                 # this async context (it'll just submit further work to the
                 # same event loop without re-entering).
-                execute_lighting_action(action_data, target_groups=cue.get("groups"))
+                execute_lighting_action(action_data, target_groups=cue.get("groups"), source="cue")
             except Exception as e:
                 log.warning("cue_step_failed", cue_list_id=cue_list_id, cue_idx=idx, action=cue["action"], error=str(e))
             fired_indexes.append(idx)

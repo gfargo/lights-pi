@@ -17,6 +17,14 @@ def _minimal_workspace(tmp_path):
     return p
 
 
+def _readable(dev):
+    return True
+
+
+def _unreadable(dev):
+    return False
+
+
 class TestAllGreen:
     def test_all_critical_ok(self, tmp_path):
         ws_path = _minimal_workspace(tmp_path)
@@ -25,6 +33,7 @@ class TestAllGreen:
             last_dmx_ts=990.0,
             workspace_path=ws_path,
             dmx_device_glob=["/dev/ttyUSB0"],
+            dmx_readable_fn=_readable,
             now=1000.0,
         )
         assert ok is True
@@ -68,6 +77,7 @@ class TestWorkspace:
             last_dmx_ts=None,
             workspace_path=tmp_path / "missing.qxw",
             dmx_device_glob=["/dev/ttyUSB0"],
+            dmx_readable_fn=_readable,
             now=1000.0,
         )
         assert ok is False
@@ -81,6 +91,7 @@ class TestWorkspace:
             last_dmx_ts=None,
             workspace_path=bad,
             dmx_device_glob=["/dev/ttyUSB0"],
+            dmx_readable_fn=_readable,
             now=1000.0,
         )
         assert ok is False
@@ -136,6 +147,29 @@ class TestDmxDevice:
             last_dmx_ts=None,
             workspace_path=_minimal_workspace(tmp_path),
             dmx_device_glob=["/dev/ttyUSB0", "/dev/ttyUSB1"],
+            dmx_readable_fn=_readable,
+            now=1000.0,
+        )
+        assert payload["dmx_device"] == "/dev/ttyUSB0"
+
+    def test_unreadable_device_reports_false(self, tmp_path):
+        payload, _ = _healthz_status(
+            qlc_ws=_fake_ws(),
+            last_dmx_ts=None,
+            workspace_path=_minimal_workspace(tmp_path),
+            dmx_device_glob=["/dev/ttyUSB0"],
+            dmx_readable_fn=_unreadable,
+            now=1000.0,
+        )
+        assert payload["dmx_device"] is False
+
+    def test_readable_device_reported(self, tmp_path):
+        payload, _ = _healthz_status(
+            qlc_ws=_fake_ws(),
+            last_dmx_ts=None,
+            workspace_path=_minimal_workspace(tmp_path),
+            dmx_device_glob=["/dev/ttyUSB0"],
+            dmx_readable_fn=_readable,
             now=1000.0,
         )
         assert payload["dmx_device"] == "/dev/ttyUSB0"
