@@ -89,6 +89,10 @@ WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / 
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 
+# Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
+_scene_swatch_cache: dict = {}
+_scene_swatch_cache_mtime: float = 0.0
+
 # QLC+ WebSocket configuration
 QLC_HOST = os.getenv("QLC_HOST", "localhost")
 QLC_PORT = int(os.getenv("QLC_PORT", "9999"))
@@ -966,6 +970,67 @@ def _wwa_mix(kelvin: float) -> dict[str, float]:
         amber_amount = 0.0
 
     return {"warm": warm_amount, "cool": cool_amount, "amber": amber_amount}
+
+
+def _fixture_values_to_rgb(channels: list) -> tuple[int, int, int] | None:
+    """Map a fixture's channel breakdown to a display RGB triple (0–255 each).
+
+    Uses the same CCT/WWA math as DMX output.  Returns None when no usable
+    color role is found so the caller can substitute a neutral fallback.
+    """
+    roles: dict[str, int] = {}
+    for ch in channels:
+        role = ch.get("role")
+        if role:
+            # Keep the highest value when the same role appears on multiple channels.
+            roles[role] = max(roles.get(role, 0), ch["value"])
+
+    def _s(v: int) -> float:
+        return v / 255.0
+
+    dim = _s(roles["dimmer"]) if "dimmer" in roles else 1.0
+
+    has_rgb = any(r in roles for r in ("red", "green", "blue"))
+    has_wwa = any(r in roles for r in ("warm", "cool"))
+
+    if has_rgb:
+        r = roles.get("red", 0)
+        g = roles.get("green", 0)
+        b = roles.get("blue", 0)
+        w = roles.get("white", 0)
+        r = min(255, r + w)
+        g = min(255, g + w)
+        b = min(255, b + w)
+        # Amber approximated as orange-yellow (255, 191, 0)
+        a = roles.get("amber", 0)
+        r = min(255, r + a)
+        g = min(255, g + round(a * 191 / 255))
+        return (round(r * dim), round(g * dim), round(b * dim))
+
+    if has_wwa:
+        warm = _s(roles.get("warm", 0))
+        cool = _s(roles.get("cool", 0))
+        amber = _s(roles.get("amber", 0))
+        total = warm + cool + amber
+        if total == 0:
+            return None
+        # Weighted Kelvin from warm/cool balance
+        warm_cool_sum = warm + cool
+        warm_frac = warm / warm_cool_sum if warm_cool_sum > 0 else 1.0
+        kelvin = _WWA_WARM_K + (1.0 - warm_frac) * (_WWA_COOL_K - _WWA_WARM_K)
+        base_r, base_g, base_b = _cct_to_rgb(kelvin)
+        # Fold amber into the CCT result
+        base_r = min(255, base_r + round(amber * 255))
+        base_g = min(255, base_g + round(amber * 191))
+        scale = min(1.0, total) * dim
+        return (round(base_r * scale), round(base_g * scale), round(base_b * scale))
+
+    if "dimmer" in roles:
+        # Dimmer-only fixture: render as neutral white scaled by level
+        v = round(255 * dim)
+        return (v, v, v)
+
+    return None
 
 
 def apply_color_temperature_live(kelvin, intensity=None, target_groups=None):
@@ -2447,9 +2512,20 @@ def list_templates():
 
 @app.route("/api/scenes", methods=["GET"])
 def list_scenes():
-    """List existing scene functions from the loaded workspace."""
+    """List existing scene functions from the loaded workspace, each with a swatch URI."""
     try:
-        return jsonify({"scenes": get_workspace_scenes()})
+        scenes = get_workspace_scenes()
+        try:
+            mtime = WORKSPACE_PATH.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        for s in scenes:
+            try:
+                elem = _find_scene_element(s["id"])
+                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime) if elem is not None else None
+            except Exception:
+                s["swatch"] = None
+        return jsonify({"scenes": scenes})
     except Exception as e:
         return jsonify({"error": str(e), "scenes": []}), 500
 
@@ -3167,6 +3243,59 @@ def _scene_value_breakdown(scene_root) -> list:
             "channels": channels,
         })
     return out
+
+
+def _scene_swatch_svg(scene_root) -> str:
+    """Return a data:image/svg+xml URI with one color band per fixture.
+
+    Falls back to a dark neutral strip when no color roles are resolvable.
+    """
+    breakdown = _scene_value_breakdown(scene_root)
+    if not breakdown:
+        return _neutral_swatch_svg()
+
+    bands = []
+    for fix in breakdown:
+        rgb = _fixture_values_to_rgb(fix["channels"])
+        bands.append(f"rgb({rgb[0]},{rgb[1]},{rgb[2]})" if rgb else "rgb(34,34,34)")
+
+    n = len(bands)
+    bw = 100.0 / n
+    # Use viewBox="0 0 100 1" coordinate space — no % units needed, no extra encoding.
+    rects = "".join(
+        f"<rect x='{i * bw:.3f}' y='0' width='{bw:.3f}' height='1' fill='{col}'/>"
+        for i, col in enumerate(bands)
+    )
+    svg = (
+        f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 1' "
+        f"preserveAspectRatio='none'>{rects}</svg>"
+    )
+    # Encode for safe embedding in CSS url('...') inside an HTML style="" attribute.
+    encoded = svg.replace("<", "%3C").replace(">", "%3E").replace("'", "%27")
+    return f"data:image/svg+xml;charset=utf-8,{encoded}"
+
+
+def _neutral_swatch_svg() -> str:
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'>"
+        "<rect width='1' height='1' fill='rgb(34,34,34)'/></svg>"
+    )
+    encoded = svg.replace("<", "%3C").replace(">", "%3E").replace("'", "%27")
+    return f"data:image/svg+xml;charset=utf-8,{encoded}"
+
+
+def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str | None:
+    """Return cached swatch URI for a scene, re-computing when workspace changed."""
+    global _scene_swatch_cache, _scene_swatch_cache_mtime
+    if workspace_mtime != _scene_swatch_cache_mtime:
+        _scene_swatch_cache.clear()
+        _scene_swatch_cache_mtime = workspace_mtime
+    if scene_id not in _scene_swatch_cache:
+        try:
+            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem)
+        except Exception:
+            _scene_swatch_cache[scene_id] = None
+    return _scene_swatch_cache[scene_id]
 
 
 @app.route("/api/scenes/<scene_id>", methods=["GET"])

@@ -957,7 +957,12 @@
         .identify-btn.flashing { background: #facc15; color: #0a0a0a; }
 
         /* ── Scene grid affordances (hover menu) ── */
-        .scene-btn-wrap { position: relative; display: inline-block; }
+        .scene-swatch {
+            height: 16px; width: 100%; display: block;
+            background-color: #222; background-size: 100% 100%;
+            border-radius: 2px 2px 0 0;
+        }
+        .scene-btn-wrap { position: relative; display: inline-flex; flex-direction: column; }
         .scene-menu-btn {
             position: absolute; top: 2px; right: 2px;
             background: rgba(0,0,0,0.6); border: none; color: #ccc;
@@ -2018,8 +2023,11 @@
                 const data = await r.json();
                 const grid = document.getElementById('sceneGrid');
                 allScenesData = data.scenes || [];
-                grid.innerHTML = allScenesData.map(s => `
+                grid.innerHTML = allScenesData.map(s => {
+                    const swatchStyle = s.swatch ? ` style="background-image:url('${s.swatch}')"` : '';
+                    return `
                     <div class="scene-btn-wrap">
+                        <span class="scene-swatch"${swatchStyle}></span>
                         <button class="scene-btn" onclick="activateScene(${s.id})" title="${escHtml(s.path || s.name)}">${escHtml(s.name)}</button>
                         <button class="scene-menu-btn" onclick="toggleSceneMenu(${s.id}, event)" aria-label="Scene actions" title="Actions">⋯</button>
                         <div class="scene-menu" id="scene-menu-${s.id}">
@@ -2027,8 +2035,8 @@
                             <button onclick="duplicateScene(${s.id}); toggleSceneMenu(${s.id}, event);">Duplicate…</button>
                             <button class="danger" onclick="deleteScene(${s.id}); toggleSceneMenu(${s.id}, event);">Delete</button>
                         </div>
-                    </div>`
-                ).join('');
+                    </div>`;
+                }).join('');
             } catch (e) { console.error('Error loading scenes:', e); }
         }
 
