@@ -3,8 +3,6 @@ chase step extraction, and live-retime state updates."""
 import xml.etree.ElementTree as ET
 
 import pytest
-
-import app as app_module
 from app import (
     _bpm_to_step_ms,
     _chase_step_scene_ids,
