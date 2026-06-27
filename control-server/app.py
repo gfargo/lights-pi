@@ -106,6 +106,73 @@ AI_MODEL = os.getenv(
     "gpt-4.1" if os.getenv("AI_PROVIDER", "openai") == "openai" else "claude-3-5-sonnet-20241022",
 )
 
+# Per-provider API keys — prefer explicit per-provider env vars; fall back to
+# AI_API_KEY when it belongs to the primary provider.
+_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or (AI_API_KEY if AI_PROVIDER == "openai" else "")
+_ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or (AI_API_KEY if AI_PROVIDER == "anthropic" else "")
+
+# Per-provider model overrides. The secondary-provider fallbacks use fresh model IDs
+# so the stale claude-3-5 name doesn't silently carry over when anthropic is added as
+# a failover target to an openai-primary install.
+_OPENAI_MODEL = os.getenv("OPENAI_MODEL") or (AI_MODEL if AI_PROVIDER == "openai" else "gpt-4.1")
+_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL") or (AI_MODEL if AI_PROVIDER == "anthropic" else "claude-sonnet-4-6")
+
+
+def _parse_failover_chain(raw: str, default_provider: str) -> list:
+    """Parse AI_PROVIDER_FAILOVER into an ordered, de-duped list of valid providers.
+
+    Valid providers: 'anthropic', 'openai'. Unknowns (e.g. 'ollama') are dropped.
+    An empty/missing value returns [default_provider] if it is valid, else [].
+    """
+    _VALID = {"anthropic", "openai"}
+    if not raw or not raw.strip():
+        return [default_provider] if default_provider in _VALID else []
+    seen: list = []
+    for part in raw.split(","):
+        p = part.strip().lower()
+        if p in _VALID and p not in seen:
+            seen.append(p)
+    return seen if seen else ([default_provider] if default_provider in _VALID else [])
+
+
+def _provider_config(provider: str) -> tuple:
+    """Return (model, api_key) for the given provider."""
+    if provider == "anthropic":
+        return _ANTHROPIC_MODEL, _ANTHROPIC_API_KEY
+    if provider == "openai":
+        return _OPENAI_MODEL, _OPENAI_API_KEY
+    return "", ""
+
+
+# Ordered failover chain resolved once at startup.
+AI_PROVIDER_FAILOVER = os.getenv("AI_PROVIDER_FAILOVER", "")
+_AI_FAILOVER_CHAIN: list = _parse_failover_chain(AI_PROVIDER_FAILOVER, AI_PROVIDER)
+
+# ----------------------------------------------------------------------------
+# Circuit breaker — per-provider transient-failure back-off
+# ----------------------------------------------------------------------------
+_BREAKER_THRESHOLD = 3      # failures before opening
+_BREAKER_COOLDOWN_S = 60    # seconds to back off after opening
+_provider_breaker: dict = {}  # {provider: {"fails": int, "open_until": float}}
+_breaker_lock = threading.Lock()
+
+
+def _breaker_is_open(state: dict, provider: str, now: float) -> bool:
+    info = state.get(provider)
+    return info is not None and info.get("open_until", 0.0) > now
+
+
+def _breaker_record_failure(state: dict, provider: str, now: float) -> None:
+    info = state.setdefault(provider, {"fails": 0, "open_until": 0.0})
+    info["fails"] += 1
+    if info["fails"] >= _BREAKER_THRESHOLD:
+        info["open_until"] = now + _BREAKER_COOLDOWN_S
+
+
+def _breaker_record_success(state: dict, provider: str) -> None:
+    state.pop(provider, None)
+
+
 SERVICE_NAME = os.getenv("SERVICE", "qlcplus-web.service")
 
 
@@ -5521,6 +5588,26 @@ def _build_chat_tools() -> list[dict]:
 
 
 # ----------------------------------------------------------------------------
+# Failover error classification
+# ----------------------------------------------------------------------------
+
+def _is_failover_error(exc) -> bool:
+    """True when the exception indicates a transient provider failure worth retrying elsewhere.
+
+    Timeouts and connection errors are always failover-eligible.
+    HTTP 5xx and 429 (rate-limit) are failover-eligible.
+    HTTP 4xx (except 429) are real errors — not retried.
+    """
+    import requests
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else 0
+        return status >= 500 or status == 429
+    return False
+
+
+# ----------------------------------------------------------------------------
 # Anthropic tool-use loop
 # ----------------------------------------------------------------------------
 
@@ -5579,11 +5666,16 @@ def _anthropic_chat_loop(messages: list, tools: list, model: str, api_key: str, 
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:
+            http_status = None
+            if hasattr(e, "response") and e.response is not None:
+                http_status = e.response.status_code
             return {
                 "messages": messages,
                 "tool_calls": tool_calls_made,
                 "stop_reason": "error",
                 "error": f"Anthropic API error: {e}",
+                "should_failover": _is_failover_error(e),
+                "http_status": http_status,
             }
 
         # Append assistant response (preserves tool_use blocks for protocol)
@@ -5722,11 +5814,16 @@ def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:
+            http_status = None
+            if hasattr(e, "response") and e.response is not None:
+                http_status = e.response.status_code
             return {
                 "messages": messages,
                 "tool_calls": tool_calls_made,
                 "stop_reason": "error",
                 "error": f"OpenAI API error: {e}",
+                "should_failover": _is_failover_error(e),
+                "http_status": http_status,
             }
 
         msg = data["choices"][0]["message"]
@@ -5796,6 +5893,79 @@ def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max
 
 
 # ----------------------------------------------------------------------------
+# Failover orchestrator
+# ----------------------------------------------------------------------------
+
+def _run_chat_with_failover(incoming_messages: list, tools: list) -> dict:
+    """Run one chat turn through the failover chain.
+
+    Iterates _AI_FAILOVER_CHAIN; skips providers whose circuit breaker is open
+    or whose API key is missing. On a failover-eligible error records the failure
+    and continues to the next provider. Returns the loop result dict augmented
+    with 'served_by', 'switched', and 'attempts'.
+    """
+    chain = _AI_FAILOVER_CHAIN
+    attempts: list = []
+    messages_to_try = list(incoming_messages)
+
+    for provider in chain:
+        model, api_key = _provider_config(provider)
+        if not api_key:
+            logging.warning("chat_failover: skipping %s — no API key configured", provider)
+            attempts.append({"provider": provider, "skipped": "no_api_key"})
+            continue
+
+        with _breaker_lock:
+            if _breaker_is_open(_provider_breaker, provider, time.time()):
+                logging.warning("chat_failover: skipping %s — circuit breaker open", provider)
+                attempts.append({"provider": provider, "skipped": "breaker_open"})
+                continue
+
+        if provider == "anthropic":
+            result = _anthropic_chat_loop(list(messages_to_try), tools, model, api_key)
+        else:
+            result = _openai_chat_loop(list(messages_to_try), tools, model, api_key)
+
+        if result.get("stop_reason") == "error" and result.get("should_failover"):
+            with _breaker_lock:
+                _breaker_record_failure(_provider_breaker, provider, time.time())
+            logging.warning(
+                "chat_failover: %s failed (http_status=%s), trying next provider. error=%s",
+                provider, result.get("http_status"), result.get("error"),
+            )
+            attempts.append({
+                "provider": provider,
+                "error": result.get("error"),
+                "http_status": result.get("http_status"),
+            })
+            # Forward messages at the clean turn boundary to the next provider.
+            messages_to_try = result.get("messages", messages_to_try)
+            continue
+
+        # Success or non-retryable error (e.g. 401) — return as-is.
+        if result.get("stop_reason") != "error":
+            with _breaker_lock:
+                _breaker_record_success(_provider_breaker, provider)
+
+        result["served_by"] = provider
+        result["switched"] = bool(chain) and provider != chain[0]
+        result["attempts"] = attempts
+        return result
+
+    # All providers exhausted.
+    return {
+        "messages": incoming_messages,
+        "tool_calls": [],
+        "stop_reason": "error",
+        "error": "All providers in failover chain failed or are unavailable.",
+        "should_failover": False,
+        "served_by": None,
+        "switched": False,
+        "attempts": attempts,
+    }
+
+
+# ----------------------------------------------------------------------------
 # /api/chat endpoint
 # ----------------------------------------------------------------------------
 
@@ -5827,7 +5997,7 @@ def handle_chat():
     if not isinstance(incoming_messages, list) or not incoming_messages:
         return jsonify({"success": False, "error": "messages must be a non-empty array"}), 400
 
-    if AI_PROVIDER not in ("anthropic", "openai"):
+    if not _AI_FAILOVER_CHAIN:
         return jsonify({
             "success": False,
             "error": (
@@ -5835,23 +6005,25 @@ def handle_chat():
                 "Ollama tool-calling is not supported yet."
             ),
         }), 400
-    if not AI_API_KEY:
-        return jsonify({"success": False, "error": "AI_API_KEY not configured"}), 400
+    usable = [p for p in _AI_FAILOVER_CHAIN if _provider_config(p)[1]]
+    if not usable:
+        return jsonify({"success": False, "error": "No API key configured for any provider in the failover chain"}), 400
 
     tools = _build_chat_tools()
-
-    if AI_PROVIDER == "anthropic":
-        result = _anthropic_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
-    else:
-        result = _openai_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
+    result = _run_chat_with_failover(list(incoming_messages), tools)
+    served_by = result.get("served_by") or AI_PROVIDER
+    served_model = _provider_config(served_by)[0] if served_by else AI_MODEL
 
     return jsonify({
         "success": result.get("stop_reason") not in ("error",),
         "messages": result.get("messages", []),
         "tool_calls": result.get("tool_calls", []),
         "stop_reason": result.get("stop_reason"),
-        "provider": AI_PROVIDER,
-        "model": AI_MODEL,
+        "provider": served_by,
+        "model": served_model,
+        "switched": result.get("switched", False),
+        "failover_chain": _AI_FAILOVER_CHAIN,
+        "attempts": result.get("attempts", []),
         **({"error": result["error"]} if result.get("error") else {}),
     })
 
