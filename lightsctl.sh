@@ -111,8 +111,12 @@ Network / WiFi:
 
 System:
   lsusb                         show USB devices (ENTTEC should appear)
-  backup                        pull QLC+ config dirs to ${BACKUP_STORAGE}
-  restore <backup.tar.gz>       restore QLC+ config from backup and restart service
+  backup [--auto]               pull QLC+ config dirs to ${BACKUP_STORAGE}; --auto also pushes to BACKUP_REMOTE
+  restore <backup.tar.gz>       restore QLC+ config from backup (local path or s3://…/rclone:/scp URI)
+  backup-timer-install          install daily 04:00 automated backup timer on the Pi
+  backup-timer-status           show backup timer status
+  backup-timer-logs             show recent backup logs
+  backup-timer-uninstall        remove the automated backup timer
   os-version                    show Raspberry Pi OS and kernel version
   hdmi-disable                  disable HDMI to save power
   reboot                        reboot the Pi
@@ -396,12 +400,32 @@ function command_update() {
 
 function command_backup() {
   source "${SCRIPT_DIR}/scripts/lib/backup.sh"
-  backup_create
+  backup_create "$@"
 }
 
 function command_restore() {
   source "${SCRIPT_DIR}/scripts/lib/backup.sh"
   backup_restore "$@"
+}
+
+function command_backup_timer_install() {
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  backup_timer_install
+}
+
+function command_backup_timer_status() {
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  backup_timer_status
+}
+
+function command_backup_timer_logs() {
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  backup_timer_logs
+}
+
+function command_backup_timer_uninstall() {
+  source "${SCRIPT_DIR}/scripts/lib/backup.sh"
+  backup_timer_uninstall
 }
 
 # SSH/System commands
@@ -1278,8 +1302,12 @@ case "$1" in
   scan) shift; command_scan "$@" ;;
   update) command_update ;;
   update-qlc) command_update_qlc ;;
-  backup) command_backup ;;
+  backup) shift; command_backup "$@" ;;
   restore) shift; command_restore "$@" ;;
+  backup-timer-install) command_backup_timer_install ;;
+  backup-timer-status) command_backup_timer_status ;;
+  backup-timer-logs) command_backup_timer_logs ;;
+  backup-timer-uninstall) command_backup_timer_uninstall ;;
   check) command_check ;;
   validate) command_validate ;;
   diagnose) command_diagnose ;;

@@ -1,6 +1,6 @@
 CTL := ./lightsctl.sh
 
-.PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore \
+.PHONY: help check validate doctor perf benchmark status logs logs-errors tail health diagnose restart update update-qlc backup restore backup-timer-install backup-timer-status backup-timer-logs backup-timer-uninstall \
         setup harden setup-full add-key disable-password-auth static-ip \
         qlc-headless list-fixtures install-fixture test-dmx deploy-workspace set-default-workspace pull-workspace open ssh wifi wifi-status scan gen-cert ssl-proxy \
         reboot poweroff hdmi-disable os-version landing-setup landing-deploy env-sync
@@ -60,6 +60,18 @@ backup:
 # restore usage: make restore BACKUP=backups/qlcplus-backup-20260305T203838Z.tar.gz
 restore:
 	$(CTL) restore $(BACKUP)
+
+backup-timer-install:
+	$(CTL) backup-timer-install
+
+backup-timer-status:
+	$(CTL) backup-timer-status
+
+backup-timer-logs:
+	$(CTL) backup-timer-logs
+
+backup-timer-uninstall:
+	$(CTL) backup-timer-uninstall
 
 # ── Provisioning ──────────────────────────────────────────────────────────────
 setup:
