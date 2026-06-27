@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -21,7 +22,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import websockets
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -31,8 +32,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Local QLC+ fixture definition parser (.qxf)
 sys.path.insert(0, str(Path(__file__).parent))
 import fixture_definitions
+from event_bus import EventBus, format_sse, parse_filter
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# SSE event bus — module-level singleton
+# ---------------------------------------------------------------------------
+EVENT_BUS = EventBus()
+START_TIME = time.time()
+
+
+def _emit(event_type: str, data: dict) -> None:
+    """Convenience wrapper: publish *data* as *event_type* to all SSE clients."""
+    EVENT_BUS.publish(event_type, data)
 
 # ---------------------------------------------------------------------------
 # Security hardening (quick wins from security audit)
@@ -237,6 +250,7 @@ async def _ensure_qlc_ws():
                 # Start a background reader so QLC+ pushes don't fill the recv buffer
                 asyncio.create_task(_qlc_reader(_qlc_ws))
                 print(f"✓ QLC+ WebSocket connected at {QLC_WS_URL}")
+                _emit("qlc_reconnect", {"url": QLC_WS_URL})
             except Exception as e:
                 _qlc_ws = None
                 print(f"✗ QLC+ WebSocket connect failed: {type(e).__name__}: {e}")
@@ -273,6 +287,7 @@ async def _qlc_reader(ws):
             pass
         if _qlc_ws is ws:
             _qlc_ws = None
+            _emit("qlc_disconnect", {"url": QLC_WS_URL})
 
 
 async def _qlc_send_commands(commands):
@@ -369,6 +384,14 @@ def set_channel_values(channel_values):
         return True
     try:
         _qlc_run(_qlc_send_commands(commands), timeout=5)
+        # Emit a single coalesced channel_change event (list payload avoids
+        # flooding the stream when fades/strobe call us repeatedly).
+        _emit("channel_change", {
+            "channels": [{"channel": ch, "value": val}
+                         for cmd in commands
+                         for ch, val in [cmd.split("|")[1:3]]
+                         for ch, val in [(int(ch), int(val))]]
+        })
         return True
     except Exception as e:
         print(f"set_channel_values error: {e}")
@@ -554,6 +577,11 @@ def apply_existing_scene_live(scene_id_or_name):
         }
     success = set_channel_values(updates)
     scene_name = scene.get("Name", str(scene_id_or_name))
+    if success:
+        _emit("scene_activated", {
+            "scene_id": scene.get("ID"),
+            "scene_name": scene_name,
+        })
     return {
         "success": success,
         "output": f"Applied scene '{scene_name}' live via WebSocket ({len(updates)} channel values)",
@@ -2205,6 +2233,56 @@ def handle_action():
     })
 
 
+@app.route("/api/events", methods=["GET"])
+def sse_events():
+    """Server-Sent Events stream for real-time rig state changes.
+
+    Optional query param:
+        ?filter=scenes,channels,groups,qlc,status
+    Omit *filter* (or leave empty) to receive all event types.
+
+    Event types:
+        channel_change  — {channels: [{channel, value}, ...]}
+        scene_activated — {scene_id, scene_name}
+        group_modified  — {group_name, action: created|updated|deleted}
+        qlc_disconnect  — {url}
+        qlc_reconnect   — {url}
+        service_status  — {uptime_s, qlc_connected}  (heartbeat, ≤15 s)
+    """
+    allowed = parse_filter(request.args.get("filter"))
+
+    @stream_with_context
+    def _generate():
+        q = EVENT_BUS.subscribe()
+        try:
+            while True:
+                try:
+                    envelope = q.get(timeout=15)
+                    evt_type = envelope["type"]
+                    if allowed is None or evt_type in allowed:
+                        yield format_sse(evt_type, envelope["data"])
+                except queue.Empty:
+                    # Heartbeat keeps the connection alive through idle periods
+                    # and through proxies that close idle TCP connections.
+                    uptime = round(time.time() - START_TIME)
+                    qlc_connected = _qlc_ws is not None and not getattr(_qlc_ws, "closed", False)
+                    yield format_sse("service_status", {
+                        "uptime_s": uptime,
+                        "qlc_connected": qlc_connected,
+                    })
+        except GeneratorExit:
+            pass
+        finally:
+            EVENT_BUS.unsubscribe(q)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return Response(_generate(), mimetype="text/event-stream", headers=headers)
+
+
 @app.route("/api/status", methods=["GET"])
 def get_status():
     """Get detailed multi-service health status"""
@@ -2866,6 +2944,7 @@ def create_group():
         "description": (data.get("description") or "").strip(),
     }
     _save_groups(groups)
+    _emit("group_modified", {"group_name": name, "action": "created"})
     return jsonify({
         "success": True,
         "group": {
@@ -2884,6 +2963,7 @@ def delete_group(group_name):
         return jsonify({"success": False, "error": f"Group '{group_name}' not found"}), 404
     del groups[group_name]
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "deleted"})
     return jsonify({"success": True})
 
 
@@ -2930,6 +3010,7 @@ def update_group(group_name):
         groups[group_name]["fixtures"] = fixture_ids
 
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "updated"})
     return jsonify({
         "success": True,
         "group": {
@@ -2968,6 +3049,7 @@ def add_fixtures_to_group(group_name):
             seen.add(fid)
     groups[group_name]["fixtures"] = current
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "updated"})
 
     return jsonify({
         "success": True,
@@ -2994,6 +3076,7 @@ def remove_fixtures_from_group(group_name):
     current = [fid for fid in (groups[group_name].get("fixtures") or []) if fid not in to_remove]
     groups[group_name]["fixtures"] = current
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "updated"})
 
     return jsonify({
         "success": True,
