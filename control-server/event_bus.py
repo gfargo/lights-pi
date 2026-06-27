@@ -7,8 +7,6 @@ import json
 import queue
 import threading
 import time
-from typing import Optional
-
 
 # ---------------------------------------------------------------------------
 # Filter helpers (pure — unit-testable without Flask)
@@ -24,7 +22,7 @@ _FILTER_MAP: dict[str, set[str]] = {
 }
 
 
-def parse_filter(raw: Optional[str]) -> Optional[set]:
+def parse_filter(raw: str | None) -> set | None:
     """Convert a comma-separated filter query param into a set of event types.
 
     Returns None when *raw* is absent/empty (means "all events").

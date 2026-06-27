@@ -3,10 +3,7 @@ import json
 import queue
 import time
 
-import pytest
-
 from event_bus import EventBus, format_sse, parse_filter
-
 
 # ---------------------------------------------------------------------------
 # format_sse
@@ -24,7 +21,7 @@ class TestFormatSse:
     def test_data_is_json(self):
         s = format_sse("test", {"key": "value"})
         lines = s.splitlines()
-        data_line = next(l for l in lines if l.startswith("data:"))
+        data_line = next(ln for ln in lines if ln.startswith("data:"))
         payload = json.loads(data_line[len("data: "):].strip() if data_line[5] == " " else data_line[5:])
         assert payload == {"key": "value"}
 
