@@ -10,7 +10,7 @@ BACKUP_DIR="${BACKUP_DIR:-${HOME}/lights-pi-backups}"
 BACKUP_REMOTE="${BACKUP_REMOTE:-}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 
-log() { logger -t "$LOG_TAG" "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
+log() { logger -t "$LOG_TAG" "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" >&2; }
 
 # ---------------------------------------------------------------------------
 # create_snapshot — tar the QLC+ dirs + control-server config into BACKUP_DIR
