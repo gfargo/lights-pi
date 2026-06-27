@@ -321,6 +321,13 @@
    <FixtureVal ID="5">0,255,1,220,2,220,3,240,4,0,5,80,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
+  <Function ID="100" Type="Chaser" Name="Test Chase" Path="">
+   <Speed FadeIn="0" FadeOut="0" Duration="100"/>
+   <Direction>Forward</Direction>
+   <RunOrder>Loop</RunOrder>
+   <Step Number="0" FadeIn="0" Hold="100" FadeOut="0">1</Step>
+   <Step Number="1" FadeIn="0" Hold="100" FadeOut="0">6</Step>
+  </Function>
   <Monitor DisplayMode="0" ShowLabels="0">
    <Font>Arial,12,-1,5,400,0,0,0,0,0,0,0,0,0,0,1</Font>
    <ChannelStyle>0</ChannelStyle>

@@ -209,6 +209,21 @@ class TestFlaskMockIntegration:
         # Scene 1 ("Lights ON") sets channels — bus should be non-empty
         assert len(state) > 0
 
+    def test_chase_advances_mock_bus(self, mock_client):
+        """Chase stepper must write to the bus (was broken by .items() on a list)."""
+        import time
+
+        mock_dmx.reset()
+        # Start the test chase (ID 100, two 100 ms steps)
+        r = mock_client.post("/api/chases/100/start")
+        assert r.status_code == 200
+        # Wait long enough for at least one step to fire (hold=100ms, add buffer)
+        time.sleep(0.5)
+        state = mock_client.get("/debug/dmx-state").get_json()
+        # Stop the chase before asserting so it doesn't race with cleanup
+        mock_client.post("/api/chases/100/stop")
+        assert len(state) > 0, "Chase stepper never wrote to the mock DMX bus"
+
 
 class TestDebugEndpointNotMounted:
     """Verify /debug/dmx-state returns 404 when not in mock mode."""
