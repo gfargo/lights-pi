@@ -161,6 +161,7 @@ def mock_client():
     os.environ["QLC_WORKSPACE"] = sample_ws
     # Import app AFTER setting env vars (module-level config reads them)
     import importlib
+
     import app as _app_module
     importlib.reload(_app_module)
     _app_module.app.config["TESTING"] = True
@@ -217,6 +218,7 @@ class TestDebugEndpointNotMounted:
         os.environ.pop("MOCK_DMX", None)
         # Only need to verify route isn't registered; use a fresh import context
         import importlib
+
         import app as _app_module
         importlib.reload(_app_module)
         _app_module.app.config["TESTING"] = True

@@ -4191,7 +4191,7 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
             _mock_chase_start(function_id)
         else:
             _mock_chase_stop(function_id)
-        return True, f"QLC+API|setFunctionStatus|OK"
+        return True, "QLC+API|setFunctionStatus|OK"
     try:
         raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
         return True, raw
