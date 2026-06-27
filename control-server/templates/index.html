@@ -100,6 +100,50 @@
             0%, 100% { opacity: 1;   box-shadow: 0 0 6px var(--amber-tungsten-glow); }
             50%      { opacity: 0.55; box-shadow: 0 0 3px var(--amber-tungsten-glow); }
         }
+        @keyframes tap-pulse {
+            0%   { transform: scale(1);    box-shadow: 0 0 0   rgba(217,119,87,0); }
+            15%  { transform: scale(0.93); box-shadow: 0 0 12px var(--amber-tungsten-glow); }
+            60%  { transform: scale(1.04); box-shadow: 0 0 20px var(--amber-tungsten-soft); }
+            100% { transform: scale(1);    box-shadow: 0 0 0   rgba(217,119,87,0); }
+        }
+        @keyframes bpm-bump {
+            0%   { transform: scale(1); }
+            30%  { transform: scale(1.18); color: var(--amber-tungsten); }
+            100% { transform: scale(1); }
+        }
+        .tap-pulse { animation: tap-pulse 0.35s ease-out forwards; }
+        .bpm-bump  { animation: bpm-bump  0.4s  ease-out forwards; }
+
+        /* ── Tap tempo widget (Chases tab header) ── */
+        .tap-tempo-widget {
+            display: flex; align-items: center; gap: 0.75rem;
+        }
+        .btn-tap {
+            background: var(--ink-2); border: 1px solid var(--rule-strong);
+            color: var(--paper-80); font-family: var(--font-mono);
+            font-size: 0.75rem; font-weight: 600; letter-spacing: 0.15em;
+            text-transform: uppercase; padding: 0.45rem 0.9rem; cursor: pointer;
+            transition: border-color 0.15s, color 0.15s; user-select: none;
+        }
+        .btn-tap:hover { border-color: var(--amber-tungsten); color: var(--paper); }
+        .btn-tap.armed { border-color: var(--amber-tungsten); color: var(--amber-tungsten); }
+        .tap-bpm-display {
+            display: flex; align-items: baseline; gap: 0.3rem;
+        }
+        .tap-bpm-number {
+            font-family: var(--font-mono); font-size: 1.1rem; font-weight: 600;
+            color: var(--paper-60); min-width: 2.8ch; display: inline-block;
+        }
+        .tap-bpm-unit {
+            font-family: var(--font-mono); font-size: 0.65rem; letter-spacing: 0.2em;
+            text-transform: uppercase; color: var(--paper-40);
+        }
+        .tempo-source-badge {
+            font-family: var(--font-mono); font-size: 0.65rem; letter-spacing: 0.12em;
+            text-transform: uppercase; padding: 0.1rem 0.35rem;
+            border: 1px solid var(--rule-strong); color: var(--paper-40);
+        }
+        .tempo-source-badge.tap { border-color: var(--amber-tungsten); color: var(--amber-tungsten); }
 
         /* ── Top bar: health + groups toggle ── */
         .top-bar {
@@ -1390,7 +1434,16 @@
                     <div class="section-title" style="margin-bottom:0.25rem;">Chases</div>
                     <p class="hint">Ordered scene sequences played by QLC+'s native chase engine.</p>
                 </div>
-                <button class="btn-primary" onclick="openChaseBuilder()">+ New Chase</button>
+                <div style="display:flex;align-items:center;gap:1rem;">
+                    <div class="tap-tempo-widget">
+                        <button id="tapBtn" class="btn-tap" onclick="registerTap()" title="Tap tempo — also Spacebar">TAP</button>
+                        <div class="tap-bpm-display">
+                            <span id="tapBpmValue" class="tap-bpm-number">– –</span>
+                            <span class="tap-bpm-unit">BPM</span>
+                        </div>
+                    </div>
+                    <button class="btn-primary" onclick="openChaseBuilder()">+ New Chase</button>
+                </div>
             </div>
 
             <div id="chasesList" class="resource-list">
@@ -1439,6 +1492,14 @@
                                     <option value="SingleShot">Single Shot</option>
                                     <option value="PingPong">Ping Pong</option>
                                     <option value="Random">Random</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="field-label">Tempo Source</label>
+                                <select id="chbTempoSource" class="field-input">
+                                    <option value="fixed">Fixed</option>
+                                    <option value="tap">Tap</option>
+                                    <option value="audio">Audio</option>
                                 </select>
                             </div>
                         </div>
@@ -2197,7 +2258,19 @@
         document.querySelectorAll('.chip').forEach(c => {
             c.addEventListener('click', () => { commandInput.value = c.dataset.command; sendCommand(); });
         });
-        document.addEventListener('keydown', e => { if (e.key === 'Escape' && drawerOpen) closeDrawer(); });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && drawerOpen) closeDrawer();
+            // Spacebar → tap tempo when the chases tab is active or a tap session is armed.
+            // Prevents the space from being typed in the chat field while tapping.
+            if (e.key === ' ' || e.code === 'Space') {
+                const tapArmed = document.getElementById('tapBtn') &&
+                    document.getElementById('tapBtn').classList.contains('armed');
+                if (currentTab === 'chases' || tapArmed) {
+                    e.preventDefault();
+                    registerTap();
+                }
+            }
+        });
 
         /* ══════════════════════════════════════════════════════════════
            v2.10 web UI catches up — new feature modules
@@ -2717,7 +2790,11 @@
                 list.innerHTML = data.chases.map(c => `
                     <div class="resource-row">
                         <div class="resource-info">
-                            <div class="resource-name">${escHtml(c.name)}</div>
+                            <div class="resource-name">
+                                ${escHtml(c.name)}
+                                ${c.tempo_source === 'tap' ? '<span class="tempo-source-badge tap">tap</span>' : ''}
+                                ${c.tempo_source === 'audio' ? '<span class="tempo-source-badge">audio</span>' : ''}
+                            </div>
                             <div class="resource-meta">
                                 ${c.steps} step${c.steps !== 1 ? 's' : ''}
                                 <span class="sep">·</span>${escHtml(c.direction)}
@@ -2760,6 +2837,7 @@
             document.getElementById('chbFadeOut').value = 500;
             document.getElementById('chbDirection').value = 'Forward';
             document.getElementById('chbRunOrder').value = 'Loop';
+            document.getElementById('chbTempoSource').value = 'fixed';
             renderChaseBuilderSteps();
             renderChaseScenePicker();
             document.getElementById('chaseBuilderModal').classList.add('open');
@@ -2808,6 +2886,78 @@
             [chaseBuilderSteps[idx], chaseBuilderSteps[target]] = [chaseBuilderSteps[target], chaseBuilderSteps[idx]];
             renderChaseBuilderSteps();
         }
+        /* ── Tap tempo ── */
+        let tapIntervals   = [];   // ms gaps between taps
+        let lastTapMs      = null; // performance.now() of last tap
+        let tapIdleTimer   = null; // reset buffer after 2s idle
+        let currentTapBpm  = null; // last computed BPM (kept after idle, used for running chases)
+
+        function registerTap() {
+            const now = performance.now();
+            if (lastTapMs !== null) {
+                const gap = now - lastTapMs;
+                // Quick sanity: ignore gaps that are clearly wrong (< 40ms)
+                if (gap >= 40) {
+                    tapIntervals.push(gap);
+                    if (tapIntervals.length > 8) tapIntervals.shift();
+                }
+            }
+            lastTapMs = now;
+
+            // Reset idle timer — clear buffer if no tap within 2s
+            if (tapIdleTimer) clearTimeout(tapIdleTimer);
+            tapIdleTimer = setTimeout(() => {
+                tapIntervals = [];
+                lastTapMs = null;
+                tapIdleTimer = null;
+                document.getElementById('tapBtn').classList.remove('armed');
+            }, 2000);
+
+            document.getElementById('tapBtn').classList.add('armed');
+
+            // Need ≥ 2 taps (1 interval) before we can compute BPM
+            if (tapIntervals.length < 1) return;
+
+            const recent = tapIntervals.slice(-4);
+            const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+            const bpm = 60000 / avg;
+            if (bpm < 40 || bpm > 240) return; // out of range tap ignored
+
+            currentTapBpm = bpm;
+            updateTapDisplay(bpm);
+            applyTapBpmToRunningChases(bpm);
+
+            // Pulse the button
+            const btn = document.getElementById('tapBtn');
+            btn.classList.remove('tap-pulse');
+            void btn.offsetWidth; // reflow to restart animation
+            btn.classList.add('tap-pulse');
+        }
+
+        function updateTapDisplay(bpm) {
+            const el = document.getElementById('tapBpmValue');
+            el.textContent = Math.round(bpm);
+            el.classList.remove('bpm-bump');
+            void el.offsetWidth;
+            el.classList.add('bpm-bump');
+        }
+
+        async function applyTapBpmToRunningChases(bpm) {
+            try {
+                const r = await fetch('/api/chases');
+                const data = await r.json();
+                if (!data.chases) return;
+                const tapChases = data.chases.filter(c => c.tempo_source === 'tap');
+                for (const c of tapChases) {
+                    fetch(`/api/chases/${encodeURIComponent(c.name)}/tempo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ bpm }),
+                    }).catch(() => {});
+                }
+            } catch (e) { /* non-critical */ }
+        }
+
         async function submitChase() {
             const name = document.getElementById('chbName').value.trim();
             if (!name) return alert('Name is required');
@@ -2819,11 +2969,12 @@
                     body: JSON.stringify({
                         name,
                         steps: chaseBuilderSteps.map(s => s.scene),
-                        fade_in_ms:  parseInt(document.getElementById('chbFadeIn').value)  || 500,
-                        hold_ms:     parseInt(document.getElementById('chbHold').value)    || 2000,
-                        fade_out_ms: parseInt(document.getElementById('chbFadeOut').value) || 500,
-                        direction:   document.getElementById('chbDirection').value,
-                        run_order:   document.getElementById('chbRunOrder').value,
+                        fade_in_ms:   parseInt(document.getElementById('chbFadeIn').value)  || 500,
+                        hold_ms:      parseInt(document.getElementById('chbHold').value)    || 2000,
+                        fade_out_ms:  parseInt(document.getElementById('chbFadeOut').value) || 500,
+                        direction:    document.getElementById('chbDirection').value,
+                        run_order:    document.getElementById('chbRunOrder').value,
+                        tempo_source: document.getElementById('chbTempoSource').value,
                     })
                 });
                 const data = await r.json();

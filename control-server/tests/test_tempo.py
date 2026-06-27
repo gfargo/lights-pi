@@ -1,0 +1,106 @@
+"""Tests for tap-tempo helpers: BPM math, interval averaging, tempo_source normalization."""
+import pytest
+from app import _bpm_to_step_ms, _normalize_tempo_source, _tap_intervals_to_bpm
+
+
+class TestBpmToStepMs:
+    @pytest.mark.parametrize("bpm,expected", [
+        (120, 500),   # canonical: 120 BPM → 500ms
+        (90,  667),   # round(60000/90) = round(666.7) = 667
+        (60,  1000),
+        (240, 250),
+        (40,  1500),
+        (100, 600),
+        (80,  750),
+    ])
+    def test_known_bpm(self, bpm, expected):
+        assert _bpm_to_step_ms(bpm) == expected
+
+    def test_returns_int(self):
+        result = _bpm_to_step_ms(120)
+        assert isinstance(result, int)
+
+    def test_float_bpm(self):
+        # 90.0 BPM should work same as 90
+        assert _bpm_to_step_ms(90.0) == 667
+
+
+class TestTapIntervalsToBpm:
+    def test_120_bpm_from_four_taps(self):
+        # 500ms intervals → 120 BPM
+        bpm = _tap_intervals_to_bpm([500, 500, 500, 500])
+        assert bpm is not None
+        assert abs(bpm - 120.0) < 0.01
+
+    def test_90_bpm_from_four_taps(self):
+        # ~667ms intervals → ~89.96 BPM (60000/667)
+        bpm = _tap_intervals_to_bpm([667, 667, 667, 667])
+        assert bpm is not None
+        # round-trip: bpm_to_step_ms(_tap_intervals_to_bpm([667,…])) should ≈ 667
+        assert abs(bpm - 60000 / 667) < 0.01
+
+    def test_uses_only_last_4_intervals(self):
+        # First interval at 2000ms (30 BPM, out of range), last 4 at 500ms (120 BPM)
+        bpm = _tap_intervals_to_bpm([2000, 500, 500, 500, 500])
+        assert bpm is not None
+        assert abs(bpm - 120.0) < 0.01
+
+    def test_rolling_average_of_two(self):
+        # Average of [400, 600] = 500ms → 120 BPM
+        bpm = _tap_intervals_to_bpm([400, 600])
+        assert bpm is not None
+        assert abs(bpm - 120.0) < 0.01
+
+    def test_empty_returns_none(self):
+        assert _tap_intervals_to_bpm([]) is None
+
+    def test_rejects_below_40_bpm(self):
+        # 2000ms → 30 BPM → rejected
+        assert _tap_intervals_to_bpm([2000]) is None
+
+    def test_rejects_above_240_bpm(self):
+        # 100ms → 600 BPM → rejected
+        assert _tap_intervals_to_bpm([100]) is None
+
+    def test_boundary_exactly_40_bpm_accepted(self):
+        # 1500ms → exactly 40 BPM
+        bpm = _tap_intervals_to_bpm([1500])
+        assert bpm is not None
+        assert abs(bpm - 40.0) < 0.01
+
+    def test_boundary_exactly_240_bpm_accepted(self):
+        # 250ms → exactly 240 BPM
+        bpm = _tap_intervals_to_bpm([250])
+        assert bpm is not None
+        assert abs(bpm - 240.0) < 0.01
+
+    def test_returns_float(self):
+        result = _tap_intervals_to_bpm([500])
+        assert isinstance(result, float)
+
+
+class TestNormalizeTempoSource:
+    @pytest.mark.parametrize("inp,expected", [
+        ("fixed",  "fixed"),
+        ("tap",    "tap"),
+        ("audio",  "audio"),
+        ("Fixed",  "fixed"),
+        ("TAP",    "tap"),
+        ("AUDIO",  "audio"),
+        (" tap ",  "tap"),
+        ("Tap",    "tap"),
+    ])
+    def test_valid_inputs(self, inp, expected):
+        assert _normalize_tempo_source(inp) == expected
+
+    @pytest.mark.parametrize("inp", [None, "", "unknown", "beat", "manual"])
+    def test_invalid_defaults_to_fixed(self, inp):
+        assert _normalize_tempo_source(inp) == "fixed"
+
+    @pytest.mark.parametrize("inp", [True, False, 0, 1, 42])
+    def test_non_string_defaults_to_fixed(self, inp):
+        assert _normalize_tempo_source(inp) == "fixed"
+
+    def test_custom_default(self):
+        assert _normalize_tempo_source(None, default="tap") == "tap"
+        assert _normalize_tempo_source("garbage", default="tap") == "tap"

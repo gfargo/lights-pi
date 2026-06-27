@@ -3932,6 +3932,34 @@ def _normalize_run_order(value: str | None, default: str = "Loop") -> str:
     return _CHASE_RUN_ORDERS.get(str(value).strip().lower(), default)
 
 
+_CHASE_TEMPO_SOURCES = {"fixed": "fixed", "tap": "tap", "audio": "audio"}
+
+
+def _normalize_tempo_source(value, default: str = "fixed") -> str:
+    if not value or isinstance(value, bool):
+        return default
+    return _CHASE_TEMPO_SOURCES.get(str(value).strip().lower(), default)
+
+
+def _bpm_to_step_ms(bpm: float) -> int:
+    """Convert BPM to step hold duration in milliseconds. 120 BPM → 500ms."""
+    return round(60000 / bpm)
+
+
+def _tap_intervals_to_bpm(intervals_ms: list) -> float | None:
+    """Average the last 4 tap intervals and return BPM, or None if outside 40–240 range."""
+    if not intervals_ms:
+        return None
+    recent = intervals_ms[-4:]
+    avg_ms = sum(recent) / len(recent)
+    if avg_ms <= 0:
+        return None
+    bpm = 60000 / avg_ms
+    if bpm < 40 or bpm > 240:
+        return None
+    return float(bpm)
+
+
 def _engine_functions(engine):
     """All <Function> children of Engine, namespace-tolerant."""
     if engine is None:
@@ -4009,6 +4037,7 @@ def get_workspace_chases() -> list[dict]:
             "steps": len(steps),
             "direction": direction.text if direction is not None else "Forward",
             "run_order": run_order.text if run_order is not None else "Loop",
+            "tempo_source": func.get("TempoSource", "fixed"),
             "speed": {
                 "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
                 "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
@@ -4049,6 +4078,7 @@ def _describe_chase_full(chase_element) -> dict:
         "path": chase_element.get("Path", ""),
         "direction": direction.text if direction is not None else "Forward",
         "run_order": run_order.text if run_order is not None else "Loop",
+        "tempo_source": chase_element.get("TempoSource", "fixed"),
         "speed": {
             "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
             "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
@@ -4086,10 +4116,15 @@ def _build_chase_xml(
     run_order: str,
     path: str,
     chase_id: int,
+    tempo_source: str = "fixed",
 ) -> str:
     """Generate the <Function Type="Chaser"> XML to inject into the workspace."""
+    func_tag = (
+        f'<Function ID="{chase_id}" Type="Chaser"'
+        f' Name="{_xml_escape(name)}" Path="{_xml_escape(path)}" TempoSource="{tempo_source}">'
+    )
     lines = [
-        f'<Function ID="{chase_id}" Type="Chaser" Name="{_xml_escape(name)}" Path="{_xml_escape(path)}">',
+        func_tag,
         f'  <Speed FadeIn="{fade_in_ms}" FadeOut="{fade_out_ms}" Duration="{hold_ms}"/>',
         f'  <Direction>{direction}</Direction>',
         f'  <RunOrder>{run_order}</RunOrder>',
@@ -4194,12 +4229,13 @@ def create_chase():
     if not isinstance(raw_steps, list) or not raw_steps:
         return jsonify({"success": False, "error": "steps must be a non-empty array"}), 400
 
-    fade_in_ms  = max(0, int(data.get("fade_in_ms",  500)))
-    hold_ms     = max(0, int(data.get("hold_ms",     2000)))
-    fade_out_ms = max(0, int(data.get("fade_out_ms", 500)))
-    direction   = _normalize_direction(data.get("direction"))
-    run_order   = _normalize_run_order(data.get("run_order"))
-    path        = (data.get("path") or "AI Generated").strip()
+    fade_in_ms   = max(0, int(data.get("fade_in_ms",  500)))
+    hold_ms      = max(0, int(data.get("hold_ms",     2000)))
+    fade_out_ms  = max(0, int(data.get("fade_out_ms", 500)))
+    direction    = _normalize_direction(data.get("direction"))
+    run_order    = _normalize_run_order(data.get("run_order"))
+    tempo_source = _normalize_tempo_source(data.get("tempo_source"))
+    path         = (data.get("path") or "AI Generated").strip()
 
     # Reject duplicate names — chase Name is the agent-friendly key
     if _find_function_element(name, function_type="Chaser") is not None:
@@ -4245,7 +4281,7 @@ def create_chase():
         name=name, steps=normalized_steps,
         fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
         direction=direction, run_order=run_order, path=path,
-        chase_id=chase_id,
+        chase_id=chase_id, tempo_source=tempo_source,
     )
     if not _inject_chase_into_workspace(chase_xml):
         return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
@@ -4259,6 +4295,7 @@ def create_chase():
             "steps": len(normalized_steps),
             "direction": direction,
             "run_order": run_order,
+            "tempo_source": tempo_source,
             "speed": {
                 "fade_in_ms":  fade_in_ms,
                 "hold_ms":     hold_ms,
@@ -4333,6 +4370,65 @@ def stop_chase(chase_id):
         "response": raw,
         "error": "" if ok else raw,
     })
+
+
+@app.route("/api/chases/<chase_id>/tempo", methods=["POST"])
+def set_chase_tempo(chase_id):
+    """Rewrite step Hold times for a chase from a tap-tempo BPM value.
+
+    Body: { "bpm": 120 }
+    Validates 40–240 BPM. Updates Speed Duration + every Step Hold in the workspace XML.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        bpm_raw = data.get("bpm")
+        if bpm_raw is None:
+            return jsonify({"success": False, "error": "bpm is required"}), 400
+        try:
+            bpm = float(bpm_raw)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "bpm must be a number"}), 400
+        if bpm < 40 or bpm > 240:
+            return jsonify({
+                "success": False,
+                "error": f"BPM must be between 40 and 240, got {bpm}",
+            }), 400
+
+        step_ms = _bpm_to_step_ms(bpm)
+
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(chase_id).strip().lower()
+        target = None
+        for func in _engine_functions(engine):
+            if func.get("Type") != "Chaser":
+                continue
+            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                target = func
+                break
+        if target is None:
+            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+
+        speed = next(iter(_find_children(target, "Speed")), None)
+        if speed is not None:
+            speed.set("Duration", str(step_ms))
+
+        for step in _find_children(target, "Step"):
+            step.set("Hold", str(step_ms))
+
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        return jsonify({
+            "success": True,
+            "bpm": bpm,
+            "step_ms": step_ms,
+            "chase": {"id": target.get("ID"), "name": target.get("Name")},
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # =============================================================================
@@ -5363,6 +5459,11 @@ def _build_chat_tools() -> list[dict]:
                     "fade_out_ms": {"type": "integer"},
                     "direction": {"type": "string", "enum": ["Forward", "Backward"]},
                     "run_order": {"type": "string", "enum": ["Loop", "SingleShot", "PingPong", "Random"]},
+                    "tempo_source": {
+                        "type": "string",
+                        "enum": ["fixed", "tap", "audio"],
+                        "description": "fixed (default), tap (follows live tap-tempo BPM), audio (reserved)",
+                    },
                 },
                 "required": ["name", "steps"],
             },
