@@ -93,6 +93,10 @@ CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 _scene_swatch_cache: dict = {}
 _scene_swatch_cache_mtime: float = 0.0
 
+# Server-side tap-tempo chase runners: str(chase_id) -> {'step_ms': float, 'running': bool}
+# Each entry corresponds to a background asyncio task on _qlc_loop stepping through scenes.
+_tap_runners: dict = {}
+
 # QLC+ WebSocket configuration
 QLC_HOST = os.getenv("QLC_HOST", "localhost")
 QLC_PORT = int(os.getenv("QLC_PORT", "9999"))
@@ -3960,6 +3964,69 @@ def _tap_intervals_to_bpm(intervals_ms: list) -> float | None:
     return float(bpm)
 
 
+def _chase_step_scene_ids(chase_element) -> list:
+    """Return the ordered list of scene function IDs from a chase's <Step> elements."""
+    steps = []
+    for step in _find_children(chase_element, "Step"):
+        num_str = step.get("Number", "0")
+        num = int(num_str) if num_str.isdigit() else 0
+        raw = step.get("Values") or (step.text or "").strip()
+        if raw and str(raw).isdigit():
+            steps.append((num, int(raw)))
+    steps.sort(key=lambda x: x[0])
+    return [sid for _, sid in steps]
+
+
+def _update_tap_runner_bpm(chase_id: str, step_ms: float) -> bool:
+    """Update the step interval of a live server-side tap runner.
+
+    Returns True if a running tap runner was found and updated.
+    Pure state mutation — no I/O; the running asyncio loop reads the updated value.
+    """
+    state = _tap_runners.get(str(chase_id))
+    if state is None:
+        return False
+    state["step_ms"] = float(step_ms)
+    return True
+
+
+def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
+    """Start a server-side asyncio loop that steps a tap-source chase through scenes.
+
+    Each iteration activates the next scene via setFunctionStatus, then sleeps for
+    state['step_ms'] ms so that BPM changes take effect on the very next step.
+    """
+    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
+    if not scene_ids:
+        return
+    _start_qlc_loop()  # ensure background event loop is running
+    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    _tap_runners[str(chase_id)] = state
+    n = len(scene_ids)
+
+    async def _loop() -> None:
+        idx = 0
+        while state["running"]:
+            scene_id = scene_ids[idx % n]
+            try:
+                await _qlc_send_commands([f"QLC+API|setFunctionStatus|{scene_id}|1"])
+            except Exception:
+                pass
+            await asyncio.sleep(max(0.01, state["step_ms"] / 1000.0))
+            idx = (idx + 1) % n
+
+    asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
+
+
+def _stop_tap_runner(chase_id: str) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active."""
+    state = _tap_runners.pop(str(chase_id), None)
+    if state:
+        state["running"] = False
+        return True
+    return False
+
+
 def _engine_functions(engine):
     """All <Function> children of Engine, namespace-tolerant."""
     if engine is None:
@@ -4338,13 +4405,31 @@ def delete_chase(chase_id):
 
 @app.route("/api/chases/<chase_id>/start", methods=["POST"])
 def start_chase(chase_id):
-    """Start chase playback via the QLC+ WebSocket API."""
+    """Start chase playback.
+
+    For tap-source chases the server drives the step loop so that BPM changes
+    take effect immediately without touching QLC+'s in-memory timing.
+    Fixed/audio chases delegate to QLC+ via setFunctionStatus as before.
+    """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
         return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
         return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+
+    if chase.get("TempoSource", "fixed") == "tap":
+        scene_ids = _chase_step_scene_ids(chase)
+        speed = next(iter(_find_children(chase, "Speed")), None)
+        initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
+        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        return jsonify({
+            "success": True,
+            "chase": {"id": int(fid), "name": chase.get("Name")},
+            "response": "tap runner started",
+            "error": "",
+        })
+
     ok, raw = set_function_status(int(fid), running=True)
     return jsonify({
         "success": ok,
@@ -4356,19 +4441,24 @@ def start_chase(chase_id):
 
 @app.route("/api/chases/<chase_id>/stop", methods=["POST"])
 def stop_chase(chase_id):
-    """Stop chase playback via the QLC+ WebSocket API."""
+    """Stop chase playback.
+
+    Cancels the server-side tap runner if active, and also sends a
+    setFunctionStatus stop to QLC+ (harmless if the chaser wasn't running there).
+    """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
         return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
         return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+    tap_was_running = _stop_tap_runner(fid)
     ok, raw = set_function_status(int(fid), running=False)
     return jsonify({
-        "success": ok,
+        "success": ok or tap_was_running,
         "chase": {"id": int(fid), "name": chase.get("Name")},
-        "response": raw,
-        "error": "" if ok else raw,
+        "response": "tap runner stopped" if tap_was_running else raw,
+        "error": "" if (ok or tap_was_running) else raw,
     })
 
 
@@ -4421,10 +4511,17 @@ def set_chase_tempo(chase_id):
             step.set("Hold", str(step_ms))
 
         tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+
+        # Update the live server-side tap runner if this chase is currently running.
+        # The async loop reads state['step_ms'] on every iteration so the next step
+        # fires at the new BPM without any restart or QLC+ reload.
+        live_updated = _update_tap_runner_bpm(target.get("ID", ""), step_ms)
+
         return jsonify({
             "success": True,
             "bpm": bpm,
             "step_ms": step_ms,
+            "live_updated": live_updated,
             "chase": {"id": target.get("ID"), "name": target.get("Name")},
         })
     except Exception as e:

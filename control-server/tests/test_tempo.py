@@ -1,6 +1,18 @@
-"""Tests for tap-tempo helpers: BPM math, interval averaging, tempo_source normalization."""
+"""Tests for tap-tempo helpers: BPM math, interval averaging, tempo_source normalization,
+chase step extraction, and live-retime state updates."""
+import xml.etree.ElementTree as ET
+
 import pytest
-from app import _bpm_to_step_ms, _normalize_tempo_source, _tap_intervals_to_bpm
+
+import app as app_module
+from app import (
+    _bpm_to_step_ms,
+    _chase_step_scene_ids,
+    _normalize_tempo_source,
+    _tap_intervals_to_bpm,
+    _tap_runners,
+    _update_tap_runner_bpm,
+)
 
 
 class TestBpmToStepMs:
@@ -104,3 +116,90 @@ class TestNormalizeTempoSource:
     def test_custom_default(self):
         assert _normalize_tempo_source(None, default="tap") == "tap"
         assert _normalize_tempo_source("garbage", default="tap") == "tap"
+
+
+def _make_chase_element(steps):
+    """Build a minimal <Function Type="Chaser"> element with the given step list.
+
+    steps: list of (number, scene_id) tuples.
+    """
+    root = ET.fromstring('<Function Type="Chaser" ID="10" Name="Test"/>')
+    for num, sid in steps:
+        step = ET.SubElement(root, "Step")
+        step.set("Number", str(num))
+        step.set("FadeIn", "0")
+        step.set("Hold", "500")
+        step.set("FadeOut", "0")
+        step.set("Values", str(sid))
+    return root
+
+
+class TestChaseStepSceneIds:
+    def test_ordered_by_step_number(self):
+        # Steps deliberately out of insertion order — must come back sorted by Number
+        elem = _make_chase_element([(2, 30), (0, 10), (1, 20)])
+        assert _chase_step_scene_ids(elem) == [10, 20, 30]
+
+    def test_single_step(self):
+        elem = _make_chase_element([(0, 42)])
+        assert _chase_step_scene_ids(elem) == [42]
+
+    def test_empty_chase(self):
+        elem = ET.fromstring('<Function Type="Chaser" ID="1" Name="Empty"/>')
+        assert _chase_step_scene_ids(elem) == []
+
+    def test_non_numeric_values_ignored(self):
+        root = ET.fromstring('<Function Type="Chaser" ID="1" Name="X"/>')
+        good = ET.SubElement(root, "Step")
+        good.set("Number", "0")
+        good.set("Values", "5")
+        bad = ET.SubElement(root, "Step")
+        bad.set("Number", "1")
+        bad.set("Values", "notanumber")
+        assert _chase_step_scene_ids(root) == [5]
+
+    def test_text_content_fallback(self):
+        # Older QLC+ versions stored the scene ID as step text, not Values attr
+        root = ET.fromstring('<Function Type="Chaser" ID="1" Name="X"/>')
+        step = ET.SubElement(root, "Step")
+        step.set("Number", "0")
+        step.text = "99"
+        assert _chase_step_scene_ids(root) == [99]
+
+
+class TestUpdateTapRunnerBpm:
+    def setup_method(self):
+        _tap_runners.clear()
+
+    def teardown_method(self):
+        _tap_runners.clear()
+
+    def test_returns_false_when_no_runner(self):
+        assert _update_tap_runner_bpm("42", 500.0) is False
+
+    def test_returns_true_and_updates_when_runner_exists(self):
+        _tap_runners["7"] = {"step_ms": 500.0, "running": True}
+        result = _update_tap_runner_bpm("7", 667.0)
+        assert result is True
+        assert _tap_runners["7"]["step_ms"] == 667.0
+
+    def test_bpm_change_reflected_live(self):
+        # Simulate what set_chase_tempo does: write new BPM, update live runner
+        _tap_runners["5"] = {"step_ms": 500.0, "running": True}
+        new_step_ms = _bpm_to_step_ms(90)  # 667 ms
+        _update_tap_runner_bpm("5", new_step_ms)
+        assert _tap_runners["5"]["step_ms"] == 667
+
+    def test_coerces_to_float(self):
+        _tap_runners["3"] = {"step_ms": 500.0, "running": True}
+        _update_tap_runner_bpm("3", 250)  # int input
+        assert isinstance(_tap_runners["3"]["step_ms"], float)
+
+    def test_string_chase_id_matches(self):
+        _tap_runners["9"] = {"step_ms": 500.0, "running": True}
+        assert _update_tap_runner_bpm("9", 400.0) is True
+
+    def test_no_runner_for_different_id(self):
+        _tap_runners["1"] = {"step_ms": 500.0, "running": True}
+        assert _update_tap_runner_bpm("2", 400.0) is False
+        assert _tap_runners["1"]["step_ms"] == 500.0

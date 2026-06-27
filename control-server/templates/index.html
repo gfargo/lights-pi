@@ -2260,14 +2260,19 @@
         });
         document.addEventListener('keydown', e => {
             if (e.key === 'Escape' && drawerOpen) closeDrawer();
-            // Spacebar → tap tempo when the chases tab is active or a tap session is armed.
-            // Prevents the space from being typed in the chat field while tapping.
+            // Spacebar → tap tempo, but only when focus is NOT in a text field.
+            // Prevents the space from being typed into chat/inputs while tapping.
             if (e.key === ' ' || e.code === 'Space') {
-                const tapArmed = document.getElementById('tapBtn') &&
-                    document.getElementById('tapBtn').classList.contains('armed');
-                if (currentTab === 'chases' || tapArmed) {
-                    e.preventDefault();
-                    registerTap();
+                const tag = document.activeElement ? document.activeElement.tagName : '';
+                const editable = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+                    (document.activeElement && document.activeElement.isContentEditable);
+                if (!editable) {
+                    const tapArmed = document.getElementById('tapBtn') &&
+                        document.getElementById('tapBtn').classList.contains('armed');
+                    if (currentTab === 'chases' || tapArmed) {
+                        e.preventDefault();
+                        registerTap();
+                    }
                 }
             }
         });
