@@ -14,7 +14,6 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 # Module-level FTS5 flag; set once on first DB open.
 _fts5_available: bool | None = None
 
