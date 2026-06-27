@@ -4587,13 +4587,21 @@ _active_cue_lists: dict[int, dict] = {}
 _active_cue_lists_lock = threading.Lock()
 
 
-async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
+async def _run_cue_list_async(
+    cue_list_id: int,
+    cues: list[dict],
+    *,
+    now=time.time,
+    sleep=asyncio.sleep,
+):
     """Play a cue list — fire each cue at its at_ms relative to GO.
 
     Designed to tolerate cue dispatch failures: one bad cue prints a warning
     but the remaining cues still fire on schedule.
+
+    ``now`` and ``sleep`` are injectable for testing with a fake clock.
     """
-    started_at = time.time()
+    started_at = now()
     fired_indexes: list[int] = []
 
     with _active_cue_lists_lock:
@@ -4607,10 +4615,10 @@ async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
 
     try:
         for idx, cue in sorted_cues:
-            elapsed_ms = (time.time() - started_at) * 1000
+            elapsed_ms = (now() - started_at) * 1000
             wait_ms = max(0, cue["at_ms"] - elapsed_ms)
             if wait_ms > 0:
-                await asyncio.sleep(wait_ms / 1000)
+                await sleep(wait_ms / 1000)
 
             action_data = {
                 "action": cue["action"],
