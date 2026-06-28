@@ -4,13 +4,9 @@ Covers pure helpers (_safe_workspace_name, _list_workspace_files,
 _active_workspace_name, _validate_qxw, _groups_file) plus the
 route-level happy-paths and guards using a tmpdir QLC workspace dir.
 """
-import json
-import shutil
 import textwrap
-from pathlib import Path
 
 import pytest
-
 from app import (
     _active_workspace_name,
     _bust_scene_swatch_cache,
@@ -20,7 +16,6 @@ from app import (
     _set_active_workspace_name,
     _validate_qxw,
 )
-
 
 # ---------------------------------------------------------------------------
 # _safe_workspace_name
