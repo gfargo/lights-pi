@@ -1247,6 +1247,7 @@
             <button class="tab" onclick="switchTab('console', this)" role="tab" aria-selected="false">Virtual Console</button>
             <button class="tab" onclick="switchTab('cuelists', this)" role="tab" aria-selected="false">Cue Lists</button>
             <button class="tab" onclick="switchTab('chases', this)" role="tab" aria-selected="false">Chases</button>
+            <button class="tab" onclick="switchTab('audio', this)" role="tab" aria-selected="false">Audio</button>
             <button class="tab" onclick="switchTab('tools', this)" role="tab" aria-selected="false">Quick Tools</button>
             <button class="tab" onclick="switchTab('diag', this)" role="tab" aria-selected="false">Diagnostics</button>
         </div>
@@ -1460,6 +1461,77 @@
         </div>
 
         <!-- ══════════════════════════════════════
+             Audio tab — BPM detection + onset visualizer
+             ══════════════════════════════════════ -->
+        <div id="audio-tab" class="tab-content">
+            <div class="section-title">Audio Reactivity</div>
+
+            <div class="tool-panel" data-eyebrow="Live · BPM">
+                <div class="tool-header">
+                    <span class="tool-title">Detected tempo</span>
+                    <span class="tool-value" id="audioBpmDisplay">— BPM</span>
+                </div>
+                <div id="audioOnsetBar" style="height:6px;background:#222;border-radius:0;overflow:hidden;margin-bottom:0.75rem;">
+                    <div id="audioOnsetPulse" style="height:100%;width:0%;background:var(--amber-tungsten);transition:width 0.08s ease-out,background 0.15s;"></div>
+                </div>
+                <div class="tool-tick-row">
+                    <span id="audioStatusLabel">Disabled</span>
+                    <span id="audioOnsetLabel">No onset</span>
+                </div>
+                <div class="tool-actions" style="margin-top:0.75rem;">
+                    <button class="btn-secondary" onclick="disableAudio()">Disable</button>
+                    <button class="btn-primary" onclick="enableAudio()">Enable mic</button>
+                    <button class="btn-ghost" onclick="calibrateAudio()" title="Auto-set noise gate from ambient level">Calibrate</button>
+                </div>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="Noise gate · sensitivity">
+                <div class="tool-header">
+                    <span class="tool-title">Sensitivity</span>
+                    <span class="tool-value" id="audioSensValue">0.020</span>
+                </div>
+                <input type="range" id="audioSensSlider" class="strobe-slider" min="0" max="0.2" step="0.001" value="0.02"
+                       oninput="document.getElementById('audioSensValue').textContent=parseFloat(this.value).toFixed(3)">
+                <div class="tool-tick-row">
+                    <span>0 · always open</span>
+                    <span>0.02 · default</span>
+                    <span>0.1 · high noise</span>
+                    <span>0.2 · very loud</span>
+                </div>
+                <p class="hint">Lower = more sensitive. Use Calibrate to auto-set from ambient noise.</p>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="Onset flash">
+                <div class="tool-header">
+                    <span class="tool-title">React to</span>
+                </div>
+                <div class="tool-actions">
+                    <select id="audioReactTo" class="field-input" style="flex:1;">
+                        <option value="">Off (no flash)</option>
+                        <option value="any" selected>Any onset</option>
+                        <option value="kick">Kick (energy-based)</option>
+                        <option value="snare">Snare (HF-based)</option>
+                    </select>
+                </div>
+                <p class="hint" style="margin-top:0.5rem;">Flashes all fixtures on detected onset. Enable mic above to activate.</p>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="Beat-clock · chase">
+                <div class="tool-header">
+                    <span class="tool-title">Audio-tempo chase</span>
+                </div>
+                <p class="hint">Step a chase at the detected BPM instead of its fixed speed.</p>
+                <div class="tool-actions" style="flex-wrap:wrap;gap:0.5rem;">
+                    <select id="audioChaseSelect" class="field-input" style="flex:1;min-width:10rem;">
+                        <option value="">— pick a chase —</option>
+                    </select>
+                    <button class="btn-secondary" onclick="stopAudioChase()">Stop</button>
+                    <button class="btn-primary" onclick="startAudioChase()">Start</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════════
              Quick Tools tab — Kelvin, strobe, palette
              ══════════════════════════════════════ -->
         <div id="tools-tab" class="tab-content">
@@ -1572,6 +1644,8 @@
         <footer>lights.local</footer>
     </div>
 
+    <!-- Socket.IO client — served by flask-socketio at this path -->
+    <script src="/socket.io/socket.io.js"></script>
     <script>
         /* ── DOM refs ── */
         const commandInput = document.getElementById('commandInput');
@@ -1703,7 +1777,7 @@
                 — replaceState (vs. pushState) keeps the back button useful
                 because tab clicks don't become history entries.
            ══════════════════════════════════════ */
-        const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'tools', 'diag'];
+        const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'audio', 'tools', 'diag'];
         let currentTab = 'ai';
 
         function switchTab(tabName, btn) {
@@ -1735,6 +1809,7 @@
             // Lazy-load tab content on switch (idempotent — each loader is safe to re-call).
             if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
             else if (tabName === 'chases') loadChases();
+            else if (tabName === 'audio')  initAudio();
             else if (tabName === 'tools') populateToolsGroupSelects();
             else if (tabName === 'diag')  loadSystemInfo();
             else if (tabName === 'chat')  renderChatHistory();
@@ -3334,6 +3409,147 @@
            when the user switches to it. (Quick Commands is now the landing
            tab, but we still want chat to feel snappy on first activation.) */
         renderChatHistory();
+
+        /* ══════════════════════════════════════
+           Audio tab — BPM detection + onset flash
+           ══════════════════════════════════════ */
+        let _audioInitialized = false;
+        let _socket = null;
+        let _onsetTimer = null;
+
+        function _getSocket() {
+            if (_socket) return _socket;
+            if (typeof io === 'undefined') return null;
+            _socket = io({ transports: ['websocket', 'polling'] });
+            _socket.on('audio_bpm', function(data) {
+                const el = document.getElementById('audioBpmDisplay');
+                if (el) el.textContent = (data.bpm > 0 ? data.bpm.toFixed(1) : '—') + ' BPM';
+            });
+            _socket.on('audio_onset', function(data) {
+                const pulse = document.getElementById('audioOnsetPulse');
+                const label = document.getElementById('audioOnsetLabel');
+                if (pulse) {
+                    pulse.style.width = '100%';
+                    pulse.style.background = 'var(--amber-tungsten)';
+                    clearTimeout(_onsetTimer);
+                    _onsetTimer = setTimeout(function() {
+                        pulse.style.width = '0%';
+                    }, 120);
+                }
+                if (label) {
+                    const d = new Date(data.onset_ms);
+                    label.textContent = 'Onset ' + d.toLocaleTimeString();
+                }
+            });
+            _socket.on('audio_state', function(data) {
+                _applyAudioState(data);
+            });
+            return _socket;
+        }
+
+        function _applyAudioState(state) {
+            const label = document.getElementById('audioStatusLabel');
+            const bpm = document.getElementById('audioBpmDisplay');
+            if (label) label.textContent = state.available
+                ? (state.enabled ? 'Listening…' : 'Ready · not enabled')
+                : 'Unavailable (install aubio)';
+            if (bpm && state.bpm > 0) bpm.textContent = state.bpm.toFixed(1) + ' BPM';
+            const slider = document.getElementById('audioSensSlider');
+            const sensVal = document.getElementById('audioSensValue');
+            if (slider && state.sensitivity != null) {
+                slider.value = state.sensitivity;
+                if (sensVal) sensVal.textContent = parseFloat(state.sensitivity).toFixed(3);
+            }
+        }
+
+        function initAudio() {
+            _getSocket();
+            if (_audioInitialized) return;
+            _audioInitialized = true;
+            fetch('/api/audio').then(r => r.json()).then(_applyAudioState).catch(function() {});
+            fetch('/api/chases').then(r => r.json()).then(function(data) {
+                const sel = document.getElementById('audioChaseSelect');
+                if (!sel) return;
+                (data.chases || []).forEach(function(ch) {
+                    const opt = document.createElement('option');
+                    opt.value = ch.id;
+                    opt.textContent = ch.name || ('Chase ' + ch.id);
+                    sel.appendChild(opt);
+                });
+            }).catch(function() {});
+        }
+
+        async function enableAudio() {
+            const sens = parseFloat(document.getElementById('audioSensSlider').value);
+            const reactTo = document.getElementById('audioReactTo').value;
+            const body = { sensitivity: sens };
+            if (reactTo) body.react_to = reactTo;
+            try {
+                const r = await fetch('/api/audio/enable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const d = await r.json();
+                _applyAudioState(d);
+                const label = document.getElementById('audioStatusLabel');
+                if (label) label.textContent = d.success ? 'Listening…' : ('Error: ' + (d.error || 'unknown'));
+            } catch (e) {
+                const label = document.getElementById('audioStatusLabel');
+                if (label) label.textContent = 'Request failed';
+            }
+        }
+
+        async function disableAudio() {
+            try {
+                const r = await fetch('/api/audio/disable', { method: 'POST' });
+                const d = await r.json();
+                _applyAudioState(d);
+                const bpm = document.getElementById('audioBpmDisplay');
+                if (bpm) bpm.textContent = '— BPM';
+            } catch (e) {}
+        }
+
+        async function calibrateAudio() {
+            const label = document.getElementById('audioStatusLabel');
+            if (label) label.textContent = 'Calibrating…';
+            try {
+                const r = await fetch('/api/audio/calibrate', { method: 'POST' });
+                const d = await r.json();
+                if (d.success) {
+                    const slider = document.getElementById('audioSensSlider');
+                    const sensVal = document.getElementById('audioSensValue');
+                    if (slider) slider.value = d.threshold;
+                    if (sensVal) sensVal.textContent = parseFloat(d.threshold).toFixed(3);
+                    if (label) label.textContent = 'Calibrated — floor ' + d.noise_floor_rms.toFixed(4);
+                } else {
+                    if (label) label.textContent = 'Calibrate failed: ' + (d.error || 'unknown');
+                }
+            } catch (e) {
+                if (label) label.textContent = 'Calibrate request failed';
+            }
+        }
+
+        async function startAudioChase() {
+            const chaseId = document.getElementById('audioChaseSelect').value;
+            if (!chaseId) return;
+            const reactTo = document.getElementById('audioReactTo').value || 'any';
+            try {
+                await fetch('/api/audio/chase/' + chaseId + '/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ react_to: reactTo }),
+                });
+            } catch (e) {}
+        }
+
+        async function stopAudioChase() {
+            const chaseId = document.getElementById('audioChaseSelect').value;
+            if (!chaseId) return;
+            try {
+                await fetch('/api/audio/chase/' + chaseId + '/stop', { method: 'POST' });
+            } catch (e) {}
+        }
 
         /* ══════════════════════════════════════════════════════════════
            PWA — register service worker (silently no-op if unsupported)

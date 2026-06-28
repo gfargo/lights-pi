@@ -31,9 +31,9 @@ function install_control_server() {
   echo "Setting up Python virtual environment..."
   "${REMOTE_CMD[@]}" "python3 -m venv ~/control-server-venv || true"
   
-  # Install Python dependencies in venv
+  # Install Python dependencies in venv from requirements.txt
   echo "Installing Python dependencies..."
-  "${REMOTE_CMD[@]}" "~/control-server-venv/bin/pip install Flask==3.0.0 flask-cors==4.0.0 requests==2.31.0"
+  "${REMOTE_CMD[@]}" "~/control-server-venv/bin/pip install -r ~/control-server/requirements.txt"
   
   # Copy control server files to Pi
   echo "Copying control server files to Pi..."
