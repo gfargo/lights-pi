@@ -92,7 +92,8 @@ class AudioEngine:
             import numpy  # noqa: F401
             import sounddevice  # noqa: F401
             return True
-        except ImportError:
+        except (ImportError, OSError):
+            # sounddevice raises OSError when PortAudio native lib is absent
             return False
 
     # ------------------------------------------------------------------
