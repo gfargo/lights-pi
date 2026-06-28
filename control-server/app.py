@@ -11,6 +11,8 @@ import json
 import logging
 import math
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -21,9 +23,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import websockets
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO
+from werkzeug.utils import secure_filename
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -86,8 +89,10 @@ SCRIPT_DIR = Path(__file__).parent.parent
 LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
 # Default to ~/.qlcplus/default.qxw, but can be overridden via env var
 WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / "default.qxw")))
-GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
-CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+WORKSPACE_DIR = WORKSPACE_PATH.parent  # ~/.qlcplus/
+_WORKSPACE_POINTER = WORKSPACE_DIR / "current_workspace"  # stores active workspace stem
+GROUPS_FILE = WORKSPACE_DIR / "fixture_groups.json"
+CUE_LISTS_FILE = WORKSPACE_DIR / "cue_lists.json"
 
 # Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
 _scene_swatch_cache: dict = {}
@@ -451,6 +456,102 @@ def get_next_scene_id():
     if not scenes:
         return 0
     return max(scene["id"] for scene in scenes) + 1
+
+
+# ---------------------------------------------------------------------------
+# Workspace management helpers
+# ---------------------------------------------------------------------------
+
+_SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+\.qxw$')
+_RESERVED_WS = {"default.qxw", "autostart.qxw"}
+
+
+def _safe_workspace_name(name: str) -> str | None:
+    """Validate a workspace filename. Returns the name or None if invalid."""
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    if not _SAFE_NAME_RE.match(name):
+        return None
+    if name in _RESERVED_WS:
+        return None
+    if ".." in name or "/" in name or "\\" in name:
+        return None
+    return name
+
+
+def _list_workspace_files() -> list[dict]:
+    """Return .qxw files in WORKSPACE_DIR, excluding reserved aliases."""
+    if not WORKSPACE_DIR.exists():
+        return []
+    active = _active_workspace_name()
+    results = []
+    for p in sorted(WORKSPACE_DIR.glob("*.qxw")):
+        if p.name in _RESERVED_WS:
+            continue
+        results.append({
+            "name": p.stem,
+            "filename": p.name,
+            "active": p.stem == active,
+            "size_bytes": p.stat().st_size,
+        })
+    return results
+
+
+def _active_workspace_name() -> str:
+    """Return the stem (no .qxw) of the currently active workspace.
+
+    Reads ~/.qlcplus/current_workspace if present; falls back to 'default'.
+    """
+    if _WORKSPACE_POINTER.exists():
+        try:
+            val = _WORKSPACE_POINTER.read_text().strip()
+            if val:
+                return val
+        except OSError:
+            pass
+    return "default"
+
+
+def _set_active_workspace_name(stem: str) -> None:
+    WORKSPACE_POINTER_PARENT = _WORKSPACE_POINTER.parent
+    WORKSPACE_POINTER_PARENT.mkdir(parents=True, exist_ok=True)
+    _WORKSPACE_POINTER.write_text(stem)
+
+
+def _validate_qxw(path: Path) -> bool:
+    """Return True only if path is parseable QLC+ XML with the right namespace."""
+    try:
+        tree = ET.parse(path)
+        root = tree.getroot()
+        return "qlcplus.org/Workspace" in (root.tag or "")
+    except Exception:
+        return False
+
+
+def _groups_file() -> Path:
+    """Return per-workspace fixture-groups path, falling back to global file."""
+    active = _active_workspace_name()
+    per_ws = WORKSPACE_DIR / f"fixture_groups.{active}.json"
+    if per_ws.exists():
+        return per_ws
+    # Migrate: if global file exists but no per-workspace file, keep using global
+    # until the user switches workspaces (migration happens lazily on first save
+    # after a load).
+    return GROUPS_FILE
+
+
+def _bust_scene_swatch_cache() -> None:
+    global _scene_swatch_cache, _scene_swatch_cache_mtime
+    _scene_swatch_cache.clear()
+    _scene_swatch_cache_mtime = 0.0
+
+
+def _restart_qlc() -> dict:
+    """Restart the qlcplus-web.service; only works when IS_LOCAL."""
+    if not IS_LOCAL:
+        return {"success": False, "error": "not local — restart manually"}
+    return execute_command("sudo systemctl restart qlcplus-web.service")
 
 
 def _find_children(element, tag):
@@ -2308,6 +2409,8 @@ def get_status():
         "ok": overall_ok,
         "services": services,
         "is_local": IS_LOCAL,
+        "active_workspace": _active_workspace_name(),
+        "workspace_count": len(_list_workspace_files()),
     })
 
 
@@ -2791,10 +2894,11 @@ def _load_groups() -> dict:
     Tolerates the legacy unwrapped format. Returns an empty dict if the file
     doesn't exist yet.
     """
-    if not GROUPS_FILE.exists():
+    gf = _groups_file()
+    if not gf.exists():
         return {}
     try:
-        data = json.loads(GROUPS_FILE.read_text())
+        data = json.loads(gf.read_text())
     except json.JSONDecodeError:
         return {}
     if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], dict):
@@ -2804,8 +2908,9 @@ def _load_groups() -> dict:
 
 def _save_groups(groups: dict) -> None:
     """Persist the groups dict in the canonical wrapped format."""
-    GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    GROUPS_FILE.write_text(json.dumps({"groups": groups}, indent=2))
+    gf = _groups_file()
+    gf.parent.mkdir(parents=True, exist_ok=True)
+    gf.write_text(json.dumps({"groups": groups}, indent=2))
 
 
 def _existing_fixture_ids() -> set:
@@ -3003,6 +3108,215 @@ def remove_fixtures_from_group(group_name):
             "description": groups[group_name].get("description", ""),
         },
     })
+
+
+# ----------------------------------------------------------------------------
+# Workspace management — list / current / create / load / delete / import / export
+# ----------------------------------------------------------------------------
+
+@app.route("/api/workspaces", methods=["GET"])
+def list_workspaces():
+    """List .qxw files in ~/.qlcplus/, excluding reserved aliases."""
+    return jsonify({"success": True, "workspaces": _list_workspace_files()})
+
+
+@app.route("/api/workspaces/current", methods=["GET"])
+def get_current_workspace():
+    """Return the active workspace name and path."""
+    active = _active_workspace_name()
+    ws_path = WORKSPACE_DIR / f"{active}.qxw"
+    return jsonify({
+        "success": True,
+        "name": active,
+        "filename": f"{active}.qxw",
+        "path": str(ws_path),
+        "exists": ws_path.exists(),
+    })
+
+
+@app.route("/api/workspaces", methods=["POST"])
+def create_workspace():
+    """Create a new empty workspace (or copy from an existing one).
+
+    Body: { "name": "venue-a", "copy_from": "studio" }
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    data = request.get_json(silent=True) or {}
+    raw_name = (data.get("name") or "").strip()
+    if not raw_name.endswith(".qxw"):
+        raw_name = raw_name + ".qxw"
+    name = _safe_workspace_name(raw_name)
+    if not name:
+        return jsonify({"success": False, "error": "invalid workspace name — use [A-Za-z0-9._-] + .qxw suffix"}), 400
+
+    dest = WORKSPACE_DIR / name
+    if dest.exists():
+        return jsonify({"success": False, "error": f"Workspace '{name}' already exists"}), 409
+
+    copy_from = (data.get("copy_from") or "").strip()
+    if copy_from:
+        if not copy_from.endswith(".qxw"):
+            copy_from = copy_from + ".qxw"
+        src = WORKSPACE_DIR / copy_from
+        if not src.exists():
+            return jsonify({"success": False, "error": f"Source workspace '{copy_from}' not found"}), 404
+        shutil.copy2(src, dest)
+    else:
+        _QXW_SKELETON = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE Workspace>\n'
+            '<Workspace xmlns="http://www.qlcplus.org/Workspace" '
+            'CurrentWindow="VirtualConsole">\n'
+            ' <Engine>\n'
+            ' </Engine>\n'
+            ' <VirtualConsole>\n'
+            '  <Frame/>\n'
+            ' </VirtualConsole>\n'
+            '</Workspace>\n'
+        )
+        dest.write_text(_QXW_SKELETON)
+
+    return jsonify({
+        "success": True,
+        "name": dest.stem,
+        "filename": name,
+        "path": str(dest),
+    }), 201
+
+
+@app.route("/api/workspaces/<name>/load", methods=["POST"])
+def load_workspace(name):
+    """Switch the active workspace.
+
+    Copies <name>.qxw → default.qxw and autostart.qxw, updates the pointer
+    file, busts the scene swatch cache, then attempts a QLC+ service restart.
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    src = WORKSPACE_DIR / safe
+    if not src.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    active = _active_workspace_name()
+    if src.stem == active:
+        return jsonify({"success": True, "message": "already active", "name": active}), 200
+
+    # Swap default.qxw and autostart.qxw
+    default_path = WORKSPACE_DIR / "default.qxw"
+    autostart_path = WORKSPACE_DIR / "autostart.qxw"
+    shutil.copy2(src, default_path)
+    shutil.copy2(src, autostart_path)
+
+    _set_active_workspace_name(src.stem)
+    _bust_scene_swatch_cache()
+
+    restart_result = _restart_qlc()
+    return jsonify({
+        "success": True,
+        "name": src.stem,
+        "restarted": restart_result.get("success", False),
+        "needs_manual_restart": not restart_result.get("success", False),
+        "restart_error": restart_result.get("error") if not restart_result.get("success") else None,
+    })
+
+
+@app.route("/api/workspaces/<name>", methods=["DELETE"])
+def delete_workspace(name):
+    """Delete a named workspace. Refuses to delete the active workspace."""
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    ws_path = WORKSPACE_DIR / safe
+    if not ws_path.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    if ws_path.stem == _active_workspace_name():
+        return jsonify({"success": False, "error": "cannot delete the active workspace"}), 409
+
+    ws_path.unlink()
+    return jsonify({"success": True, "name": ws_path.stem})
+
+
+@app.route("/api/workspaces/<name>/export", methods=["GET"])
+def export_workspace(name):
+    """Download a workspace file as .qxw."""
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    ws_path = WORKSPACE_DIR / safe
+    if not ws_path.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    return send_file(ws_path, as_attachment=True, download_name=safe)
+
+
+@app.route("/api/workspaces/import", methods=["POST"])
+def import_workspace():
+    """Upload a .qxw file as a new named workspace.
+
+    Multipart form: file field 'workspace', optional 'name' field (derived
+    from filename when absent).
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if "workspace" not in request.files:
+        return jsonify({"success": False, "error": "no 'workspace' file in request"}), 400
+
+    f = request.files["workspace"]
+    filename = secure_filename(f.filename or "")
+    if not filename.endswith(".qxw"):
+        return jsonify({"success": False, "error": "file must have a .qxw extension"}), 400
+
+    # Allow caller to override the stored name
+    custom_name = (request.form.get("name") or "").strip()
+    if custom_name:
+        if not custom_name.endswith(".qxw"):
+            custom_name = custom_name + ".qxw"
+        filename = custom_name
+
+    safe = _safe_workspace_name(filename)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    dest = WORKSPACE_DIR / safe
+    if dest.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' already exists"}), 409
+
+    # Write to temp file first so we can validate before persisting
+    with tempfile.NamedTemporaryFile(suffix=".qxw", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        f.save(tmp_path)
+
+    if not _validate_qxw(tmp_path):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": "file is not a valid QLC+ workspace XML"}), 422
+
+    shutil.move(str(tmp_path), dest)
+    return jsonify({
+        "success": True,
+        "name": dest.stem,
+        "filename": safe,
+        "path": str(dest),
+    }), 201
 
 
 # ----------------------------------------------------------------------------

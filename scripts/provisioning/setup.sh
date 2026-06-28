@@ -156,6 +156,16 @@ SERVICE
 systemctl daemon-reload
 systemctl enable qlcplus-web.service
 
+# Allow the lights-pi user to restart qlcplus-web.service without a password
+# so the workspace-switching route can restart QLC+ after swapping default.qxw.
+SUDOERS_DROP="/etc/sudoers.d/lights-pi-qlc"
+cat > "${SUDOERS_DROP}" <<SUDOERS
+# Narrow NOPASSWD grant for lights-pi workspace switching
+${PI_USER} ALL=(root) NOPASSWD: /bin/systemctl restart qlcplus-web.service
+SUDOERS
+chmod 0440 "${SUDOERS_DROP}"
+visudo -cf "${SUDOERS_DROP}" && echo "  ✓ sudoers drop-in created" || { rm "${SUDOERS_DROP}"; echo "  ✗ sudoers syntax error — removed, restart grant skipped"; }
+
 # Create autostart.qxw symlink so QLC+ loads the workspace automatically.
 # QLC+ checks for ~/.qlcplus/autostart.qxw on startup in --nogui --web mode.
 # This is more reliable than the --open flag on some Pi builds.

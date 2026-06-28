@@ -1550,6 +1550,24 @@
                 <div id="testDmxResult" class="result-bar"></div>
             </div>
 
+            <div class="tool-panel" data-eyebrow="Workspace · switch">
+                <div class="tool-header">
+                    <span class="tool-title">Workspaces</span>
+                    <button class="btn-secondary btn-tiny" onclick="loadWorkspaces()">Refresh</button>
+                </div>
+                <div class="tool-actions">
+                    <select id="workspaceSelect" class="field-input" style="flex:1;">
+                        <option value="">Loading…</option>
+                    </select>
+                    <button class="btn-primary" onclick="switchWorkspace()">Switch</button>
+                </div>
+                <div id="workspaceResult" class="result-bar"></div>
+                <div class="tool-actions" style="margin-top:0.5rem;">
+                    <input type="text" id="newWorkspaceName" class="field-input" placeholder="new-workspace-name" style="flex:1;">
+                    <button class="btn-secondary" onclick="createWorkspace()">New</button>
+                </div>
+            </div>
+
             <div class="tool-panel" data-eyebrow="journalctl · tail">
                 <div class="tool-header">
                     <span class="tool-title">Service logs</span>
@@ -1736,7 +1754,7 @@
             if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
             else if (tabName === 'chases') loadChases();
             else if (tabName === 'tools') populateToolsGroupSelects();
-            else if (tabName === 'diag')  loadSystemInfo();
+            else if (tabName === 'diag')  { loadSystemInfo(); loadWorkspaces(); }
             else if (tabName === 'chat')  renderChatHistory();
 
             // Persist the active tab in the URL so refresh / share-link works.
@@ -2931,6 +2949,87 @@
                 if (el) el.innerHTML = opts;
             });
             renderPaletteRows();
+        }
+
+        /* ══════════════════════════════════════
+           Workspaces
+           ══════════════════════════════════════ */
+        async function loadWorkspaces() {
+            const sel = document.getElementById('workspaceSelect');
+            const result = document.getElementById('workspaceResult');
+            result.className = 'result-bar';
+            result.textContent = '';
+            try {
+                const r = await fetch('/api/workspaces');
+                const data = await r.json();
+                const ws = data.workspaces || [];
+                if (!ws.length) {
+                    sel.innerHTML = '<option value="">No workspaces found</option>';
+                    return;
+                }
+                sel.innerHTML = ws.map(w =>
+                    `<option value="${escHtml(w.filename)}"${w.active ? ' selected' : ''}>${escHtml(w.name)}${w.active ? ' (active)' : ''}</option>`
+                ).join('');
+            } catch (e) {
+                sel.innerHTML = '<option value="">Failed to load</option>';
+            }
+        }
+
+        async function switchWorkspace() {
+            const sel = document.getElementById('workspaceSelect');
+            const result = document.getElementById('workspaceResult');
+            const name = sel.value;
+            if (!name) return;
+            if (!confirm(`Switch to workspace "${name.replace('.qxw', '')}"?\n\nThis will restart QLC+. Any unsaved changes will be lost.`)) return;
+            result.className = 'result-bar';
+            result.textContent = 'Switching…';
+            try {
+                const r = await fetch(`/api/workspaces/${encodeURIComponent(name)}/load`, { method: 'POST' });
+                const data = await r.json();
+                if (data.success) {
+                    result.className = 'result-bar ok';
+                    result.textContent = data.needs_manual_restart
+                        ? `Switched to "${data.name}". Restart QLC+ manually to apply.`
+                        : `Switched to "${data.name}" — QLC+ restarted.`;
+                    loadWorkspaces();
+                    checkStatus();
+                } else {
+                    result.className = 'result-bar err';
+                    result.textContent = data.error || 'Switch failed';
+                }
+            } catch (e) {
+                result.className = 'result-bar err';
+                result.textContent = 'Network error: ' + e.message;
+            }
+        }
+
+        async function createWorkspace() {
+            const nameEl = document.getElementById('newWorkspaceName');
+            const result = document.getElementById('workspaceResult');
+            const name = nameEl.value.trim();
+            if (!name) { result.className = 'result-bar err'; result.textContent = 'Enter a workspace name'; return; }
+            result.className = 'result-bar';
+            result.textContent = 'Creating…';
+            try {
+                const r = await fetch('/api/workspaces', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name }),
+                });
+                const data = await r.json();
+                if (data.success) {
+                    result.className = 'result-bar ok';
+                    result.textContent = `Created workspace "${data.name}"`;
+                    nameEl.value = '';
+                    loadWorkspaces();
+                } else {
+                    result.className = 'result-bar err';
+                    result.textContent = data.error || 'Create failed';
+                }
+            } catch (e) {
+                result.className = 'result-bar err';
+                result.textContent = 'Network error: ' + e.message;
+            }
         }
 
         /* ══════════════════════════════════════
