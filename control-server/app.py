@@ -1667,6 +1667,8 @@ def _audio_beat_thread(source, sensitivity, mode, target_groups):
 
     except Exception as exc:
         logging.error("[audio] thread error: %s", exc)
+        with _audio_lock:
+            _audio_state["error"] = str(exc)
     finally:
         with _audio_lock:
             if _audio_state["enabled"]:
@@ -5096,7 +5098,13 @@ def audio_enable():
     """
     global _audio_thread
     body = request.get_json(silent=True) or {}
-    source = str(body.get("source", "default"))
+    _raw_source = body.get("source", "default")
+    if _raw_source is None or _raw_source == "":
+        source = "default"
+    elif isinstance(_raw_source, str) and _raw_source.isdigit():
+        source = int(_raw_source)  # numeric string → int device index for sounddevice
+    else:
+        source = _raw_source
     sensitivity = _audio_normalize_sensitivity(body.get("sensitivity", 0.5))
     mode = str(body.get("mode", "beat_pulse"))
     target_groups = body.get("groups") or None
@@ -5160,14 +5168,26 @@ def audio_disable():
         _audio_state["bpm"] = None
     if _audio_thread is not None and _audio_thread.is_alive():
         _audio_thread.join(timeout=2)
-    _audio_thread = None
-    _audio_stop.clear()
+    # Only reset thread handle and stop event once the thread has actually exited;
+    # if the join timed out the thread is still running and a new enable() call
+    # would otherwise start a second capture thread alongside the first.
+    if _audio_thread is None or not _audio_thread.is_alive():
+        _audio_thread = None
+        _audio_stop.clear()
     return jsonify({"success": True, "output": "Audio-reactive mode disabled"})
 
 
 @app.route("/api/audio/calibrate", methods=["POST"])
 def audio_calibrate():
     """Record ~2 s of ambient audio to auto-set the noise floor."""
+    with _audio_lock:
+        if _audio_state["enabled"]:
+            return jsonify({
+                "success": False,
+                "error": "Disable audio-reactive mode before calibrating to avoid device conflicts",
+            }), 409
+        source = _audio_state.get("source", "default")
+
     try:
         import sounddevice as sd  # noqa: PLC0415
     except ImportError:
@@ -5176,8 +5196,6 @@ def audio_calibrate():
             "error": "sounddevice not installed — run: pip install sounddevice",
         }), 503
 
-    with _audio_lock:
-        source = _audio_state.get("source", "default")
     device = None if source == "default" else source
 
     try:

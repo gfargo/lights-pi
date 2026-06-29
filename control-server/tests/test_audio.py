@@ -1,16 +1,15 @@
 """Tests for audio-reactive mode pure helpers."""
 import math
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app import (
+    _audio_amplitude_updates,
     _audio_bpm_from_intervals,
     _audio_compute_rms,
     _audio_mode_valid,
     _audio_normalize_sensitivity,
+    _audio_pulse_updates,
 )
 
 
@@ -115,3 +114,87 @@ class TestAudioBpmFromIntervals:
         intervals = [0.6] * 4   # 100 BPM exactly
         assert _audio_bpm_from_intervals(intervals) == pytest.approx(100.0)
         assert isinstance(_audio_bpm_from_intervals(intervals), float)
+
+
+# ---------------------------------------------------------------------------
+# _audio_pulse_updates
+# ---------------------------------------------------------------------------
+
+def _rgb3_fixture(universe=0, address=0):
+    """Minimal 3-channel RGB fixture with no manufacturer/model (uses heuristic)."""
+    return {"universe": universe, "address": address, "channels": 3,
+            "manufacturer": "", "model": "", "mode": "", "name": "test"}
+
+
+class TestAudioPulseUpdates:
+    def test_empty_fixtures(self):
+        assert _audio_pulse_updates([]) == []
+
+    def test_default_intensity_brightness_channels(self):
+        fixture = _rgb3_fixture()
+        # 3-ch heuristic → brightness=[0,1,2]; absolute channels start at address+1
+        updates = _audio_pulse_updates([fixture], intensity=200)
+        assert updates == [(1, 200), (2, 200), (3, 200)]
+
+    def test_custom_intensity(self):
+        # absolute_channel = universe*512 + address + offset + 1
+        # universe=0, address=10, offsets=[0,1,2] → channels 11,12,13
+        fixture = _rgb3_fixture(universe=0, address=10)
+        updates = _audio_pulse_updates([fixture], intensity=128)
+        assert updates == [(11, 128), (12, 128), (13, 128)]
+
+    def test_intensity_clamped_high(self):
+        fixture = _rgb3_fixture()
+        updates = _audio_pulse_updates([fixture], intensity=999)
+        assert all(val == 255 for _, val in updates)
+
+    def test_intensity_clamped_low(self):
+        fixture = _rgb3_fixture()
+        updates = _audio_pulse_updates([fixture], intensity=-5)
+        assert all(val == 0 for _, val in updates)
+
+    def test_multiple_fixtures(self):
+        f1 = _rgb3_fixture(universe=0, address=0)
+        f2 = _rgb3_fixture(universe=0, address=10)
+        updates = _audio_pulse_updates([f1, f2], intensity=100)
+        assert len(updates) == 6  # 3 channels each
+        assert (1, 100) in updates
+        assert (12, 100) in updates
+
+
+# ---------------------------------------------------------------------------
+# _audio_amplitude_updates
+# ---------------------------------------------------------------------------
+
+class TestAudioAmplitudeUpdates:
+    def test_empty_fixtures(self):
+        assert _audio_amplitude_updates([], 0.5) == []
+
+    def test_midpoint_rgb(self):
+        # 3-ch heuristic exposes red=0, blue=2; warm/cool not present
+        fixture = _rgb3_fixture()
+        updates = _audio_amplitude_updates([fixture], 0.5)
+        # red_val = int(0.5 * 200) = 100; blue_val = int(0.5 * 200) = 100
+        assert (1, 100) in updates  # red ch
+        assert (3, 100) in updates  # blue ch
+        assert len(updates) == 2
+
+    def test_silence_emphasizes_blue(self):
+        fixture = _rgb3_fixture()
+        updates = _audio_amplitude_updates([fixture], 0.0)
+        update_map = dict(updates)
+        assert update_map[1] == 0    # red = 0
+        assert update_map[3] == 200  # blue = 200
+
+    def test_peak_emphasizes_red(self):
+        fixture = _rgb3_fixture()
+        updates = _audio_amplitude_updates([fixture], 1.0)
+        update_map = dict(updates)
+        assert update_map[1] == 200  # red = 200
+        assert update_map[3] == 0    # blue = 0
+
+    def test_values_non_negative(self):
+        fixture = _rgb3_fixture()
+        for normalized in (0.0, 0.25, 0.5, 0.75, 1.0):
+            updates = _audio_amplitude_updates([fixture], normalized)
+            assert all(val >= 0 for _, val in updates)

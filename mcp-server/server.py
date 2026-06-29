@@ -1014,9 +1014,17 @@ def disable_audio_react() -> dict:
 def set_audio_sensitivity(level: float) -> dict:
     """Adjust audio sensitivity without restarting the capture thread.
 
+    Audio-reactive mode must already be enabled; call enable_audio_react() first.
+
     Args:
         level: 0.0 (least reactive) to 1.0 (most reactive).
     """
+    state = _get("/api/audio")
+    if not state.get("enabled"):
+        return {
+            "success": False,
+            "error": "Audio-reactive mode is not enabled. Call enable_audio_react() first.",
+        }
     return _post("/api/audio/enable", {"sensitivity": level})
 
 
