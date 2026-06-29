@@ -2,7 +2,6 @@
 import math
 
 import pytest
-
 from app import (
     _audio_amplitude_updates,
     _audio_bpm_from_intervals,
