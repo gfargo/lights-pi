@@ -84,8 +84,25 @@ def _security_headers(response):
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.parent
 LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
-# Default to ~/.qlcplus/default.qxw, but can be overridden via env var
-WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / "default.qxw")))
+
+# ---------------------------------------------------------------------------
+# Mock DMX mode — set MOCK_DMX=1 to run without QLC+/ENTTEC hardware
+# ---------------------------------------------------------------------------
+MOCK_DMX: bool = os.getenv("MOCK_DMX", "").strip().lower() in ("1", "true", "yes")
+
+if MOCK_DMX:
+    import mock_dmx as _mock_dmx
+    print("⚠  MOCK_DMX mode enabled — no QLC+ WebSocket will be opened")
+
+# Default to ~/.qlcplus/default.qxw, but can be overridden via env var.
+# In mock mode, fall back to the bundled sample workspace when no real one exists.
+_default_ws = Path.home() / ".qlcplus" / "default.qxw"
+if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
+    _sample_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
+    WORKSPACE_PATH = _sample_ws
+else:
+    WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(_default_ws)))
+
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 
@@ -203,6 +220,11 @@ def _qlc_run(coro, timeout=10):
 async def _ensure_qlc_ws():
     """Open the persistent WebSocket if needed. Lock-protected."""
     global _qlc_ws
+    # In mock mode, return a MockQLCWebSocket immediately (no real connection).
+    if MOCK_DMX:
+        if _qlc_ws is None:
+            _qlc_ws = _mock_dmx.MockQLCWebSocket()
+        return _qlc_ws
     async with _qlc_ws_lock:
         # Treat both "missing" and "closed" cases as needing reconnect
         needs_connect = _qlc_ws is None
@@ -277,6 +299,9 @@ async def _qlc_reader(ws):
 
 async def _qlc_send_commands(commands):
     """Send one or more raw QLC+ commands over the persistent WebSocket."""
+    if MOCK_DMX:
+        _mock_dmx.apply_commands(commands)
+        return
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
@@ -285,6 +310,17 @@ async def _qlc_send_commands(commands):
 
 async def _qlc_request_reply(command, response_marker, timeout=2.0):
     """Send a command and wait for a response containing response_marker."""
+    if MOCK_DMX:
+        # Synthesize replies for the two QLC+API commands app.py uses.
+        if response_marker == "getChannelsValues":
+            # Parse max_ch from the command "QLC+API|getChannelsValues|1|1|<max>"
+            try:
+                max_ch = int(command.rsplit("|", 1)[-1])
+            except (ValueError, IndexError):
+                max_ch = 512
+            return _mock_dmx.serialize_get_channels_values(max_ch)
+        # setFunctionStatus — mock simply acknowledges
+        return f"QLC+API|{response_marker}|OK"
     ws = await _ensure_qlc_ws()
     fut = asyncio.get_running_loop().create_future()
     _qlc_pending_responses[response_marker] = fut
@@ -2101,6 +2137,16 @@ def pwa_service_worker():
     return response
 
 
+# ---------------------------------------------------------------------------
+# Mock-only debug endpoint — only registered when MOCK_DMX=1
+# ---------------------------------------------------------------------------
+if MOCK_DMX:
+    @app.route("/debug/dmx-state", methods=["GET"])
+    def debug_dmx_state():
+        """Return the current mock DMX bus state (MOCK_DMX=1 only)."""
+        return jsonify(_mock_dmx.snapshot())
+
+
 @app.route("/api/command", methods=["POST"])
 def handle_command():
     """Handle natural language command"""
@@ -2247,7 +2293,10 @@ def get_status():
     ws_ok = False
     ws_detail = "unknown"
     try:
-        if _qlc_ws is None:
+        if MOCK_DMX:
+            ws_ok = True
+            ws_detail = "connected (mock)"
+        elif _qlc_ws is None:
             ws_detail = "not connected (will reconnect on next command)"
         elif getattr(_qlc_ws, "closed", False):
             ws_detail = "closed (will reconnect on next command)"
@@ -2260,7 +2309,7 @@ def get_status():
         "name": "QLC+ WebSocket",
         "ok": ws_ok,
         "detail": ws_detail,
-        "url": QLC_WS_URL,
+        "url": QLC_WS_URL if not MOCK_DMX else "mock",
     }
 
     # 3. QLC+ Service
@@ -4137,11 +4186,115 @@ async def _set_function_status_async(function_id: int, running: bool) -> str:
 
 def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
     """Sync wrapper around setFunctionStatus. Returns (ok, raw_response)."""
+    if MOCK_DMX:
+        if running:
+            _mock_chase_start(function_id)
+        else:
+            _mock_chase_stop(function_id)
+        return True, "QLC+API|setFunctionStatus|OK"
     try:
         raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
         return True, raw
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Mock chase stepper — runs in-process when MOCK_DMX=1
+# ---------------------------------------------------------------------------
+# Chases in production are executed by QLC+ itself; in mock mode we need an
+# in-process stepper so the bus reflects what would be on the wire.
+
+_mock_chase_tasks: dict[int, asyncio.Task] = {}
+
+
+def _mock_chase_start(function_id: int) -> None:
+    """Start an in-process chase stepper for the given function ID."""
+    _mock_chase_stop(function_id)  # cancel existing if any
+    chase_elem = None
+    try:
+        for func in _engine_functions(_engine_element(_workspace_root())):
+            if func.get("Type") == "Chaser" and func.get("ID") == str(function_id):
+                chase_elem = func
+                break
+    except Exception:
+        pass
+    if chase_elem is None:
+        return
+
+    chase_info = _describe_chase_full(chase_elem)
+    if not chase_info["steps"]:
+        return
+
+    if _qlc_loop is None:
+        _start_qlc_loop()
+
+    task = asyncio.run_coroutine_threadsafe(
+        _mock_chase_run(function_id, chase_info),
+        _qlc_loop,
+    )
+    _mock_chase_tasks[function_id] = task
+
+
+def _mock_chase_stop(function_id: int) -> None:
+    """Cancel the in-process chase stepper for the given function ID."""
+    task = _mock_chase_tasks.pop(function_id, None)
+    if task is not None:
+        task.cancel()
+
+
+async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
+    """Async chase stepper: apply each step's scene to the mock bus on schedule."""
+    steps = chase_info["steps"]
+    default_speed = chase_info.get("speed", {})
+    run_order = chase_info.get("run_order", "Loop")
+    indices = list(range(len(steps)))
+
+    idx_iter = 0
+    try:
+        while True:
+            i = indices[idx_iter % len(indices)]
+            step = steps[i]
+            scene_id = step.get("scene_id")
+            hold_ms = step.get("hold_ms", -1)
+            if hold_ms < 0:
+                hold_ms = default_speed.get("hold_ms", 2000)
+            fade_in_ms = step.get("fade_in_ms", -1)
+            if fade_in_ms < 0:
+                fade_in_ms = default_speed.get("fade_in_ms", 500)
+
+            # Apply the scene to the mock bus
+            if scene_id is not None:
+                try:
+                    scene_elem = _find_scene_element(scene_id)
+                    if scene_elem is not None:
+                        cvs = scene_to_channel_values(scene_elem)
+                        # Build CH commands and apply directly — calling
+                        # set_channel_values() here would deadlock because
+                        # _qlc_run uses run_coroutine_threadsafe on the same
+                        # loop this coroutine is running on.
+                        commands = [
+                            f"CH|{ch}|{max(0, min(255, val))}"
+                            for ch, val in cvs
+                            if int(ch) > 0
+                        ]
+                        if commands:
+                            _mock_dmx.apply_commands(commands)
+                except Exception as e:
+                    print(f"[mock-chase {function_id}] step {i} apply error: {e}")
+
+            # Honour timing (fade_in + hold)
+            total_sleep = (fade_in_ms + hold_ms) / 1000
+            if total_sleep > 0:
+                await asyncio.sleep(total_sleep)
+
+            idx_iter += 1
+            if run_order == "SingleShot" and idx_iter >= len(indices):
+                break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _mock_chase_tasks.pop(function_id, None)
 
 
 # ------------------------------- endpoints ----------------------------------
@@ -5865,10 +6018,11 @@ if __name__ == "__main__":
     # Start the dedicated QLC+ WebSocket loop in a background thread.
     # All QLC+ comms go through this one persistent connection.
     _start_qlc_loop()
-    try:
-        _qlc_run(_ensure_qlc_ws(), timeout=5)
-    except Exception as e:
-        print(f"Warning: initial QLC+ connect failed (will retry on demand): {e}")
+    if not MOCK_DMX:
+        try:
+            _qlc_run(_ensure_qlc_ws(), timeout=5)
+        except Exception as e:
+            print(f"Warning: initial QLC+ connect failed (will retry on demand): {e}")
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #
