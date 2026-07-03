@@ -110,6 +110,10 @@ CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 _scene_swatch_cache: dict = {}
 _scene_swatch_cache_mtime: float = 0.0
 
+# Server-side tap-tempo chase runners: str(chase_id) -> {'step_ms': float, 'running': bool}
+# Each entry corresponds to a background asyncio task on _qlc_loop stepping through scenes.
+_tap_runners: dict = {}
+
 # QLC+ WebSocket configuration
 QLC_HOST = os.getenv("QLC_HOST", "localhost")
 QLC_PORT = int(os.getenv("QLC_PORT", "9999"))
@@ -3981,6 +3985,97 @@ def _normalize_run_order(value: str | None, default: str = "Loop") -> str:
     return _CHASE_RUN_ORDERS.get(str(value).strip().lower(), default)
 
 
+_CHASE_TEMPO_SOURCES = {"fixed": "fixed", "tap": "tap", "audio": "audio"}
+
+
+def _normalize_tempo_source(value, default: str = "fixed") -> str:
+    if not value or isinstance(value, bool):
+        return default
+    return _CHASE_TEMPO_SOURCES.get(str(value).strip().lower(), default)
+
+
+def _bpm_to_step_ms(bpm: float) -> int:
+    """Convert BPM to step hold duration in milliseconds. 120 BPM → 500ms."""
+    return round(60000 / bpm)
+
+
+def _tap_intervals_to_bpm(intervals_ms: list) -> float | None:
+    """Average the last 4 tap intervals and return BPM, or None if outside 40–240 range."""
+    if not intervals_ms:
+        return None
+    recent = intervals_ms[-4:]
+    avg_ms = sum(recent) / len(recent)
+    if avg_ms <= 0:
+        return None
+    bpm = 60000 / avg_ms
+    if bpm < 40 or bpm > 240:
+        return None
+    return float(bpm)
+
+
+def _chase_step_scene_ids(chase_element) -> list:
+    """Return the ordered list of scene function IDs from a chase's <Step> elements."""
+    steps = []
+    for step in _find_children(chase_element, "Step"):
+        num_str = step.get("Number", "0")
+        num = int(num_str) if num_str.isdigit() else 0
+        raw = step.get("Values") or (step.text or "").strip()
+        if raw and str(raw).isdigit():
+            steps.append((num, int(raw)))
+    steps.sort(key=lambda x: x[0])
+    return [sid for _, sid in steps]
+
+
+def _update_tap_runner_bpm(chase_id: str, step_ms: float) -> bool:
+    """Update the step interval of a live server-side tap runner.
+
+    Returns True if a running tap runner was found and updated.
+    Pure state mutation — no I/O; the running asyncio loop reads the updated value.
+    """
+    state = _tap_runners.get(str(chase_id))
+    if state is None:
+        return False
+    state["step_ms"] = float(step_ms)
+    return True
+
+
+def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
+    """Start a server-side asyncio loop that steps a tap-source chase through scenes.
+
+    Each iteration activates the next scene via setFunctionStatus, then sleeps for
+    state['step_ms'] ms so that BPM changes take effect on the very next step.
+    """
+    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
+    if not scene_ids:
+        return
+    _start_qlc_loop()  # ensure background event loop is running
+    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    _tap_runners[str(chase_id)] = state
+    n = len(scene_ids)
+
+    async def _loop() -> None:
+        idx = 0
+        while state["running"]:
+            scene_id = scene_ids[idx % n]
+            try:
+                await _qlc_send_commands([f"QLC+API|setFunctionStatus|{scene_id}|1"])
+            except Exception:
+                pass
+            await asyncio.sleep(max(0.01, state["step_ms"] / 1000.0))
+            idx = (idx + 1) % n
+
+    asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
+
+
+def _stop_tap_runner(chase_id: str) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active."""
+    state = _tap_runners.pop(str(chase_id), None)
+    if state:
+        state["running"] = False
+        return True
+    return False
+
+
 def _engine_functions(engine):
     """All <Function> children of Engine, namespace-tolerant."""
     if engine is None:
@@ -4058,6 +4153,7 @@ def get_workspace_chases() -> list[dict]:
             "steps": len(steps),
             "direction": direction.text if direction is not None else "Forward",
             "run_order": run_order.text if run_order is not None else "Loop",
+            "tempo_source": func.get("TempoSource", "fixed"),
             "speed": {
                 "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
                 "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
@@ -4098,6 +4194,7 @@ def _describe_chase_full(chase_element) -> dict:
         "path": chase_element.get("Path", ""),
         "direction": direction.text if direction is not None else "Forward",
         "run_order": run_order.text if run_order is not None else "Loop",
+        "tempo_source": chase_element.get("TempoSource", "fixed"),
         "speed": {
             "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
             "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
@@ -4135,10 +4232,15 @@ def _build_chase_xml(
     run_order: str,
     path: str,
     chase_id: int,
+    tempo_source: str = "fixed",
 ) -> str:
     """Generate the <Function Type="Chaser"> XML to inject into the workspace."""
+    func_tag = (
+        f'<Function ID="{chase_id}" Type="Chaser"'
+        f' Name="{_xml_escape(name)}" Path="{_xml_escape(path)}" TempoSource="{tempo_source}">'
+    )
     lines = [
-        f'<Function ID="{chase_id}" Type="Chaser" Name="{_xml_escape(name)}" Path="{_xml_escape(path)}">',
+        func_tag,
         f'  <Speed FadeIn="{fade_in_ms}" FadeOut="{fade_out_ms}" Duration="{hold_ms}"/>',
         f'  <Direction>{direction}</Direction>',
         f'  <RunOrder>{run_order}</RunOrder>',
@@ -4347,12 +4449,13 @@ def create_chase():
     if not isinstance(raw_steps, list) or not raw_steps:
         return jsonify({"success": False, "error": "steps must be a non-empty array"}), 400
 
-    fade_in_ms  = max(0, int(data.get("fade_in_ms",  500)))
-    hold_ms     = max(0, int(data.get("hold_ms",     2000)))
-    fade_out_ms = max(0, int(data.get("fade_out_ms", 500)))
-    direction   = _normalize_direction(data.get("direction"))
-    run_order   = _normalize_run_order(data.get("run_order"))
-    path        = (data.get("path") or "AI Generated").strip()
+    fade_in_ms   = max(0, int(data.get("fade_in_ms",  500)))
+    hold_ms      = max(0, int(data.get("hold_ms",     2000)))
+    fade_out_ms  = max(0, int(data.get("fade_out_ms", 500)))
+    direction    = _normalize_direction(data.get("direction"))
+    run_order    = _normalize_run_order(data.get("run_order"))
+    tempo_source = _normalize_tempo_source(data.get("tempo_source"))
+    path         = (data.get("path") or "AI Generated").strip()
 
     # Reject duplicate names — chase Name is the agent-friendly key
     if _find_function_element(name, function_type="Chaser") is not None:
@@ -4398,7 +4501,7 @@ def create_chase():
         name=name, steps=normalized_steps,
         fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
         direction=direction, run_order=run_order, path=path,
-        chase_id=chase_id,
+        chase_id=chase_id, tempo_source=tempo_source,
     )
     if not _inject_chase_into_workspace(chase_xml):
         return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
@@ -4412,6 +4515,7 @@ def create_chase():
             "steps": len(normalized_steps),
             "direction": direction,
             "run_order": run_order,
+            "tempo_source": tempo_source,
             "speed": {
                 "fade_in_ms":  fade_in_ms,
                 "hold_ms":     hold_ms,
@@ -4454,13 +4558,31 @@ def delete_chase(chase_id):
 
 @app.route("/api/chases/<chase_id>/start", methods=["POST"])
 def start_chase(chase_id):
-    """Start chase playback via the QLC+ WebSocket API."""
+    """Start chase playback.
+
+    For tap-source chases the server drives the step loop so that BPM changes
+    take effect immediately without touching QLC+'s in-memory timing.
+    Fixed/audio chases delegate to QLC+ via setFunctionStatus as before.
+    """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
         return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
         return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+
+    if chase.get("TempoSource", "fixed") == "tap":
+        scene_ids = _chase_step_scene_ids(chase)
+        speed = next(iter(_find_children(chase, "Speed")), None)
+        initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
+        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        return jsonify({
+            "success": True,
+            "chase": {"id": int(fid), "name": chase.get("Name")},
+            "response": "tap runner started",
+            "error": "",
+        })
+
     ok, raw = set_function_status(int(fid), running=True)
     return jsonify({
         "success": ok,
@@ -4472,20 +4594,91 @@ def start_chase(chase_id):
 
 @app.route("/api/chases/<chase_id>/stop", methods=["POST"])
 def stop_chase(chase_id):
-    """Stop chase playback via the QLC+ WebSocket API."""
+    """Stop chase playback.
+
+    Cancels the server-side tap runner if active, and also sends a
+    setFunctionStatus stop to QLC+ (harmless if the chaser wasn't running there).
+    """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
         return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
         return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+    tap_was_running = _stop_tap_runner(fid)
     ok, raw = set_function_status(int(fid), running=False)
     return jsonify({
-        "success": ok,
+        "success": ok or tap_was_running,
         "chase": {"id": int(fid), "name": chase.get("Name")},
-        "response": raw,
-        "error": "" if ok else raw,
+        "response": "tap runner stopped" if tap_was_running else raw,
+        "error": "" if (ok or tap_was_running) else raw,
     })
+
+
+@app.route("/api/chases/<chase_id>/tempo", methods=["POST"])
+def set_chase_tempo(chase_id):
+    """Rewrite step Hold times for a chase from a tap-tempo BPM value.
+
+    Body: { "bpm": 120 }
+    Validates 40–240 BPM. Updates Speed Duration + every Step Hold in the workspace XML.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        bpm_raw = data.get("bpm")
+        if bpm_raw is None:
+            return jsonify({"success": False, "error": "bpm is required"}), 400
+        try:
+            bpm = float(bpm_raw)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "bpm must be a number"}), 400
+        if bpm < 40 or bpm > 240:
+            return jsonify({
+                "success": False,
+                "error": f"BPM must be between 40 and 240, got {bpm}",
+            }), 400
+
+        step_ms = _bpm_to_step_ms(bpm)
+
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(chase_id).strip().lower()
+        target = None
+        for func in _engine_functions(engine):
+            if func.get("Type") != "Chaser":
+                continue
+            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                target = func
+                break
+        if target is None:
+            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+
+        speed = next(iter(_find_children(target, "Speed")), None)
+        if speed is not None:
+            speed.set("Duration", str(step_ms))
+
+        for step in _find_children(target, "Step"):
+            step.set("Hold", str(step_ms))
+
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+
+        # Update the live server-side tap runner if this chase is currently running.
+        # The async loop reads state['step_ms'] on every iteration so the next step
+        # fires at the new BPM without any restart or QLC+ reload.
+        live_updated = _update_tap_runner_bpm(target.get("ID", ""), step_ms)
+
+        return jsonify({
+            "success": True,
+            "bpm": bpm,
+            "step_ms": step_ms,
+            "live_updated": live_updated,
+            "chase": {"id": target.get("ID"), "name": target.get("Name")},
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # =============================================================================
@@ -5516,6 +5709,11 @@ def _build_chat_tools() -> list[dict]:
                     "fade_out_ms": {"type": "integer"},
                     "direction": {"type": "string", "enum": ["Forward", "Backward"]},
                     "run_order": {"type": "string", "enum": ["Loop", "SingleShot", "PingPong", "Random"]},
+                    "tempo_source": {
+                        "type": "string",
+                        "enum": ["fixed", "tap", "audio"],
+                        "description": "fixed (default), tap (follows live tap-tempo BPM), audio (reserved)",
+                    },
                 },
                 "required": ["name", "steps"],
             },
