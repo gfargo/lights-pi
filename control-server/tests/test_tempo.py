@@ -2,14 +2,13 @@
 chase step extraction, and live-retime state updates."""
 import xml.etree.ElementTree as ET
 
+import app
 import pytest
 from app import (
     _bpm_to_step_ms,
     _chase_step_scene_ids,
     _normalize_tempo_source,
     _tap_intervals_to_bpm,
-    _tap_runners,
-    _update_tap_runner_bpm,
 )
 
 
@@ -166,38 +165,44 @@ class TestChaseStepSceneIds:
 
 
 class TestUpdateTapRunnerBpm:
+    # Access _tap_runners / _update_tap_runner_bpm via the `app` module (not
+    # bound names imported at collection time): tests in test_mock_dmx.py use
+    # importlib.reload(app) to exercise MOCK_DMX, which rebinds app's module
+    # globals to fresh objects. A name imported earlier via `from app import
+    # _tap_runners` would keep pointing at the pre-reload dict, going out of
+    # sync with the reloaded `_update_tap_runner_bpm`'s view of the state.
     def setup_method(self):
-        _tap_runners.clear()
+        app._tap_runners.clear()
 
     def teardown_method(self):
-        _tap_runners.clear()
+        app._tap_runners.clear()
 
     def test_returns_false_when_no_runner(self):
-        assert _update_tap_runner_bpm("42", 500.0) is False
+        assert app._update_tap_runner_bpm("42", 500.0) is False
 
     def test_returns_true_and_updates_when_runner_exists(self):
-        _tap_runners["7"] = {"step_ms": 500.0, "running": True}
-        result = _update_tap_runner_bpm("7", 667.0)
+        app._tap_runners["7"] = {"step_ms": 500.0, "running": True}
+        result = app._update_tap_runner_bpm("7", 667.0)
         assert result is True
-        assert _tap_runners["7"]["step_ms"] == 667.0
+        assert app._tap_runners["7"]["step_ms"] == 667.0
 
     def test_bpm_change_reflected_live(self):
         # Simulate what set_chase_tempo does: write new BPM, update live runner
-        _tap_runners["5"] = {"step_ms": 500.0, "running": True}
+        app._tap_runners["5"] = {"step_ms": 500.0, "running": True}
         new_step_ms = _bpm_to_step_ms(90)  # 667 ms
-        _update_tap_runner_bpm("5", new_step_ms)
-        assert _tap_runners["5"]["step_ms"] == 667
+        app._update_tap_runner_bpm("5", new_step_ms)
+        assert app._tap_runners["5"]["step_ms"] == 667
 
     def test_coerces_to_float(self):
-        _tap_runners["3"] = {"step_ms": 500.0, "running": True}
-        _update_tap_runner_bpm("3", 250)  # int input
-        assert isinstance(_tap_runners["3"]["step_ms"], float)
+        app._tap_runners["3"] = {"step_ms": 500.0, "running": True}
+        app._update_tap_runner_bpm("3", 250)  # int input
+        assert isinstance(app._tap_runners["3"]["step_ms"], float)
 
     def test_string_chase_id_matches(self):
-        _tap_runners["9"] = {"step_ms": 500.0, "running": True}
-        assert _update_tap_runner_bpm("9", 400.0) is True
+        app._tap_runners["9"] = {"step_ms": 500.0, "running": True}
+        assert app._update_tap_runner_bpm("9", 400.0) is True
 
     def test_no_runner_for_different_id(self):
-        _tap_runners["1"] = {"step_ms": 500.0, "running": True}
-        assert _update_tap_runner_bpm("2", 400.0) is False
-        assert _tap_runners["1"]["step_ms"] == 500.0
+        app._tap_runners["1"] = {"step_ms": 500.0, "running": True}
+        assert app._update_tap_runner_bpm("2", 400.0) is False
+        assert app._tap_runners["1"]["step_ms"] == 500.0
