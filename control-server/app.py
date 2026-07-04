@@ -114,14 +114,35 @@ def _security_headers(response):
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.parent
 LIGHTSCTL = SCRIPT_DIR / "lightsctl.sh"
-# Default to ~/.qlcplus/default.qxw, but can be overridden via env var
-WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(Path.home() / ".qlcplus" / "default.qxw")))
+
+# ---------------------------------------------------------------------------
+# Mock DMX mode — set MOCK_DMX=1 to run without QLC+/ENTTEC hardware
+# ---------------------------------------------------------------------------
+MOCK_DMX: bool = os.getenv("MOCK_DMX", "").strip().lower() in ("1", "true", "yes")
+
+if MOCK_DMX:
+    import mock_dmx as _mock_dmx
+    print("⚠  MOCK_DMX mode enabled — no QLC+ WebSocket will be opened")
+
+# Default to ~/.qlcplus/default.qxw, but can be overridden via env var.
+# In mock mode, fall back to the bundled sample workspace when no real one exists.
+_default_ws = Path.home() / ".qlcplus" / "default.qxw"
+if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
+    _sample_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
+    WORKSPACE_PATH = _sample_ws
+else:
+    WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(_default_ws)))
+
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 
 # Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
 _scene_swatch_cache: dict = {}
 _scene_swatch_cache_mtime: float = 0.0
+
+# Server-side tap-tempo chase runners: str(chase_id) -> {'step_ms': float, 'running': bool}
+# Each entry corresponds to a background asyncio task on _qlc_loop stepping through scenes.
+_tap_runners: dict = {}
 
 # QLC+ WebSocket configuration
 QLC_HOST = os.getenv("QLC_HOST", "localhost")
@@ -235,6 +256,11 @@ def _qlc_run(coro, timeout=10):
 async def _ensure_qlc_ws():
     """Open the persistent WebSocket if needed. Lock-protected."""
     global _qlc_ws, _ws_reconnect_count
+    # In mock mode, return a MockQLCWebSocket immediately (no real connection).
+    if MOCK_DMX:
+        if _qlc_ws is None:
+            _qlc_ws = _mock_dmx.MockQLCWebSocket()
+        return _qlc_ws
     async with _qlc_ws_lock:
         # Treat both "missing" and "closed" cases as needing reconnect
         needs_connect = _qlc_ws is None
@@ -311,6 +337,10 @@ async def _qlc_reader(ws):
 async def _qlc_send_commands(commands):
     """Send one or more raw QLC+ commands over the persistent WebSocket."""
     global _last_dmx_write_ts
+    if MOCK_DMX:
+        _mock_dmx.apply_commands(commands)
+        _last_dmx_write_ts = time.time()
+        return
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
@@ -321,6 +351,17 @@ async def _qlc_send_commands(commands):
 
 async def _qlc_request_reply(command, response_marker, timeout=2.0):
     """Send a command and wait for a response containing response_marker."""
+    if MOCK_DMX:
+        # Synthesize replies for the two QLC+API commands app.py uses.
+        if response_marker == "getChannelsValues":
+            # Parse max_ch from the command "QLC+API|getChannelsValues|1|1|<max>"
+            try:
+                max_ch = int(command.rsplit("|", 1)[-1])
+            except (ValueError, IndexError):
+                max_ch = 512
+            return _mock_dmx.serialize_get_channels_values(max_ch)
+        # setFunctionStatus — mock simply acknowledges
+        return f"QLC+API|{response_marker}|OK"
     ws = await _ensure_qlc_ws()
     fut = asyncio.get_running_loop().create_future()
     _qlc_pending_responses[response_marker] = fut
@@ -2142,6 +2183,16 @@ def pwa_service_worker():
     return response
 
 
+# ---------------------------------------------------------------------------
+# Mock-only debug endpoint — only registered when MOCK_DMX=1
+# ---------------------------------------------------------------------------
+if MOCK_DMX:
+    @app.route("/debug/dmx-state", methods=["GET"])
+    def debug_dmx_state():
+        """Return the current mock DMX bus state (MOCK_DMX=1 only)."""
+        return jsonify(_mock_dmx.snapshot())
+
+
 @app.route("/api/command", methods=["POST"])
 def handle_command():
     """Handle natural language command"""
@@ -2372,7 +2423,10 @@ def get_status():
     ws_ok = False
     ws_detail = "unknown"
     try:
-        if _qlc_ws is None:
+        if MOCK_DMX:
+            ws_ok = True
+            ws_detail = "connected (mock)"
+        elif _qlc_ws is None:
             ws_detail = "not connected (will reconnect on next command)"
         elif getattr(_qlc_ws, "closed", False):
             ws_detail = "closed (will reconnect on next command)"
@@ -2385,7 +2439,7 @@ def get_status():
         "name": "QLC+ WebSocket",
         "ok": ws_ok,
         "detail": ws_detail,
-        "url": QLC_WS_URL,
+        "url": QLC_WS_URL if not MOCK_DMX else "mock",
     }
 
     # 3. QLC+ Service
@@ -4057,6 +4111,97 @@ def _normalize_run_order(value: str | None, default: str = "Loop") -> str:
     return _CHASE_RUN_ORDERS.get(str(value).strip().lower(), default)
 
 
+_CHASE_TEMPO_SOURCES = {"fixed": "fixed", "tap": "tap", "audio": "audio"}
+
+
+def _normalize_tempo_source(value, default: str = "fixed") -> str:
+    if not value or isinstance(value, bool):
+        return default
+    return _CHASE_TEMPO_SOURCES.get(str(value).strip().lower(), default)
+
+
+def _bpm_to_step_ms(bpm: float) -> int:
+    """Convert BPM to step hold duration in milliseconds. 120 BPM → 500ms."""
+    return round(60000 / bpm)
+
+
+def _tap_intervals_to_bpm(intervals_ms: list) -> float | None:
+    """Average the last 4 tap intervals and return BPM, or None if outside 40–240 range."""
+    if not intervals_ms:
+        return None
+    recent = intervals_ms[-4:]
+    avg_ms = sum(recent) / len(recent)
+    if avg_ms <= 0:
+        return None
+    bpm = 60000 / avg_ms
+    if bpm < 40 or bpm > 240:
+        return None
+    return float(bpm)
+
+
+def _chase_step_scene_ids(chase_element) -> list:
+    """Return the ordered list of scene function IDs from a chase's <Step> elements."""
+    steps = []
+    for step in _find_children(chase_element, "Step"):
+        num_str = step.get("Number", "0")
+        num = int(num_str) if num_str.isdigit() else 0
+        raw = step.get("Values") or (step.text or "").strip()
+        if raw and str(raw).isdigit():
+            steps.append((num, int(raw)))
+    steps.sort(key=lambda x: x[0])
+    return [sid for _, sid in steps]
+
+
+def _update_tap_runner_bpm(chase_id: str, step_ms: float) -> bool:
+    """Update the step interval of a live server-side tap runner.
+
+    Returns True if a running tap runner was found and updated.
+    Pure state mutation — no I/O; the running asyncio loop reads the updated value.
+    """
+    state = _tap_runners.get(str(chase_id))
+    if state is None:
+        return False
+    state["step_ms"] = float(step_ms)
+    return True
+
+
+def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
+    """Start a server-side asyncio loop that steps a tap-source chase through scenes.
+
+    Each iteration activates the next scene via setFunctionStatus, then sleeps for
+    state['step_ms'] ms so that BPM changes take effect on the very next step.
+    """
+    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
+    if not scene_ids:
+        return
+    _start_qlc_loop()  # ensure background event loop is running
+    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    _tap_runners[str(chase_id)] = state
+    n = len(scene_ids)
+
+    async def _loop() -> None:
+        idx = 0
+        while state["running"]:
+            scene_id = scene_ids[idx % n]
+            try:
+                await _qlc_send_commands([f"QLC+API|setFunctionStatus|{scene_id}|1"])
+            except Exception:
+                pass
+            await asyncio.sleep(max(0.01, state["step_ms"] / 1000.0))
+            idx = (idx + 1) % n
+
+    asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
+
+
+def _stop_tap_runner(chase_id: str) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active."""
+    state = _tap_runners.pop(str(chase_id), None)
+    if state:
+        state["running"] = False
+        return True
+    return False
+
+
 def _engine_functions(engine):
     """All <Function> children of Engine, namespace-tolerant."""
     if engine is None:
@@ -4134,6 +4279,7 @@ def get_workspace_chases() -> list[dict]:
             "steps": len(steps),
             "direction": direction.text if direction is not None else "Forward",
             "run_order": run_order.text if run_order is not None else "Loop",
+            "tempo_source": func.get("TempoSource", "fixed"),
             "speed": {
                 "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
                 "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
@@ -4174,6 +4320,7 @@ def _describe_chase_full(chase_element) -> dict:
         "path": chase_element.get("Path", ""),
         "direction": direction.text if direction is not None else "Forward",
         "run_order": run_order.text if run_order is not None else "Loop",
+        "tempo_source": chase_element.get("TempoSource", "fixed"),
         "speed": {
             "fade_in_ms":  int(speed.get("FadeIn", "0"))   if speed is not None else 0,
             "fade_out_ms": int(speed.get("FadeOut", "0"))  if speed is not None else 0,
@@ -4211,10 +4358,15 @@ def _build_chase_xml(
     run_order: str,
     path: str,
     chase_id: int,
+    tempo_source: str = "fixed",
 ) -> str:
     """Generate the <Function Type="Chaser"> XML to inject into the workspace."""
+    func_tag = (
+        f'<Function ID="{chase_id}" Type="Chaser"'
+        f' Name="{_xml_escape(name)}" Path="{_xml_escape(path)}" TempoSource="{tempo_source}">'
+    )
     lines = [
-        f'<Function ID="{chase_id}" Type="Chaser" Name="{_xml_escape(name)}" Path="{_xml_escape(path)}">',
+        func_tag,
         f'  <Speed FadeIn="{fade_in_ms}" FadeOut="{fade_out_ms}" Duration="{hold_ms}"/>',
         f'  <Direction>{direction}</Direction>',
         f'  <RunOrder>{run_order}</RunOrder>',
@@ -4262,11 +4414,115 @@ async def _set_function_status_async(function_id: int, running: bool) -> str:
 
 def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
     """Sync wrapper around setFunctionStatus. Returns (ok, raw_response)."""
+    if MOCK_DMX:
+        if running:
+            _mock_chase_start(function_id)
+        else:
+            _mock_chase_stop(function_id)
+        return True, "QLC+API|setFunctionStatus|OK"
     try:
         raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
         return True, raw
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Mock chase stepper — runs in-process when MOCK_DMX=1
+# ---------------------------------------------------------------------------
+# Chases in production are executed by QLC+ itself; in mock mode we need an
+# in-process stepper so the bus reflects what would be on the wire.
+
+_mock_chase_tasks: dict[int, asyncio.Task] = {}
+
+
+def _mock_chase_start(function_id: int) -> None:
+    """Start an in-process chase stepper for the given function ID."""
+    _mock_chase_stop(function_id)  # cancel existing if any
+    chase_elem = None
+    try:
+        for func in _engine_functions(_engine_element(_workspace_root())):
+            if func.get("Type") == "Chaser" and func.get("ID") == str(function_id):
+                chase_elem = func
+                break
+    except Exception:
+        pass
+    if chase_elem is None:
+        return
+
+    chase_info = _describe_chase_full(chase_elem)
+    if not chase_info["steps"]:
+        return
+
+    if _qlc_loop is None:
+        _start_qlc_loop()
+
+    task = asyncio.run_coroutine_threadsafe(
+        _mock_chase_run(function_id, chase_info),
+        _qlc_loop,
+    )
+    _mock_chase_tasks[function_id] = task
+
+
+def _mock_chase_stop(function_id: int) -> None:
+    """Cancel the in-process chase stepper for the given function ID."""
+    task = _mock_chase_tasks.pop(function_id, None)
+    if task is not None:
+        task.cancel()
+
+
+async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
+    """Async chase stepper: apply each step's scene to the mock bus on schedule."""
+    steps = chase_info["steps"]
+    default_speed = chase_info.get("speed", {})
+    run_order = chase_info.get("run_order", "Loop")
+    indices = list(range(len(steps)))
+
+    idx_iter = 0
+    try:
+        while True:
+            i = indices[idx_iter % len(indices)]
+            step = steps[i]
+            scene_id = step.get("scene_id")
+            hold_ms = step.get("hold_ms", -1)
+            if hold_ms < 0:
+                hold_ms = default_speed.get("hold_ms", 2000)
+            fade_in_ms = step.get("fade_in_ms", -1)
+            if fade_in_ms < 0:
+                fade_in_ms = default_speed.get("fade_in_ms", 500)
+
+            # Apply the scene to the mock bus
+            if scene_id is not None:
+                try:
+                    scene_elem = _find_scene_element(scene_id)
+                    if scene_elem is not None:
+                        cvs = scene_to_channel_values(scene_elem)
+                        # Build CH commands and apply directly — calling
+                        # set_channel_values() here would deadlock because
+                        # _qlc_run uses run_coroutine_threadsafe on the same
+                        # loop this coroutine is running on.
+                        commands = [
+                            f"CH|{ch}|{max(0, min(255, val))}"
+                            for ch, val in cvs
+                            if int(ch) > 0
+                        ]
+                        if commands:
+                            _mock_dmx.apply_commands(commands)
+                except Exception as e:
+                    print(f"[mock-chase {function_id}] step {i} apply error: {e}")
+
+            # Honour timing (fade_in + hold)
+            total_sleep = (fade_in_ms + hold_ms) / 1000
+            if total_sleep > 0:
+                await asyncio.sleep(total_sleep)
+
+            idx_iter += 1
+            if run_order == "SingleShot" and idx_iter >= len(indices):
+                break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _mock_chase_tasks.pop(function_id, None)
 
 
 # ------------------------------- endpoints ----------------------------------
@@ -4319,12 +4575,13 @@ def create_chase():
     if not isinstance(raw_steps, list) or not raw_steps:
         return jsonify({"success": False, "error": "steps must be a non-empty array"}), 400
 
-    fade_in_ms  = max(0, int(data.get("fade_in_ms",  500)))
-    hold_ms     = max(0, int(data.get("hold_ms",     2000)))
-    fade_out_ms = max(0, int(data.get("fade_out_ms", 500)))
-    direction   = _normalize_direction(data.get("direction"))
-    run_order   = _normalize_run_order(data.get("run_order"))
-    path        = (data.get("path") or "AI Generated").strip()
+    fade_in_ms   = max(0, int(data.get("fade_in_ms",  500)))
+    hold_ms      = max(0, int(data.get("hold_ms",     2000)))
+    fade_out_ms  = max(0, int(data.get("fade_out_ms", 500)))
+    direction    = _normalize_direction(data.get("direction"))
+    run_order    = _normalize_run_order(data.get("run_order"))
+    tempo_source = _normalize_tempo_source(data.get("tempo_source"))
+    path         = (data.get("path") or "AI Generated").strip()
 
     # Reject duplicate names — chase Name is the agent-friendly key
     if _find_function_element(name, function_type="Chaser") is not None:
@@ -4370,7 +4627,7 @@ def create_chase():
         name=name, steps=normalized_steps,
         fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
         direction=direction, run_order=run_order, path=path,
-        chase_id=chase_id,
+        chase_id=chase_id, tempo_source=tempo_source,
     )
     if not _inject_chase_into_workspace(chase_xml):
         return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
@@ -4384,6 +4641,7 @@ def create_chase():
             "steps": len(normalized_steps),
             "direction": direction,
             "run_order": run_order,
+            "tempo_source": tempo_source,
             "speed": {
                 "fade_in_ms":  fade_in_ms,
                 "hold_ms":     hold_ms,
@@ -4426,13 +4684,31 @@ def delete_chase(chase_id):
 
 @app.route("/api/chases/<chase_id>/start", methods=["POST"])
 def start_chase(chase_id):
-    """Start chase playback via the QLC+ WebSocket API."""
+    """Start chase playback.
+
+    For tap-source chases the server drives the step loop so that BPM changes
+    take effect immediately without touching QLC+'s in-memory timing.
+    Fixed/audio chases delegate to QLC+ via setFunctionStatus as before.
+    """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
         return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
         return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+
+    if chase.get("TempoSource", "fixed") == "tap":
+        scene_ids = _chase_step_scene_ids(chase)
+        speed = next(iter(_find_children(chase, "Speed")), None)
+        initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
+        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        return jsonify({
+            "success": True,
+            "chase": {"id": int(fid), "name": chase.get("Name")},
+            "response": "tap runner started",
+            "error": "",
+        })
+
     ok, raw = set_function_status(int(fid), running=True)
     return jsonify({
         "success": ok,
@@ -4444,20 +4720,91 @@ def start_chase(chase_id):
 
 @app.route("/api/chases/<chase_id>/stop", methods=["POST"])
 def stop_chase(chase_id):
-    """Stop chase playback via the QLC+ WebSocket API."""
+    """Stop chase playback.
+
+    Cancels the server-side tap runner if active, and also sends a
+    setFunctionStatus stop to QLC+ (harmless if the chaser wasn't running there).
+    """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
         return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
         return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+    tap_was_running = _stop_tap_runner(fid)
     ok, raw = set_function_status(int(fid), running=False)
     return jsonify({
-        "success": ok,
+        "success": ok or tap_was_running,
         "chase": {"id": int(fid), "name": chase.get("Name")},
-        "response": raw,
-        "error": "" if ok else raw,
+        "response": "tap runner stopped" if tap_was_running else raw,
+        "error": "" if (ok or tap_was_running) else raw,
     })
+
+
+@app.route("/api/chases/<chase_id>/tempo", methods=["POST"])
+def set_chase_tempo(chase_id):
+    """Rewrite step Hold times for a chase from a tap-tempo BPM value.
+
+    Body: { "bpm": 120 }
+    Validates 40–240 BPM. Updates Speed Duration + every Step Hold in the workspace XML.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        bpm_raw = data.get("bpm")
+        if bpm_raw is None:
+            return jsonify({"success": False, "error": "bpm is required"}), 400
+        try:
+            bpm = float(bpm_raw)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "bpm must be a number"}), 400
+        if bpm < 40 or bpm > 240:
+            return jsonify({
+                "success": False,
+                "error": f"BPM must be between 40 and 240, got {bpm}",
+            }), 400
+
+        step_ms = _bpm_to_step_ms(bpm)
+
+        tree = ET.parse(WORKSPACE_PATH)
+        root = tree.getroot()
+        engine = _engine_element(root)
+        if engine is None:
+            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+
+        needle = str(chase_id).strip().lower()
+        target = None
+        for func in _engine_functions(engine):
+            if func.get("Type") != "Chaser":
+                continue
+            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                target = func
+                break
+        if target is None:
+            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+
+        speed = next(iter(_find_children(target, "Speed")), None)
+        if speed is not None:
+            speed.set("Duration", str(step_ms))
+
+        for step in _find_children(target, "Step"):
+            step.set("Hold", str(step_ms))
+
+        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+
+        # Update the live server-side tap runner if this chase is currently running.
+        # The async loop reads state['step_ms'] on every iteration so the next step
+        # fires at the new BPM without any restart or QLC+ reload.
+        live_updated = _update_tap_runner_bpm(target.get("ID", ""), step_ms)
+
+        return jsonify({
+            "success": True,
+            "bpm": bpm,
+            "step_ms": step_ms,
+            "live_updated": live_updated,
+            "chase": {"id": target.get("ID"), "name": target.get("Name")},
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # =============================================================================
@@ -5488,6 +5835,11 @@ def _build_chat_tools() -> list[dict]:
                     "fade_out_ms": {"type": "integer"},
                     "direction": {"type": "string", "enum": ["Forward", "Backward"]},
                     "run_order": {"type": "string", "enum": ["Loop", "SingleShot", "PingPong", "Random"]},
+                    "tempo_source": {
+                        "type": "string",
+                        "enum": ["fixed", "tap", "audio"],
+                        "description": "fixed (default), tap (follows live tap-tempo BPM), audio (reserved)",
+                    },
                 },
                 "required": ["name", "steps"],
             },
@@ -5990,10 +6342,11 @@ if __name__ == "__main__":
     # Start the dedicated QLC+ WebSocket loop in a background thread.
     # All QLC+ comms go through this one persistent connection.
     _start_qlc_loop()
-    try:
-        _qlc_run(_ensure_qlc_ws(), timeout=5)
-    except Exception as e:
-        log.warning("initial_qlc_connect_failed", error=str(e))
+    if not MOCK_DMX:
+        try:
+            _qlc_run(_ensure_qlc_ws(), timeout=5)
+        except Exception as e:
+            log.warning("initial_qlc_connect_failed", error=str(e))
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #
