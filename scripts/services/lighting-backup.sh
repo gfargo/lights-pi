@@ -28,7 +28,9 @@ create_snapshot() {
     [[ -e "${HOME}/${d}" ]] && dirs+=("${d}")
   done
   # Control-server config (scenes / groups / cue lists live here)
-  for d in "control-server" ".env"; do
+  # NOTE: .env is intentionally excluded — it contains production secrets
+  # (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) that must not leave the Pi.
+  for d in "control-server"; do
     [[ -e "${HOME}/${d}" ]] && dirs+=("${d}")
   done
 
