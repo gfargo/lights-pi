@@ -114,6 +114,7 @@ Network / WiFi:
   dmx-monitor-status            show monitor service status
   dmx-monitor-logs [n]          show monitor log history (default 100 lines)
   dmx-monitor-uninstall         remove the monitor
+  rf-scan                       survey the 2.4 GHz band from the Pi (wireless DMX shares it)
   scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
 System:
@@ -353,6 +354,31 @@ function command_wifi_diagnose() {
 function command_wifi_reconnect() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_reconnect
+}
+
+function command_rf_scan() {
+  # The D-Fi wireless DMX link lives in the same 2.4 GHz band as WiFi.
+  # Survey what the Pi's radio can hear so strong APs can be kept away
+  # from the D-Fi's DIP-switch channel. (Receiver-side RSSI isn't
+  # observable — D-Fi is broadcast-only — but the interferers are.)
+  echo "=== 2.4 GHz RF environment seen from the Pi ==="
+  echo "    (wireless DMX shares this band; anything loud near the D-Fi's"
+  echo "     channel is a flicker suspect. WiFi ch N ≈ 2407+5N MHz)"
+  echo ""
+  run "sudo iw dev wlan0 scan 2>/dev/null" | awk '
+    function flush() {
+      if (freq != "")
+        printf("  %7s dBm  %6.0f MHz  wifi-ch %-3s  %s\n",
+               sig, freq, ch, ssid == "" ? "(hidden)" : ssid)
+    }
+    /^BSS/     { flush(); freq=""; sig="?"; ssid=""; ch="?" }
+    /freq:/    { freq=$2; if (freq >= 2412 && freq <= 2484) ch = int((freq - 2407) / 5) }
+    /signal:/  { sig=$2 }
+    /^\tSSID:/ { sub(/^\tSSID: */, ""); ssid=$0 }
+    END        { flush() }' | sort -rn
+  echo ""
+  echo "Signal guide: -30 dBm ≈ same room (loud), -70 dBm ≈ faint."
+  echo "If flicker persists, set the D-Fi DIP channel away from the strongest APs above."
 }
 
 function command_wifi_restart() {
@@ -1338,6 +1364,7 @@ case "$1" in
   wifi-reconnect) command_wifi_reconnect ;;
   wifi-status) command_wifi_status ;;
   wifi-diagnose) command_wifi_diagnose ;;
+  rf-scan) command_rf_scan ;;
   dmx-monitor-install) command_dmx_monitor_install ;;
   dmx-monitor-status) command_dmx_monitor_status ;;
   dmx-monitor-logs) shift; command_dmx_monitor_logs "$@" ;;
