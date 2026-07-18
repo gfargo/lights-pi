@@ -41,7 +41,10 @@ SSH_KEY="${SSH_KEY:-}"
 BACKUP_STORAGE="${BACKUP_STORAGE:-${SCRIPT_DIR}/backups}"
 SSL_CERT="${SSL_CERT:-${SCRIPT_DIR}/certs/qlc.crt}"
 SSL_KEY="${SSL_KEY:-${SCRIPT_DIR}/certs/qlc.key}"
-SSH_OPTIONS=()
+# ConnectTimeout keeps every command from hanging forever when mDNS
+# (lights.local) is flaky — fail fast so the caller can retry via
+# PI_HOST=<tailscale hostname> instead.
+SSH_OPTIONS=("-o" "ConnectTimeout=10")
 if [[ -n "$SSH_KEY" ]]; then
   SSH_OPTIONS+=("-i" "$SSH_KEY" "-o" "IdentitiesOnly=yes")
 fi
