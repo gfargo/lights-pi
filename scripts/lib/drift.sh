@@ -70,7 +70,7 @@ function deploy_drift() {
   # Systemd units on the Pi vs. units any repo script knows how to install.
   echo ""
   echo "--- Systemd units on Pi vs repo-managed units ---"
-  local known_units remote_units orphan_count=0 unit
+  local known_units remote_units orphan_count=0 unit exec_line
   known_units=$(grep -rhoE '[A-Za-z0-9@_.-]+\.(service|timer)' \
     "${SCRIPT_DIR}/scripts/services" "${SCRIPT_DIR}/scripts/provisioning" \
     "${SCRIPT_DIR}/lightsctl.sh" "${SCRIPT_DIR}/scripts/lib" 2>/dev/null | sort -u)
@@ -78,6 +78,9 @@ function deploy_drift() {
   for unit in ${remote_units}; do
     if ! grep -qxF "${unit}" <<<"${known_units}"; then
       echo "  pi-only unit:   ${unit} (no repo script installs this — pull it back)"
+      exec_line=$(run "grep -h '^ExecStart=' /etc/systemd/system/${unit} 2>/dev/null" | head -1 || true)
+      [[ -n "${exec_line}" ]] && echo "                  ${exec_line}"
+      echo "                  → ./lightsctl.sh pull-file /etc/systemd/system/${unit}"
       orphan_count=$((orphan_count + 1))
     fi
   done
