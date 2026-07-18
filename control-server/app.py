@@ -48,7 +48,7 @@ _ALLOWED_ORIGINS = [
     "http://127.0.0.1:5000",
 ]
 # Allow Tailscale hostname (default to known tailnet, override via env)
-_ts_host = os.getenv("TAILSCALE_HOST", "lights.tailb82ead.ts.net")
+_ts_host = os.getenv("TAILSCALE_HOST", "riversway-lights.tailb82ead.ts.net")
 if _ts_host:
     _ALLOWED_ORIGINS.append(f"http://{_ts_host}")
     _ALLOWED_ORIGINS.append(f"http://{_ts_host}:5000")
