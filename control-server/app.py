@@ -3689,6 +3689,7 @@ LOG_ALLOWED_SERVICES = {
     "lighting-control": "lighting-control.service",
     "lighting-mcp": "lighting-mcp.service",
     "nginx": "nginx.service",
+    "dmx-monitor": "dmx-monitor.service",
 }
 
 

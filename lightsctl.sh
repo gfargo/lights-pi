@@ -107,6 +107,10 @@ Network / WiFi:
   wifi-watchdog-status          show watchdog timer status
   wifi-watchdog-logs            show watchdog log history
   wifi-watchdog-uninstall       remove the watchdog
+  dmx-monitor-install           install long-running DMX output + system health monitor
+  dmx-monitor-status            show monitor service status
+  dmx-monitor-logs [n]          show monitor log history (default 100 lines)
+  dmx-monitor-uninstall         remove the monitor
   scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
 System:
@@ -396,6 +400,26 @@ function command_wifi_watchdog_uninstall() {
 function command_wifi_edit() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_edit_config "$@"
+}
+
+function command_dmx_monitor_install() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_install
+}
+
+function command_dmx_monitor_status() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_status
+}
+
+function command_dmx_monitor_logs() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_logs "$@"
+}
+
+function command_dmx_monitor_uninstall() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_uninstall
 }
 
 # Network commands (using lib/network.sh)
@@ -1311,6 +1335,10 @@ case "$1" in
   wifi-reconnect) command_wifi_reconnect ;;
   wifi-status) command_wifi_status ;;
   wifi-diagnose) command_wifi_diagnose ;;
+  dmx-monitor-install) command_dmx_monitor_install ;;
+  dmx-monitor-status) command_dmx_monitor_status ;;
+  dmx-monitor-logs) shift; command_dmx_monitor_logs "$@" ;;
+  dmx-monitor-uninstall) command_dmx_monitor_uninstall ;;
   scan) shift; command_scan "$@" ;;
   update) command_update ;;
   update-qlc) command_update_qlc ;;
