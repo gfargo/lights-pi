@@ -118,6 +118,8 @@ System:
   backup-timer-logs             show recent backup logs
   backup-timer-uninstall        remove the automated backup timer
   os-version                    show Raspberry Pi OS and kernel version
+  drift                         compare repo files + systemd units against what's deployed on the Pi
+  pull-file <remote> [dest]     copy a file from the Pi back into the repo for review/commit
   hdmi-disable                  disable HDMI to save power
   reboot                        reboot the Pi
   poweroff                      shut down the Pi
@@ -247,6 +249,16 @@ function command_perf() {
 function command_benchmark() {
   source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_benchmark
+}
+
+function command_drift() {
+  source "${SCRIPT_DIR}/scripts/lib/drift.sh"
+  deploy_drift
+}
+
+function command_pull_file() {
+  source "${SCRIPT_DIR}/scripts/lib/drift.sh"
+  deploy_pull_file "$@"
 }
 
 function command_check() {
@@ -1319,6 +1331,8 @@ case "$1" in
   static-ip) shift; command_static_ip "$@" ;;
   hdmi-disable) command_hdmi_disable ;;
   os-version) command_os_version ;;
+  drift) command_drift ;;
+  pull-file) shift; command_pull_file "$@" ;;
   setup) command_setup ;;
   harden) command_harden ;;
   setup-full) command_setup_full ;;
