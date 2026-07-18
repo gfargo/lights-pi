@@ -41,7 +41,9 @@ WantedBy=multi-user.target
 EOF
 
   run_sudo systemctl daemon-reload
-  run_sudo systemctl enable --now dmx-monitor.service
+  run_sudo systemctl enable dmx-monitor.service
+  # restart (not enable --now): picks up a new script when already running
+  run_sudo systemctl restart dmx-monitor.service
 
   echo ""
   echo "✓ DMX monitor installed and running"
