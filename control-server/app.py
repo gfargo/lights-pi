@@ -705,13 +705,66 @@ def _load_last_look() -> dict[int, int]:
         return {}
 
 
+def _parse_systemd_show_property(output: str, key: str) -> str:
+    """Extract `key=value` from `systemctl show -p <key>` output. Pure."""
+    prefix = f"{key}="
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _qlc_service_started_at() -> str:
+    """Monotonic start stamp of qlcplus-web — changes iff the service
+    (re)started. Empty string when unavailable."""
+    result = execute_command(
+        "systemctl show -p ActiveEnterTimestampMonotonic qlcplus-web.service"
+    )
+    return _parse_systemd_show_property(
+        result.get("output", ""), "ActiveEnterTimestampMonotonic"
+    )
+
+
+def _restore_after_qlc_restart():
+    """QLC+ just (re)started — it transmits all-zeros until something sets a
+    look, so an unattended crash-restart blacks the venue out exactly like a
+    reboot does. Re-apply the saved look once output is confirmed all-zero."""
+    saved = _load_last_look()
+    if not saved:
+        return
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        current = get_current_channel_values()
+        if current:
+            # uptime_s=0: the fresh-start guard is the restart we just saw
+            if _should_restore_look(0, current, saved):
+                ok = set_channel_values(saved.items())
+                lit = sum(1 for v in saved.values() if v)
+                print(f"qlc-restart-restore: re-applied last look ({lit} lit channels) ok={ok}")
+            else:
+                print("qlc-restart-restore: output already non-zero, leaving it alone")
+            return
+        time.sleep(5)
+    print("qlc-restart-restore: QLC+ never returned channel data, giving up")
+
+
 def _last_look_saver_loop():
-    """Every LAST_LOOK_SAVE_INTERVAL_S, snapshot the current look to disk
-    if it's lit and changed."""
+    """Every LAST_LOOK_SAVE_INTERVAL_S: snapshot the current look to disk if
+    it's lit and changed, and watch for QLC+ service restarts (which reset
+    output to zeros) to trigger a restore."""
     last_written = None
+    qlc_started_at = _qlc_service_started_at()
     while True:
         time.sleep(LAST_LOOK_SAVE_INTERVAL_S)
         try:
+            stamp = _qlc_service_started_at()
+            if stamp and qlc_started_at and stamp != qlc_started_at:
+                print("last-look saver: qlcplus-web restart detected — checking for blackout")
+                _restore_after_qlc_restart()
+            if stamp:
+                qlc_started_at = stamp
+
             values = get_current_channel_values()
             if not values or not any(values.values()):
                 continue  # never overwrite the saved look with a blackout

@@ -74,6 +74,12 @@ def main():
                     log(f"POLL_EMPTY_RECOVERED after {empty_streak} empty read(s)")
                 empty_streak = 0
                 if last_values is not None:
+                    was_lit = any(last_values.values())
+                    is_lit = any(values.values())
+                    if was_lit and not is_lit and values:
+                        log("BLACKOUT all channels dropped to 0")
+                    elif not was_lit and is_lit and last_values:
+                        log("LIT_AGAIN output no longer all-zero")
                     diff = format_changes(last_values, values)
                     if diff:
                         log(f"DMX_CHANGE {diff}")

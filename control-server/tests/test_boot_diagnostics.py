@@ -9,8 +9,20 @@ from app import (
     _decode_throttled,
     _filter_dmx_usb_lines,
     _parse_last_look,
+    _parse_systemd_show_property,
     _should_restore_look,
 )
+
+
+class TestParseSystemdShowProperty:
+    def test_extracts_value(self):
+        out = "ActiveEnterTimestampMonotonic=123456789\n"
+        assert _parse_systemd_show_property(out, "ActiveEnterTimestampMonotonic") == "123456789"
+
+    def test_missing_key(self):
+        assert _parse_systemd_show_property("Other=x\n", "NRestarts") == ""
+        assert _parse_systemd_show_property("", "NRestarts") == ""
+        assert _parse_systemd_show_property(None, "NRestarts") == ""
 
 
 class TestDecodeThrottled:
