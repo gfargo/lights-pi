@@ -40,9 +40,19 @@ def format_changes(old, new):
     return ", ".join(f"ch{ch}: {o}->{n}" for ch, (o, n) in ordered)
 
 
+def format_power(power):
+    """Compact power-flag summary from /api/diagnostics/system's `power`."""
+    if not power:
+        return "power=?"
+    if power.get("ok"):
+        return f"power={power.get('raw', '0x0')}"
+    return f"power={power.get('raw')}({','.join(power.get('issues', []))})"
+
+
 def main():
     last_values = None
     poll_failures = 0
+    empty_streak = 0
     iteration = 0
 
     log("dmx-monitor started")
@@ -52,11 +62,22 @@ def main():
 
         try:
             values = fetch("/api/channel_values").get("values", {})
-            if last_values is not None:
-                diff = format_changes(last_values, values)
-                if diff:
-                    log(f"DMX_CHANGE {diff}")
-            last_values = values
+            if not values and last_values:
+                # A transient empty read (QLC+ WS timeout inside the
+                # control-server) is not a real all-channels change — keep
+                # the previous snapshot so the next good read diffs against
+                # actual prior state instead of logging ch1: None->…
+                empty_streak += 1
+                log(f"POLL_EMPTY channel_values returned no data consecutive={empty_streak}")
+            else:
+                if empty_streak:
+                    log(f"POLL_EMPTY_RECOVERED after {empty_streak} empty read(s)")
+                empty_streak = 0
+                if last_values is not None:
+                    diff = format_changes(last_values, values)
+                    if diff:
+                        log(f"DMX_CHANGE {diff}")
+                last_values = values
             if poll_failures:
                 log(f"POLL_RECOVERED after {poll_failures} failed attempt(s)")
             poll_failures = 0
@@ -67,14 +88,15 @@ def main():
         if iteration % SYSTEM_SNAPSHOT_EVERY == 0:
             try:
                 sysinfo = fetch("/api/diagnostics/system")
-                usb = sysinfo.get("usb", {})
+                usb = sysinfo.get("usb") or {}
                 log(
                     "SYSTEM "
                     f"cpu_temp_c={sysinfo.get('cpu_temp_c')} "
                     f"load1m={sysinfo.get('load_avg', {}).get('1m')} "
                     f"mem_used_pct={sysinfo.get('memory', {}).get('used_pct')} "
                     f"usb_total={usb.get('all_count')} "
-                    f"usb_dmx={len(usb.get('dmx_related', []))} "
+                    f"usb_dmx={len(usb.get('dmx_related') or [])} "
+                    f"{format_power(sysinfo.get('power'))} "
                     f"services={sysinfo.get('services')}"
                 )
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
