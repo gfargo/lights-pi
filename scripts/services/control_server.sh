@@ -66,6 +66,7 @@ User=${PI_USER}
 WorkingDirectory=/home/${PI_USER}/control-server
 Environment="PATH=/home/${PI_USER}/control-server-venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="CONTROL_PORT=${CONTROL_PORT}"
+Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=/home/${PI_USER}/control-server/.env
 ExecStart=/home/${PI_USER}/control-server-venv/bin/python /home/${PI_USER}/control-server/app.py
 Restart=always
