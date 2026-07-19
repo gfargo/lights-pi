@@ -24,3 +24,5 @@ landing/logo.*
 .codex
 
 .claude
+
+.venv
