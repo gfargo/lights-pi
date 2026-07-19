@@ -4683,6 +4683,11 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
 
 _mock_chase_tasks: dict[int, asyncio.Task] = {}
 
+# Floor on each mock chase step's sleep so a zero-fade/zero-hold step (or a
+# chase with absent/non-numeric timing that falls back to 0) still yields to
+# the shared _qlc_loop every iteration instead of busy-spinning it forever.
+_MOCK_CHASE_MIN_STEP_S = 0.02
+
 
 def _mock_chase_start(function_id: int) -> None:
     """Start an in-process chase stepper for the given function ID."""
@@ -4759,10 +4764,11 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
                 except Exception as e:
                     print(f"[mock-chase {function_id}] step {i} apply error: {e}")
 
-            # Honour timing (fade_in + hold)
-            total_sleep = (fade_in_ms + hold_ms) / 1000
-            if total_sleep > 0:
-                await asyncio.sleep(total_sleep)
+            # Honour timing (fade_in + hold). Always yield at least once per
+            # iteration — a zero-timing step must not starve the shared
+            # _qlc_loop (see OSS-885 / lights-pi#65).
+            total_sleep = max((fade_in_ms + hold_ms) / 1000, _MOCK_CHASE_MIN_STEP_S)
+            await asyncio.sleep(total_sleep)
 
             idx_iter += 1
             if run_order == "SingleShot" and idx_iter >= len(indices):
