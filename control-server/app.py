@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -109,11 +110,33 @@ if MOCK_DMX:
     print("⚠  MOCK_DMX mode enabled — no QLC+ WebSocket will be opened")
 
 # Default to ~/.qlcplus/default.qxw, but can be overridden via env var.
-# In mock mode, fall back to the bundled sample workspace when no real one exists.
+# In mock mode, fall back to a scratch copy of the bundled sample workspace when no
+# real one exists — writes must never land on the git-tracked fixture (see #66).
 _default_ws = Path.home() / ".qlcplus" / "default.qxw"
 if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
-    _sample_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
-    WORKSPACE_PATH = _sample_ws
+    _fixture_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
+    # Namespaced by uid so concurrent MOCK_DMX sessions from different users on a
+    # shared host don't clobber each other's scratch workspace (see #66 review).
+    _scratch_dir = Path(tempfile.gettempdir()) / f"lights-pi-mock-{os.getuid()}"
+    _scratch_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(_scratch_dir, mode=0o700)
+    except FileExistsError as exc:
+        # Refuse to reuse a pre-existing path unless it's a plain directory we
+        # own — on a shared host an attacker who knows our uid could pre-plant
+        # a symlink at this predictable location to redirect workspace writes
+        # (see #66 review: mkdir(exist_ok=True) was symlink-attack prone).
+        if _scratch_dir.is_symlink() or not _scratch_dir.is_dir() or _scratch_dir.stat().st_uid != os.getuid():
+            raise RuntimeError(
+                f"refusing to use MOCK_DMX scratch dir {_scratch_dir}: it exists but "
+                "is not a plain directory owned by the current user"
+            ) from exc
+    _scratch_ws = _scratch_dir / "sample.qxw"
+    _persist = os.getenv("MOCK_DMX_PERSIST", "").strip().lower() in ("1", "true", "yes")
+    if not (_persist and _scratch_ws.exists()):
+        shutil.copyfile(_fixture_ws, _scratch_ws)
+    WORKSPACE_PATH = _scratch_ws
+    print(f"⚠  MOCK_DMX fallback workspace → {WORKSPACE_PATH} (copied from bundled fixture)")
 else:
     WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(_default_ws)))
 
