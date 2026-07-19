@@ -4686,6 +4686,12 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
 
 _mock_chase_tasks: dict[int, "concurrent.futures.Future"] = {}
 
+# Bumped on every start/stop for a function_id. `_mock_chase_run` checks this
+# before every bus write, so a racing/stale task self-terminates even if
+# `Future.cancel()` hasn't been delivered yet — see the note in
+# `_mock_chase_start` about why cancellation alone isn't sufficient.
+_mock_chase_generation: dict[int, int] = {}
+
 
 def _chase_index_sequence(n: int, run_order: str):
     """Yield step indices in playback order for the given run_order.
@@ -4734,8 +4740,11 @@ def _mock_chase_start(function_id: int) -> bool:
     if _qlc_loop is None:
         _start_qlc_loop()
 
+    gen = _mock_chase_generation.get(function_id, 0) + 1
+    _mock_chase_generation[function_id] = gen
+
     fut = asyncio.run_coroutine_threadsafe(
-        _mock_chase_run(function_id, chase_info),
+        _mock_chase_run(function_id, chase_info, gen),
         _qlc_loop,
     )
     _mock_chase_tasks[function_id] = fut
@@ -4754,19 +4763,36 @@ def _mock_chase_start(function_id: int) -> bool:
 
 def _mock_chase_stop(function_id: int) -> None:
     """Cancel the in-process chase stepper for the given function ID."""
+    # Bump the generation unconditionally (even with no task registered) so
+    # a task that hasn't been scheduled onto the loop yet — and therefore
+    # has nothing to cancel() — still notices it's stale on its first turn.
+    _mock_chase_generation[function_id] = _mock_chase_generation.get(function_id, 0) + 1
     task = _mock_chase_tasks.pop(function_id, None)
     if task is not None:
         task.cancel()
 
 
-async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
-    """Async chase stepper: apply each step's scene to the mock bus on schedule."""
+async def _mock_chase_run(function_id: int, chase_info: dict, gen: int) -> None:
+    """Async chase stepper: apply each step's scene to the mock bus on schedule.
+
+    `asyncio.Task.cancel()` delivered via `run_coroutine_threadsafe` is only
+    honoured at the next `await` point — but a brand-new task always runs its
+    body synchronously up to its *first* await regardless of when cancel()
+    was requested (cancellation propagation itself is one loop-tick behind
+    task creation). That lets a stale task from a start->restart->stop burst
+    slip in a bus write before it notices it's cancelled. Checking the
+    generation counter both before and after building the write (scene
+    lookup re-parses the workspace XML from disk, which is slow enough for a
+    stop() on another thread to land in between) closes that gap.
+    """
     steps = chase_info["steps"]
     default_speed = chase_info.get("speed", {})
     run_order = chase_info.get("run_order", "Loop")
 
     try:
         for i in _chase_index_sequence(len(steps), run_order):
+            if _mock_chase_generation.get(function_id) != gen:
+                return
             step = steps[i]
             scene_id = step.get("scene_id")
             hold_ms = step.get("hold_ms", -1)
@@ -4791,7 +4817,11 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
                             for ch, val in cvs
                             if int(ch) > 0
                         ]
-                        if commands:
+                        # Re-check freshness: the scene lookup above re-parses
+                        # the workspace XML from disk, which is slow enough
+                        # for a stop() on another thread to have landed while
+                        # we were building `commands`.
+                        if commands and _mock_chase_generation.get(function_id) == gen:
                             _mock_dmx.apply_commands(commands)
                 except Exception as e:
                     print(f"[mock-chase {function_id}] step {i} apply error: {e}")
