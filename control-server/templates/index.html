@@ -3117,6 +3117,11 @@
             el.classList.add('bpm-bump');
         }
 
+        // chase name -> { inFlight: boolean, pendingBpm: number|null }
+        // Coalesces tempo POSTs so at most one is ever in flight per chase —
+        // tapping fires faster than the server can rewrite the workspace XML.
+        const tapTempoState = new Map();
+
         async function applyTapBpmToRunningChases(bpm) {
             try {
                 const r = await fetch('/api/chases');
@@ -3124,13 +3129,34 @@
                 if (!data.chases) return;
                 const tapChases = data.chases.filter(c => c.tempo_source === 'tap');
                 for (const c of tapChases) {
-                    fetch(`/api/chases/${encodeURIComponent(c.name)}/tempo`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ bpm }),
-                    }).catch(() => {});
+                    sendTapTempo(c.name, bpm);
                 }
             } catch (e) { /* non-critical */ }
+        }
+
+        function sendTapTempo(chaseName, bpm) {
+            let state = tapTempoState.get(chaseName);
+            if (!state) {
+                state = { inFlight: false, pendingBpm: null };
+                tapTempoState.set(chaseName, state);
+            }
+            if (state.inFlight) {
+                state.pendingBpm = bpm;
+                return;
+            }
+            state.inFlight = true;
+            fetch(`/api/chases/${encodeURIComponent(chaseName)}/tempo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bpm }),
+            }).catch(() => {}).finally(() => {
+                state.inFlight = false;
+                if (state.pendingBpm !== null) {
+                    const nextBpm = state.pendingBpm;
+                    state.pendingBpm = null;
+                    sendTapTempo(chaseName, nextBpm);
+                }
+            });
         }
 
         async function submitChase() {

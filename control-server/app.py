@@ -7,6 +7,7 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import logging
 import math
@@ -144,6 +145,33 @@ GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
 CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
+
+# Serializes every workspace read-modify-write cycle (scene/chase saves, tempo
+# updates, id generation). RLock because route handlers hold it across id-gen
+# + inject, and the inject helpers re-acquire it themselves.
+_WORKSPACE_LOCK = threading.RLock()
+
+
+def _atomic_write_tree(tree: ET.ElementTree) -> None:
+    """Write an ElementTree to WORKSPACE_PATH atomically (tmp file + os.replace).
+
+    Callers must hold _WORKSPACE_LOCK. Writing to a temp file in the same
+    directory and replacing it keeps concurrent readers from ever observing
+    a torn/truncated .qxw.
+    """
+    d = WORKSPACE_PATH.parent
+    fd, tmp = tempfile.mkstemp(prefix=".qlc-ws-", suffix=".qxw", dir=str(d))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            tree.write(fh, encoding="UTF-8", xml_declaration=True)
+        with contextlib.suppress(OSError):
+            shutil.copymode(WORKSPACE_PATH, tmp)  # mkstemp defaults to 0600; keep the original mode
+        os.replace(tmp, str(WORKSPACE_PATH))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
 
 # Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
 _scene_swatch_cache: dict = {}
@@ -2736,8 +2764,9 @@ def save_scene():
         if not WORKSPACE_PATH.exists():
             return jsonify({"success": False, "error": "Workspace file not found"}), 500
 
-        next_id = get_next_scene_id()
-        success = _inject_scene_into_workspace(scene_xml, next_id)
+        with _WORKSPACE_LOCK:
+            next_id = get_next_scene_id()
+            success = _inject_scene_into_workspace(scene_xml, next_id)
 
         if success:
             return jsonify({
@@ -2769,8 +2798,9 @@ def snapshot_scene():
         if not scene_xml:
             return jsonify({"success": False, "error": "Could not read current channel values"}), 500
 
-        next_id = get_next_scene_id()
-        success = _inject_scene_into_workspace(scene_xml, next_id)
+        with _WORKSPACE_LOCK:
+            next_id = get_next_scene_id()
+            success = _inject_scene_into_workspace(scene_xml, next_id)
 
         if success:
             return jsonify({
@@ -2859,25 +2889,26 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
     Uses Python XML manipulation directly (no external scripts needed).
     """
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            print("Error: No Engine element in workspace")
-            return False
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                print("Error: No Engine element in workspace")
+                return False
 
-        # Parse the scene XML
-        scene_root = ET.fromstring(scene_xml.strip().split("<!DOCTYPE Function>")[-1].strip()
-                                   if "<!DOCTYPE" in scene_xml else scene_xml.strip())
+            # Parse the scene XML
+            scene_root = ET.fromstring(scene_xml.strip().split("<!DOCTYPE Function>")[-1].strip()
+                                       if "<!DOCTYPE" in scene_xml else scene_xml.strip())
 
-        # Set the ID attribute
-        scene_root.set("ID", str(scene_id))
+            # Set the ID attribute
+            scene_root.set("ID", str(scene_id))
 
-        # Append to Engine
-        engine.append(scene_root)
+            # Append to Engine
+            engine.append(scene_root)
 
-        # Write back
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            # Write back
+            _atomic_write_tree(tree)
         return True
     except Exception as e:
         print(f"Error injecting scene: {e}")
@@ -3472,26 +3503,27 @@ def describe_scene(scene_id):
 def delete_scene(scene_id):
     """Delete a saved scene from the workspace permanently."""
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(scene_id).strip().lower()
-        ns = "http://www.qlcplus.org/Workspace"
-        target = None
-        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
-            if func.get("Type") != "Scene":
-                continue
-            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+            needle = str(scene_id).strip().lower()
+            ns = "http://www.qlcplus.org/Workspace"
+            target = None
+            for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+                if func.get("Type") != "Scene":
+                    continue
+                if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
 
-        engine.remove(target)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            engine.remove(target)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "deleted": {"id": target.get("ID"), "name": target.get("Name")},
@@ -3510,29 +3542,30 @@ def rename_scene(scene_id):
         return jsonify({"success": False, "error": "Provide name and/or path"}), 400
 
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(scene_id).strip().lower()
-        ns = "http://www.qlcplus.org/Workspace"
-        target = None
-        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
-            if func.get("Type") != "Scene":
-                continue
-            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+            needle = str(scene_id).strip().lower()
+            ns = "http://www.qlcplus.org/Workspace"
+            target = None
+            for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+                if func.get("Type") != "Scene":
+                    continue
+                if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
 
-        if new_name:
-            target.set("Name", new_name)
-        if new_path is not None:
-            target.set("Path", new_path)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            if new_name:
+                target.set("Name", new_name)
+            if new_path is not None:
+                target.set("Path", new_path)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "scene": {
@@ -3555,30 +3588,31 @@ def duplicate_scene(scene_id):
 
     try:
         import copy as _copy
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(scene_id).strip().lower()
-        ns = "http://www.qlcplus.org/Workspace"
-        source = None
-        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
-            if func.get("Type") != "Scene":
-                continue
-            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
-                source = func
-                break
-        if source is None:
-            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+            needle = str(scene_id).strip().lower()
+            ns = "http://www.qlcplus.org/Workspace"
+            source = None
+            for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+                if func.get("Type") != "Scene":
+                    continue
+                if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                    source = func
+                    break
+            if source is None:
+                return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
 
-        clone = _copy.deepcopy(source)
-        clone.set("Name", new_name)
-        new_id = get_next_scene_id()
-        clone.set("ID", str(new_id))
-        engine.append(clone)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            clone = _copy.deepcopy(source)
+            clone.set("Name", new_name)
+            new_id = get_next_scene_id()
+            clone.set("ID", str(new_id))
+            engine.append(clone)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "scene": {
@@ -4823,14 +4857,15 @@ def _build_chase_xml(
 def _inject_chase_into_workspace(chase_xml: str) -> bool:
     """Inject the chase XML into the workspace's Engine element."""
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return False
-        chase_root = ET.fromstring(chase_xml.strip())
-        engine.append(chase_root)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return False
+            chase_root = ET.fromstring(chase_xml.strip())
+            engine.append(chase_root)
+            _atomic_write_tree(tree)
         return True
     except Exception as e:
         print(f"_inject_chase_into_workspace error: {e}")
@@ -5024,10 +5059,6 @@ def create_chase():
     tempo_source = _normalize_tempo_source(data.get("tempo_source"))
     path         = (data.get("path") or "AI Generated").strip()
 
-    # Reject duplicate names — chase Name is the agent-friendly key
-    if _find_function_element(name, function_type="Chaser") is not None:
-        return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
-
     # Normalize and validate steps. Each step becomes
     # { scene_id, fade_in_ms?, hold_ms?, fade_out_ms? }.
     normalized_steps = []
@@ -5063,15 +5094,22 @@ def create_chase():
             "unknown": unknown_refs,
         }), 400
 
-    chase_id = get_next_function_id()
-    chase_xml = _build_chase_xml(
-        name=name, steps=normalized_steps,
-        fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
-        direction=direction, run_order=run_order, path=path,
-        chase_id=chase_id, tempo_source=tempo_source,
-    )
-    if not _inject_chase_into_workspace(chase_xml):
-        return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
+    with _WORKSPACE_LOCK:
+        # Reject duplicate names — chase Name is the agent-friendly key.
+        # Checked inside the lock so a racing create_chase can't slip a
+        # second chase in under the same name between check and write.
+        if _find_function_element(name, function_type="Chaser") is not None:
+            return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
+
+        chase_id = get_next_function_id()
+        chase_xml = _build_chase_xml(
+            name=name, steps=normalized_steps,
+            fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
+            direction=direction, run_order=run_order, path=path,
+            chase_id=chase_id, tempo_source=tempo_source,
+        )
+        if not _inject_chase_into_workspace(chase_xml):
+            return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
 
     return jsonify({
         "success": True,
@@ -5096,25 +5134,26 @@ def create_chase():
 def delete_chase(chase_id):
     """Remove a chase from the workspace."""
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(chase_id).strip().lower()
-        target = None
-        for func in _engine_functions(engine):
-            if func.get("Type") != "Chaser":
-                continue
-            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+            needle = str(chase_id).strip().lower()
+            target = None
+            for func in _engine_functions(engine):
+                if func.get("Type") != "Chaser":
+                    continue
+                if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
 
-        engine.remove(target)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            engine.remove(target)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "deleted": {"id": target.get("ID"), "name": target.get("Name")},
@@ -5206,31 +5245,32 @@ def set_chase_tempo(chase_id):
 
         step_ms = _bpm_to_step_ms(bpm)
 
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(chase_id).strip().lower()
-        target = None
-        for func in _engine_functions(engine):
-            if func.get("Type") != "Chaser":
-                continue
-            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+            needle = str(chase_id).strip().lower()
+            target = None
+            for func in _engine_functions(engine):
+                if func.get("Type") != "Chaser":
+                    continue
+                if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
 
-        speed = next(iter(_find_children(target, "Speed")), None)
-        if speed is not None:
-            speed.set("Duration", str(step_ms))
+            speed = next(iter(_find_children(target, "Speed")), None)
+            if speed is not None:
+                speed.set("Duration", str(step_ms))
 
-        for step in _find_children(target, "Step"):
-            step.set("Hold", str(step_ms))
+            for step in _find_children(target, "Step"):
+                step.set("Hold", str(step_ms))
 
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            _atomic_write_tree(tree)
 
         # Update the live server-side tap runner if this chase is currently running.
         # The async loop reads state['step_ms'] on every iteration so the next step
