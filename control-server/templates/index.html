@@ -978,6 +978,54 @@
         }
         .result-bar.ok { color: #6ee7b7; border-left-color: #047857; }
         .result-bar.err { color: #f87171; border-left-color: #5a1818; }
+
+        /* ── RF scan (2.4 GHz WiFi vs wireless DMX) ── */
+        .rf-spectrum {
+            display: flex; align-items: flex-end; gap: 0.3rem;
+            height: 100px; margin-top: 0.75rem; padding: 0.6rem 0.6rem 0.4rem;
+            background: #0a0a0a; border: 1px solid #1f1f1f;
+        }
+        .rf-channel-bar {
+            flex: 1; display: flex; flex-direction: column; align-items: center;
+            justify-content: flex-end; height: 100%; gap: 0.35rem;
+        }
+        .rf-channel-bar .bar-track {
+            width: 100%; flex: 1; display: flex; align-items: flex-end;
+        }
+        .rf-channel-bar .bar-fill {
+            width: 100%; min-height: 2px; background: var(--signal-green);
+            transition: height 0.2s;
+        }
+        .rf-channel-bar.moderate .bar-fill { background: var(--signal-amber); }
+        .rf-channel-bar.loud .bar-fill { background: var(--signal-red); }
+        .rf-channel-bar .bar-label {
+            font-size: 0.6rem; color: #666; font-family: ui-monospace, "SF Mono", monospace;
+        }
+        .rf-channel-bar.recommended .bar-label { color: var(--amber-tungsten); font-weight: 600; }
+        .rf-channel-bar.quiet-window .bar-track { outline: 1px dashed var(--arc-cyan); outline-offset: 2px; }
+        .rf-legend {
+            display: flex; gap: 1rem; margin-top: 0.4rem; font-size: 0.65rem; color: #666;
+        }
+        .rf-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+        .rf-legend .swatch { width: 8px; height: 8px; display: inline-block; }
+        .rf-suggestions { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.35rem; }
+        .rf-suggestion {
+            font-size: 0.8rem; color: #ccc; padding: 0.45rem 0.6rem; line-height: 1.4;
+            background: #0a0a0a; border-left: 2px solid var(--amber-tungsten);
+        }
+        .rf-ap-list { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.2rem; }
+        .rf-ap-row {
+            display: grid; grid-template-columns: 1fr auto auto; gap: 0.6rem; align-items: baseline;
+            font-size: 0.75rem; padding: 0.35rem 0.5rem;
+            background: #0a0a0a; border: 1px solid #1a1a1a;
+        }
+        .rf-ap-row .ap-ssid { color: #ccc; }
+        .rf-ap-row .ap-channel, .rf-ap-row .ap-signal {
+            font-family: ui-monospace, "SF Mono", monospace; color: #666;
+        }
+        .rf-ap-row .ap-signal.loud { color: var(--signal-red); }
+        .rf-ap-row .ap-signal.moderate { color: var(--signal-amber); }
+        .rf-ap-row .ap-signal.quiet { color: var(--signal-green); }
         .logs-viewer {
             background: #0a0a0a; border: 1px solid #1f1f1f;
             color: #ccc; font-family: ui-monospace, "SF Mono", monospace;
@@ -1700,6 +1748,21 @@
                 <div id="systemInfoGrid" class="system-grid">
                     <p class="empty-state">Loading…</p>
                 </div>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="2.4 GHz · wireless DMX">
+                <div class="tool-header">
+                    <span class="tool-title">RF Environment</span>
+                    <button class="btn-secondary btn-tiny" onclick="runRfScan()" id="rfScanBtn">Scan</button>
+                </div>
+                <div class="field-hint" style="margin-bottom:0.5rem;">
+                    Surveys WiFi traffic sharing the band with your wireless DMX transmitter. Receiver-side
+                    signal isn't observable — this only reports what the Pi's own radio hears.
+                </div>
+                <div id="rfScanResult" class="result-bar">Click Scan to survey the band.</div>
+                <div id="rfSpectrum"></div>
+                <div id="rfSuggestions" class="rf-suggestions"></div>
+                <div id="rfApList" class="rf-ap-list"></div>
             </div>
 
             <div class="tool-panel" data-eyebrow="Diagnostic · sweep">
@@ -3253,6 +3316,96 @@
                 grid.innerHTML = cards.join('') || '<p class="empty-state">No diagnostic data available.</p>';
             } catch (e) {
                 grid.innerHTML = `<p class="empty-state" style="color:#f87171;">Failed to load: ${escHtml(e.message)}</p>`;
+            }
+        }
+
+        /**
+         * Classify a dBm reading into the same loud/moderate/quiet bands
+         * the spectrum bars and AP list use for coloring.
+         */
+        function rfSignalBand(dbm) {
+            if (dbm === null || dbm === undefined) return 'quiet';
+            if (dbm >= -55) return 'loud';
+            if (dbm >= -70) return 'moderate';
+            return 'quiet';
+        }
+
+        function renderRfScan(data) {
+            const resultEl = document.getElementById('rfScanResult');
+            const spectrumEl = document.getElementById('rfSpectrum');
+            const suggestionsEl = document.getElementById('rfSuggestions');
+            const apListEl = document.getElementById('rfApList');
+
+            const aps = data.access_points || [];
+            const analysis = data.analysis || {};
+            const congestion = analysis.per_channel_congestion_dbm || {};
+            const quietWindow = analysis.quiet_window || [];
+            const nonoverlapping = new Set(analysis.nonoverlapping_channels || [1, 6, 11]);
+
+            resultEl.className = 'result-bar ok';
+            resultEl.textContent = aps.length
+                ? `✓ Heard ${aps.length} network${aps.length !== 1 ? 's' : ''} on 2.4 GHz`
+                : '✓ Scan complete — no 2.4 GHz networks heard';
+
+            spectrumEl.innerHTML = `
+                <div class="rf-spectrum">
+                    ${Array.from({ length: 11 }, (_, i) => i + 1).map(ch => {
+                        const dbm = congestion[ch] ?? congestion[String(ch)];
+                        const band = rfSignalBand(dbm);
+                        const heightPct = dbm == null ? 2 : Math.max(2, Math.min(100, Math.round((dbm + 95) / 65 * 100)));
+                        const recommended = nonoverlapping.has(ch) ? ' recommended' : '';
+                        const inQuietWindow = quietWindow.length === 2 && ch >= quietWindow[0] && ch <= quietWindow[1] ? ' quiet-window' : '';
+                        return `<div class="rf-channel-bar ${band}${recommended}${inQuietWindow}" title="Channel ${ch}${dbm != null ? `: ${dbm.toFixed ? dbm.toFixed(0) : dbm} dBm` : ': quiet'}">
+                            <div class="bar-track"><div class="bar-fill" style="height:${heightPct}%;"></div></div>
+                            <span class="bar-label">${ch}</span>
+                        </div>`;
+                    }).join('')}
+                </div>
+                <div class="rf-legend">
+                    <span><span class="swatch" style="background:var(--signal-green);"></span>quiet</span>
+                    <span><span class="swatch" style="background:var(--signal-amber);"></span>moderate</span>
+                    <span><span class="swatch" style="background:var(--signal-red);"></span>loud</span>
+                    <span><span class="swatch" style="background:var(--amber-tungsten);"></span>1/6/11 (non-overlapping)</span>
+                    <span><span class="swatch" style="border:1px dashed var(--arc-cyan);background:transparent;"></span>quietest window</span>
+                </div>`;
+
+            suggestionsEl.innerHTML = (analysis.suggestions || [])
+                .map(s => `<div class="rf-suggestion">${escHtml(s)}</div>`).join('');
+
+            apListEl.innerHTML = aps.map(ap => {
+                const band = rfSignalBand(ap.signal_dbm);
+                const dbmText = ap.signal_dbm != null ? `${ap.signal_dbm.toFixed(0)} dBm` : '?';
+                return `<div class="rf-ap-row">
+                    <span class="ap-ssid">${escHtml(ap.ssid || '(hidden network)')}</span>
+                    <span class="ap-channel">ch ${ap.channel}</span>
+                    <span class="ap-signal ${band}">${dbmText}</span>
+                </div>`;
+            }).join('');
+        }
+
+        async function runRfScan() {
+            const btn = document.getElementById('rfScanBtn');
+            const resultEl = document.getElementById('rfScanResult');
+            btn.disabled = true;
+            resultEl.className = 'result-bar';
+            resultEl.textContent = 'Scanning 2.4 GHz band…';
+            document.getElementById('rfSpectrum').innerHTML = '';
+            document.getElementById('rfSuggestions').innerHTML = '';
+            document.getElementById('rfApList').innerHTML = '';
+            try {
+                const r = await fetch('/api/diagnostics/rf_scan', { method: 'POST' });
+                const data = await r.json();
+                if (data.success) {
+                    renderRfScan(data);
+                } else {
+                    resultEl.className = 'result-bar err';
+                    resultEl.textContent = `✗ ${data.error || 'scan failed'}`;
+                }
+            } catch (e) {
+                resultEl.className = 'result-bar err';
+                resultEl.textContent = `✗ ${e.message}`;
+            } finally {
+                btn.disabled = false;
             }
         }
 
