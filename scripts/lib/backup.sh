@@ -56,6 +56,33 @@ function _push_to_remote() {
   fi
 }
 
+# Fetch a backup URI (s3://, rclone:, or user@host:/path/file.tar.gz) to a
+# local tmp path and echo the resulting local path. Leaves non-URI args
+# (plain local paths) untouched. Does not check existence — callers verify.
+function _fetch_from_remote() {
+  local backup_file="$1"
+  local local_file="$backup_file"
+
+  if [[ "$backup_file" == s3://* ]]; then
+    local tmp_file="/tmp/restore-$(basename "${backup_file}")"
+    echo "Downloading from S3: ${backup_file}" >&2
+    aws s3 cp "${backup_file}" "${tmp_file}"
+    local_file="$tmp_file"
+  elif [[ "$backup_file" == rclone:* ]]; then
+    local tmp_file="/tmp/restore-$(basename "${backup_file}")"
+    echo "Downloading via rclone: ${backup_file#rclone:}" >&2
+    rclone copyto "${backup_file#rclone:}" "$tmp_file"
+    local_file="$tmp_file"
+  elif [[ "$backup_file" == *@*:* ]]; then
+    local tmp_file="/tmp/restore-$(basename "${backup_file##*:}")"
+    echo "Downloading via scp: ${backup_file}" >&2
+    scp "${backup_file}" "${tmp_file}"
+    local_file="$tmp_file"
+  fi
+
+  echo "$local_file"
+}
+
 # Restore QLC+ configuration from backup
 # Accepts a local path or a remote URI (s3://, rclone:, or user@host:/path/file.tar.gz).
 function backup_restore() {
@@ -72,25 +99,8 @@ function backup_restore() {
     return 1
   fi
 
-  local local_file="$backup_file"
-
-  # Fetch from remote if the argument looks like a URI
-  if [[ "$backup_file" == s3://* ]]; then
-    local tmp_file="/tmp/restore-$(basename "${backup_file}")"
-    echo "Downloading from S3: ${backup_file}"
-    aws s3 cp "${backup_file}" "${tmp_file}"
-    local_file="$tmp_file"
-  elif [[ "$backup_file" == rclone:* ]]; then
-    local tmp_file="/tmp/restore-$(basename "${backup_file}")"
-    echo "Downloading via rclone: ${backup_file#rclone:}"
-    rclone copy "${backup_file#rclone:}" "$(dirname "${tmp_file}")"
-    local_file="$tmp_file"
-  elif [[ "$backup_file" == *@*:* ]]; then
-    local tmp_file="/tmp/restore-$(basename "${backup_file##*:}")"
-    echo "Downloading via scp: ${backup_file}"
-    scp "${backup_file}" "${tmp_file}"
-    local_file="$tmp_file"
-  fi
+  local local_file
+  local_file="$(_fetch_from_remote "$backup_file")"
 
   if [[ ! -f "$local_file" ]]; then
     echo "Backup file not found: ${local_file}" >&2
@@ -222,6 +232,7 @@ function system_update() {
 
 # Export functions
 export -f backup_create
+export -f _fetch_from_remote
 export -f backup_restore
 export -f backup_timer_install
 export -f backup_timer_status
