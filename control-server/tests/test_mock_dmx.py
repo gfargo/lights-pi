@@ -1,7 +1,6 @@
 """Tests for the mock_dmx module."""
 import itertools
 import os
-import random
 import sys
 import threading
 import time
@@ -206,10 +205,22 @@ class TestChaseIndexSequence:
         assert self._seq(3, "PingPong", 8) == [0, 1, 2, 1, 0, 1, 2, 1]
 
     def test_random_stays_in_range(self):
-        random.seed(0)
         import app as _app_module
+        _app_module._mock_chase_random.seed(0)
         picks = list(itertools.islice(_app_module._chase_index_sequence(5, "Random"), 50))
         assert all(0 <= p < 5 for p in picks)
+
+    def test_random_is_deterministic_via_dedicated_rng(self):
+        """`Random` playback uses its own RNG instance (not the global
+        `random` module), so seeding it gives reproducible picks without
+        touching unrelated global random state."""
+        import app as _app_module
+
+        _app_module._mock_chase_random.seed(42)
+        picks_a = list(itertools.islice(_app_module._chase_index_sequence(5, "Random"), 20))
+        _app_module._mock_chase_random.seed(42)
+        picks_b = list(itertools.islice(_app_module._chase_index_sequence(5, "Random"), 20))
+        assert picks_a == picks_b
 
     def test_zero_steps_yields_nothing(self):
         assert self._seq(0, "Loop", 5) == []

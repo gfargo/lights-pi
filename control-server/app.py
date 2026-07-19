@@ -4696,9 +4696,17 @@ _mock_chase_generation: dict[int, int] = {}
 # `_mock_chase_start`/`_mock_chase_stop` so two genuinely concurrent
 # start/stop calls for the same function_id (Flask runs threaded) can't both
 # read the same prior generation and register with an identical value.
-# A plain Lock suffices: `_mock_chase_start` calls `_mock_chase_stop` before
-# acquiring this lock (not while holding it), so there's no reentrant path.
+# A plain Lock suffices: neither function calls `Future.cancel()` while
+# holding it (that's deferred until after release — see the comment in
+# `_mock_chase_start`), so there's no reentrant path.
 _mock_chase_lock = threading.Lock()
+
+
+# Dedicated RNG for `Random` run_order playback, kept separate from the
+# `random` module's global state so tests can get deterministic picks via
+# `_mock_chase_random.seed(...)` without disturbing (or being disturbed by)
+# unrelated code that calls `random.seed()`/`random.random()` elsewhere.
+_mock_chase_random = random.Random()
 
 
 def _chase_index_sequence(n: int, run_order: str):
@@ -4706,13 +4714,13 @@ def _chase_index_sequence(n: int, run_order: str):
 
     Loop: 0..n-1 repeating. SingleShot: 0..n-1 once. PingPong: bounces
     forward then back without repeating the endpoints. Random: an endless
-    stream of random.randrange(n) picks.
+    stream of `_mock_chase_random.randrange(n)` picks.
     """
     if n <= 0:
         return
     if run_order == "Random":
         while True:
-            yield random.randrange(n)
+            yield _mock_chase_random.randrange(n)
     elif run_order == "PingPong":
         while True:
             yield from range(n)
@@ -4729,7 +4737,6 @@ def _mock_chase_start(function_id: int) -> bool:
 
     Returns True if a stepper was actually spawned.
     """
-    _mock_chase_stop(function_id)  # cancel existing if any
     chase_elem = None
     try:
         for func in _engine_functions(_engine_element(_workspace_root())):
@@ -4739,16 +4746,29 @@ def _mock_chase_start(function_id: int) -> bool:
     except Exception:
         pass
     if chase_elem is None:
+        _mock_chase_stop(function_id)  # cancel any existing stepper anyway
         return False
 
     chase_info = _describe_chase_full(chase_elem)
     if not chase_info["steps"]:
+        _mock_chase_stop(function_id)  # cancel any existing stepper anyway
         return False
 
     if _qlc_loop is None:
         _start_qlc_loop()
 
+    # Single atomic section: pop the old registration, bump the generation,
+    # and register the new future all under one lock acquisition, so a
+    # concurrent start/stop for the same function_id can never observe (or
+    # race into) a torn state — e.g. an old task still registered under a
+    # newer generation. The old future's cancel() is deliberately deferred
+    # until AFTER the lock is released: concurrent.futures.Future.cancel()
+    # invokes done-callbacks synchronously (in the calling thread) when the
+    # future hasn't started running yet, and our own done-callback below
+    # also acquires this lock — cancelling while still holding it would
+    # deadlock (this is a plain Lock, not reentrant).
     with _mock_chase_lock:
+        old_fut = _mock_chase_tasks.pop(function_id, None)
         gen = _mock_chase_generation.get(function_id, 0) + 1
         _mock_chase_generation[function_id] = gen
 
@@ -4757,6 +4777,9 @@ def _mock_chase_start(function_id: int) -> bool:
             _qlc_loop,
         )
         _mock_chase_tasks[function_id] = fut
+
+    if old_fut is not None:
+        old_fut.cancel()
 
     def _cleanup(_done, _fid=function_id, _fut=fut):
         # Identity-guarded: only remove OUR registration. Without this, an
