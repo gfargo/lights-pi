@@ -321,6 +321,42 @@ class TestFlaskMockIntegration:
         data = r.get_json()
         assert data["success"] is False
 
+    def test_concurrent_start_stop_hammer_leaves_consistent_state(self, mock_client):
+        """Regression: the generation counter is a non-atomic read-modify-write.
+        Threads racing on start/stop for the same function_id could compute the
+        same generation and defeat the stale-task self-termination check —
+        a narrower reintroduction of the restart-race orphan bug, but under
+        true thread-level concurrency instead of sequential start/restart/stop.
+
+        Calls `_mock_chase_start`/`_mock_chase_stop` directly (rather than
+        through the Flask test client) since the werkzeug test client's app
+        context isn't safe to drive from multiple threads at once — that's
+        an artifact of the test harness, not the code under test.
+        """
+        import app as _app_module
+
+        mock_dmx.reset()
+
+        def hammer():
+            for _ in range(20):
+                _app_module._mock_chase_start(100)
+                _app_module._mock_chase_stop(100)
+
+        threads = [threading.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        _app_module._mock_chase_stop(100)  # make sure everything is stopped
+
+        assert 100 not in _app_module._mock_chase_tasks
+
+        state1 = mock_dmx.snapshot()
+        time.sleep(0.3)
+        state2 = mock_dmx.snapshot()
+        assert state1 == state2, "Bus kept changing after stop — a stepper leaked from concurrent start/stop"
+
 
 class TestDebugEndpointNotMounted:
     """Verify /debug/dmx-state returns 404 when not in mock mode."""

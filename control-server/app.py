@@ -4692,6 +4692,13 @@ _mock_chase_tasks: dict[int, "concurrent.futures.Future"] = {}
 # `_mock_chase_start` about why cancellation alone isn't sufficient.
 _mock_chase_generation: dict[int, int] = {}
 
+# Guards the generation-bump + registry read-modify-write in
+# `_mock_chase_start`/`_mock_chase_stop` so two genuinely concurrent
+# start/stop calls for the same function_id (Flask runs threaded) can't both
+# read the same prior generation and register with an identical value —
+# reentrant because `_mock_chase_start` calls `_mock_chase_stop` internally.
+_mock_chase_lock = threading.RLock()
+
 
 def _chase_index_sequence(n: int, run_order: str):
     """Yield step indices in playback order for the given run_order.
@@ -4740,22 +4747,24 @@ def _mock_chase_start(function_id: int) -> bool:
     if _qlc_loop is None:
         _start_qlc_loop()
 
-    gen = _mock_chase_generation.get(function_id, 0) + 1
-    _mock_chase_generation[function_id] = gen
+    with _mock_chase_lock:
+        gen = _mock_chase_generation.get(function_id, 0) + 1
+        _mock_chase_generation[function_id] = gen
 
-    fut = asyncio.run_coroutine_threadsafe(
-        _mock_chase_run(function_id, chase_info, gen),
-        _qlc_loop,
-    )
-    _mock_chase_tasks[function_id] = fut
+        fut = asyncio.run_coroutine_threadsafe(
+            _mock_chase_run(function_id, chase_info, gen),
+            _qlc_loop,
+        )
+        _mock_chase_tasks[function_id] = fut
 
     def _cleanup(_done, _fid=function_id, _fut=fut):
         # Identity-guarded: only remove OUR registration. Without this, an
         # old (cancelled) task's cleanup can run after a restart has already
         # registered a newer task under the same function_id, popping the
         # new one and leaking the old stepper forever.
-        if _mock_chase_tasks.get(_fid) is _fut:
-            _mock_chase_tasks.pop(_fid, None)
+        with _mock_chase_lock:
+            if _mock_chase_tasks.get(_fid) is _fut:
+                _mock_chase_tasks.pop(_fid, None)
 
     fut.add_done_callback(_cleanup)
     return True
@@ -4766,8 +4775,9 @@ def _mock_chase_stop(function_id: int) -> None:
     # Bump the generation unconditionally (even with no task registered) so
     # a task that hasn't been scheduled onto the loop yet — and therefore
     # has nothing to cancel() — still notices it's stale on its first turn.
-    _mock_chase_generation[function_id] = _mock_chase_generation.get(function_id, 0) + 1
-    task = _mock_chase_tasks.pop(function_id, None)
+    with _mock_chase_lock:
+        _mock_chase_generation[function_id] = _mock_chase_generation.get(function_id, 0) + 1
+        task = _mock_chase_tasks.pop(function_id, None)
     if task is not None:
         task.cancel()
 
