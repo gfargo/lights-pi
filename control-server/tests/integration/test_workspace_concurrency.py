@@ -6,7 +6,9 @@ never loses an update. Guards against regressing the _WORKSPACE_LOCK /
 _atomic_write_tree serialization added to fix the race.
 """
 import asyncio
+import os
 import shutil
+import stat
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -191,3 +193,80 @@ class TestWorkspaceConcurrency:
         ET.parse(ws_path)
         leftover = list(ws_path.parent.glob(".qlc-ws-*"))
         assert leftover == [], f"leftover temp files: {leftover}"
+
+    def test_atomic_write_tree_preserves_file_mode(self, concurrent_app):
+        """mkstemp defaults to 0600 — _atomic_write_tree must carry over the
+        original workspace file's mode instead of silently tightening it."""
+        import app as app_module
+
+        flask_app, ws_path = concurrent_app
+        os.chmod(ws_path, 0o644)
+
+        tree = ET.parse(ws_path)
+        with app_module._WORKSPACE_LOCK:
+            app_module._atomic_write_tree(tree)
+
+        assert stat.S_IMODE(os.stat(ws_path).st_mode) == 0o644
+
+    def test_concurrent_tempo_same_chase_no_torn_write(self, concurrent_app):
+        """N threads racing tempo POSTs against the SAME chase must never
+        corrupt the file — the final Duration must be one of the values
+        actually sent, and every Step/Hold must agree with it (no torn write
+        mixing bytes from two different mutations)."""
+        import app as app_module
+
+        flask_app, ws_path = concurrent_app
+        client = flask_app.test_client()
+
+        r = client.post("/api/scenes/save", json={"name": "Seed", "scene_xml": _scene_xml("Seed")})
+        assert r.get_json()["success"] is True
+
+        r = client.post("/api/chases", json={
+            "name": "SharedTapChase",
+            "steps": ["Seed"],
+            "tempo_source": "tap",
+        })
+        body = r.get_json()
+        assert body["success"] is True, body
+        chase_id = body["chase"]["id"]
+
+        N_THREADS = 8
+        bpms = [60 + (i * 23) % 180 for i in range(N_THREADS)]  # stays within 40-240
+
+        def hit_tempo(bpm):
+            app_client = flask_app.test_client()
+            resp = app_client.post(f"/api/chases/{chase_id}/tempo", json={"bpm": bpm})
+            assert resp.status_code == 200, resp.get_json()
+
+        with ThreadPoolExecutor(max_workers=N_THREADS) as pool:
+            futures = [pool.submit(hit_tempo, bpm) for bpm in bpms]
+            for fut in as_completed(futures):
+                fut.result()
+
+        sent_durations = {app_module._bpm_to_step_ms(bpm) for bpm in bpms}
+
+        # Must parse cleanly — no torn/truncated write.
+        tree = ET.parse(ws_path)
+        root = tree.getroot()
+        engine = root.find("qlc:Engine", _NS)
+        assert engine is not None
+        all_functions = list(engine.findall("qlc:Function", _NS)) + list(engine.findall("Function"))
+        chase_elements = {f.get("ID"): f for f in all_functions if f.get("Type") == "Chaser"}
+
+        chase_el = chase_elements.get(str(chase_id))
+        assert chase_el is not None, f"lost chase: {chase_id}"
+        speed = chase_el.find("qlc:Speed", _NS)
+        if speed is None:
+            speed = chase_el.find("Speed")
+        assert speed is not None
+        duration = int(speed.get("Duration"))
+        assert duration in sent_durations, (
+            f"chase {chase_id}: Duration {duration} is not among the sent values {sent_durations}"
+        )
+
+        steps = list(chase_el.findall("qlc:Step", _NS)) + list(chase_el.findall("Step"))
+        assert steps
+        for step in steps:
+            assert int(step.get("Hold")) == duration, (
+                "Step/Hold disagrees with Speed/Duration — torn write"
+            )

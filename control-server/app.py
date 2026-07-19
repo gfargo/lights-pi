@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -141,6 +142,8 @@ def _atomic_write_tree(tree: ET.ElementTree) -> None:
     try:
         with os.fdopen(fd, "wb") as fh:
             tree.write(fh, encoding="UTF-8", xml_declaration=True)
+        with contextlib.suppress(OSError):
+            shutil.copymode(WORKSPACE_PATH, tmp)  # mkstemp defaults to 0600; keep the original mode
         os.replace(tmp, str(WORKSPACE_PATH))
     except BaseException:
         with contextlib.suppress(OSError):
