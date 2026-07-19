@@ -64,6 +64,15 @@ apt-get install -y portaudio19-dev libaubio-dev python3-aubio
 systemctl enable avahi-daemon
 systemctl start avahi-daemon
 
+# Scope mDNS announcements to the LAN interface only. Without this, Avahi
+# publishes lights.local on every interface (including tailscale0), which
+# advertises unreachable addresses to LAN clients.
+AVAHI_CONF="/etc/avahi/avahi-daemon.conf"
+if ! grep -q '^allow-interfaces=' "\${AVAHI_CONF}"; then
+  sed -i 's/^\\[server\\]/[server]\\nallow-interfaces=wlan0/' "\${AVAHI_CONF}"
+  systemctl restart avahi-daemon
+fi
+
 echo "[3/9] Configure Wi-Fi with two networks"
 WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
 cp -a "\${WPA_CONF}" "\${WPA_CONF}.bak.\$(date +%s)" || true
