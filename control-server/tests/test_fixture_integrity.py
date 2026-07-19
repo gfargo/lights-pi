@@ -51,7 +51,11 @@ class TestMockDmxFallbackWorkspace:
             assert app_module.WORKSPACE_PATH.read_bytes() == fixture_bytes_before
         finally:
             monkeypatch.delenv("MOCK_DMX", raising=False)
-            monkeypatch.delenv("HOME", raising=False)
+            # Point HOME at a throwaway dir (not delenv) before the teardown
+            # reload — app.py's module-level chat_store.init_db(CHAT_DB_PATH)
+            # resolves Path.home(), and an unset HOME falls back to the real
+            # system home, writing a real ~/.qlcplus/chat_history.db.
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
             importlib.reload(app_module)
         assert _FIXTURE.read_bytes() == fixture_bytes_before
 
@@ -69,7 +73,7 @@ class TestMockDmxFallbackWorkspace:
             assert app_module.WORKSPACE_PATH.read_bytes() != fixture_bytes_before
         finally:
             monkeypatch.delenv("MOCK_DMX", raising=False)
-            monkeypatch.delenv("HOME", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
             importlib.reload(app_module)
         assert _FIXTURE.read_bytes() == fixture_bytes_before, (
             "tests/fixtures/sample.qxw was mutated — a workspace writer leaked "
@@ -94,7 +98,7 @@ class TestMockDmxFallbackWorkspace:
         finally:
             monkeypatch.delenv("MOCK_DMX", raising=False)
             monkeypatch.delenv("MOCK_DMX_PERSIST", raising=False)
-            monkeypatch.delenv("HOME", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
             importlib.reload(app_module)
         assert _FIXTURE.read_bytes() == fixture_bytes_before
 
@@ -113,5 +117,5 @@ class TestMockDmxFallbackWorkspace:
         finally:
             monkeypatch.delenv("MOCK_DMX", raising=False)
             monkeypatch.delenv("QLC_WORKSPACE", raising=False)
-            monkeypatch.delenv("HOME", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
             importlib.reload(_app_module)
