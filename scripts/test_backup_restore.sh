@@ -98,5 +98,51 @@ else
 fi
 
 echo ""
+echo "Test 4: scp completion output does not leak into the returned path"
+echo "----------------------------------------------------------------------"
+# Stand-in for `scp` that mimics real scp's SRC DEST arg order and prints a
+# noisy completion line to stdout (real scp can print progress/status lines).
+cat >"${fakebin}/scp" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+src="$1"
+dest="$2"
+cp "${src##*:}" "$dest"
+echo "${dest##*/}  100%   done"
+EOF
+chmod +x "${fakebin}/scp"
+
+scp_fixture="${src_dir}/qlcplus-backup-20260103T000000Z.tar.gz"
+echo "fake scp backup contents" >"$scp_fixture"
+
+fetched_scp="$(PATH="${fakebin}:${PATH}" _fetch_from_remote "testuser@testhost:${scp_fixture}")"
+
+if [[ "$fetched_scp" == *$'\n'* ]]; then
+  echo "✗ Test 4 failed: returned path contains embedded stdout noise: ${fetched_scp}"
+  exit 1
+fi
+
+if [[ -f "$fetched_scp" ]]; then
+  echo "✓ Test 4 passed: scp completion output did not leak; file exists at ${fetched_scp}"
+else
+  echo "✗ Test 4 failed: expected local file at ${fetched_scp}, not found"
+  exit 1
+fi
+
+if [[ "$(basename "$fetched_scp")" == "restore-$(basename "$scp_fixture")" ]]; then
+  echo "✓ Fetched file uses the expected restore- prefixed basename"
+else
+  echo "✗ Fetched file has unexpected name: $(basename "$fetched_scp")"
+  exit 1
+fi
+
+if cmp -s "$scp_fixture" "$fetched_scp"; then
+  echo "✓ Fetched file content matches source"
+else
+  echo "✗ Fetched file content does not match source"
+  exit 1
+fi
+
+echo ""
 echo "================================="
 echo "All backup-restore tests passed!"
