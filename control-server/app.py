@@ -115,7 +115,9 @@ if MOCK_DMX:
 _default_ws = Path.home() / ".qlcplus" / "default.qxw"
 if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
     _fixture_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
-    _scratch_ws = Path(tempfile.gettempdir()) / "lights-pi-mock" / "sample.qxw"
+    # Namespaced by uid so concurrent MOCK_DMX sessions from different users on a
+    # shared host don't clobber each other's scratch workspace (see #66 review).
+    _scratch_ws = Path(tempfile.gettempdir()) / f"lights-pi-mock-{os.getuid()}" / "sample.qxw"
     _scratch_ws.parent.mkdir(parents=True, exist_ok=True)
     _persist = os.getenv("MOCK_DMX_PERSIST", "").strip().lower() in ("1", "true", "yes")
     if not (_persist and _scratch_ws.exists()):
