@@ -3,7 +3,6 @@ sample fixture. The fallback path (MOCK_DMX=1, no QLC_WORKSPACE, no
 ~/.qlcplus/default.qxw) must redirect WORKSPACE_PATH to a scratch copy.
 """
 import importlib
-import os
 import sys
 import tempfile
 from pathlib import Path
