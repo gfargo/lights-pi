@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Local QLC+ fixture definition parser (.qxf)
 sys.path.insert(0, str(Path(__file__).parent))
+import chat_store
 import fixture_definitions
 from event_bus import EventBus, format_sse, parse_filter
 
@@ -118,6 +119,8 @@ else:
 
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
+CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
 
 # Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
 _scene_swatch_cache: dict = {}
@@ -141,6 +144,9 @@ AI_MODEL = os.getenv(
 )
 
 SERVICE_NAME = os.getenv("SERVICE", "qlcplus-web.service")
+
+# Initialise the chat history database on startup (idempotent).
+chat_store.init_db(CHAT_DB_PATH)
 
 
 def _is_local():
@@ -6515,6 +6521,109 @@ def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max
 
 
 # ----------------------------------------------------------------------------
+# Chat history persistence helpers
+# ----------------------------------------------------------------------------
+
+def _derive_chat_title(messages: list) -> str:
+    """Return a short title from the first user text in messages."""
+    for m in messages:
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, str):
+                return chat_store.derive_title(content)
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        return chat_store.derive_title(block.get("text", ""))
+    return "New conversation"
+
+
+def _try_summarize(conv_id: str) -> None:
+    """Background task: generate and persist a 1-2 sentence conversation summary."""
+    try:
+        msgs = chat_store.get_messages(CHAT_DB_PATH, conv_id)
+        lines = []
+        for m in msgs[-30:]:
+            content = m["content"]
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        break
+            if text.strip():
+                lines.append(f"{m['role'].upper()}: {text.strip()[:200]}")
+        if not lines:
+            return
+        system = (
+            "Summarize this lighting control conversation in 1-2 sentences. "
+            "Focus on what was accomplished (scenes created, colors set, issues resolved). "
+            "Be concise."
+        )
+        conv_text = "\n".join(lines)
+        if AI_PROVIDER == "anthropic" and AI_API_KEY:
+            summary = call_anthropic(system, conv_text)
+        elif AI_PROVIDER == "openai" and AI_API_KEY:
+            summary = call_openai(system, conv_text)
+        else:
+            return
+        chat_store.update_summary(CHAT_DB_PATH, conv_id, summary.strip())
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------------------
+# /api/conversations routes
+# ----------------------------------------------------------------------------
+
+@app.route("/api/conversations", methods=["GET"])
+def list_conversations_route():
+    return jsonify(chat_store.list_conversations(CHAT_DB_PATH))
+
+
+@app.route("/api/conversations", methods=["POST"])
+def create_conversation_route():
+    data = request.get_json(silent=True) or {}
+    title = data.get("title", "")
+    conv_id = chat_store.create_conversation(CHAT_DB_PATH, title=title)
+    return jsonify({"id": conv_id}), 201
+
+
+@app.route("/api/conversations/search", methods=["GET"])
+def search_conversations_route():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify([])
+    return jsonify(chat_store.search_conversations(CHAT_DB_PATH, q))
+
+
+@app.route("/api/conversations/<conv_id>", methods=["GET"])
+def get_conversation_route(conv_id):
+    if not chat_store.conversation_exists(CHAT_DB_PATH, conv_id):
+        return jsonify({"error": "not found"}), 404
+    msgs = chat_store.get_messages(CHAT_DB_PATH, conv_id)
+    return jsonify({"messages": msgs})
+
+
+@app.route("/api/conversations/<conv_id>", methods=["DELETE"])
+def delete_conversation_route(conv_id):
+    chat_store.delete_conversation(CHAT_DB_PATH, conv_id)
+    return "", 204
+
+
+@app.route("/api/conversations/<conv_id>/fork", methods=["POST"])
+def fork_conversation_route(conv_id):
+    if not chat_store.conversation_exists(CHAT_DB_PATH, conv_id):
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    upto = data.get("upto_index")
+    new_id = chat_store.fork_conversation(CHAT_DB_PATH, conv_id, upto_index=upto)
+    return jsonify({"id": new_id}), 201
+
+
+# ----------------------------------------------------------------------------
 # /api/chat endpoint
 # ----------------------------------------------------------------------------
 
@@ -6557,12 +6666,32 @@ def handle_chat():
     if not AI_API_KEY:
         return jsonify({"success": False, "error": "AI_API_KEY not configured"}), 400
 
+    # Resolve or create the conversation for persistence.
+    conv_id = data.get("conversation_id") or None
+    if conv_id and chat_store.conversation_exists(CHAT_DB_PATH, conv_id):
+        existing_count = chat_store.message_count(CHAT_DB_PATH, conv_id)
+    else:
+        conv_id = chat_store.create_conversation(
+            CHAT_DB_PATH, title=_derive_chat_title(incoming_messages)
+        )
+        existing_count = 0
+
     tools = _build_chat_tools()
 
     if AI_PROVIDER == "anthropic":
         result = _anthropic_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
     else:
         result = _openai_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
+
+    # Persist the new turns (everything that wasn't already in the DB).
+    new_turns = result.get("messages", [])[existing_count:]
+    if new_turns:
+        chat_store.append_messages(CHAT_DB_PATH, conv_id, new_turns)
+
+    # Auto-summarise asynchronously when we cross a multiple of CHAT_SUMMARIZE_EVERY.
+    total = chat_store.message_count(CHAT_DB_PATH, conv_id)
+    if total >= CHAT_SUMMARIZE_EVERY and total % CHAT_SUMMARIZE_EVERY == 0:
+        threading.Thread(target=_try_summarize, args=(conv_id,), daemon=True).start()
 
     return jsonify({
         "success": result.get("stop_reason") not in ("error",),
@@ -6571,6 +6700,7 @@ def handle_chat():
         "stop_reason": result.get("stop_reason"),
         "provider": AI_PROVIDER,
         "model": AI_MODEL,
+        "conversation_id": conv_id,
         **({"error": result["error"]} if result.get("error") else {}),
     })
 
