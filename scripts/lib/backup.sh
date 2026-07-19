@@ -63,20 +63,24 @@ function _fetch_from_remote() {
   local backup_file="$1"
   local local_file="$backup_file"
 
+  # Transfer commands' stdout is discarded below — this function's own stdout
+  # is the caller's `local_file="$(_fetch_from_remote ...)"` capture, and e.g.
+  # `aws s3 cp` prints a "download: ..." completion line to stdout by default,
+  # which would otherwise get appended into the returned path.
   if [[ "$backup_file" == s3://* ]]; then
     local tmp_file="/tmp/restore-$(basename "${backup_file}")"
     echo "Downloading from S3: ${backup_file}" >&2
-    aws s3 cp "${backup_file}" "${tmp_file}"
+    aws s3 cp "${backup_file}" "${tmp_file}" >/dev/null
     local_file="$tmp_file"
   elif [[ "$backup_file" == rclone:* ]]; then
     local tmp_file="/tmp/restore-$(basename "${backup_file}")"
     echo "Downloading via rclone: ${backup_file#rclone:}" >&2
-    rclone copyto "${backup_file#rclone:}" "$tmp_file"
+    rclone copyto "${backup_file#rclone:}" "$tmp_file" >/dev/null
     local_file="$tmp_file"
   elif [[ "$backup_file" == *@*:* ]]; then
     local tmp_file="/tmp/restore-$(basename "${backup_file##*:}")"
     echo "Downloading via scp: ${backup_file}" >&2
-    scp "${backup_file}" "${tmp_file}"
+    scp "${backup_file}" "${tmp_file}" >/dev/null
     local_file="$tmp_file"
   fi
 

@@ -64,5 +64,39 @@ else
 fi
 
 echo ""
+echo "Test 3: s3 cp completion output does not leak into the returned path"
+echo "----------------------------------------------------------------------"
+fakebin="${workdir}/fakebin"
+mkdir -p "$fakebin"
+# Stand-in for `aws` that mimics `aws s3 cp`'s stdout completion line
+# (real aws prints "download: s3://... to /tmp/..." unless --quiet is passed).
+cat >"${fakebin}/aws" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+src="$3"
+dest="$4"
+cp "${src#s3://}" "$dest"
+echo "download: ${src} to ${dest}"
+EOF
+chmod +x "${fakebin}/aws"
+
+s3_fixture="${src_dir}/qlcplus-backup-20260102T000000Z.tar.gz"
+echo "fake s3 backup contents" >"$s3_fixture"
+
+fetched_s3="$(PATH="${fakebin}:${PATH}" _fetch_from_remote "s3://${s3_fixture}")"
+
+if [[ "$fetched_s3" == *$'\n'* ]]; then
+  echo "✗ Test 3 failed: returned path contains embedded stdout noise: ${fetched_s3}"
+  exit 1
+fi
+
+if [[ -f "$fetched_s3" ]]; then
+  echo "✓ Test 3 passed: s3 completion output did not leak; file exists at ${fetched_s3}"
+else
+  echo "✗ Test 3 failed: expected local file at ${fetched_s3}, not found"
+  exit 1
+fi
+
+echo ""
 echo "================================="
 echo "All backup-restore tests passed!"
