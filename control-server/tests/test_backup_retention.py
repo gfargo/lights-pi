@@ -61,7 +61,12 @@ def daterange(end, days):
 
 
 def expected_gfs(dates, daily_keep=7, weekly_keep=4, monthly_keep=6):
-    """Pure-Python reference implementation of the GFS keep-set spec."""
+    """Pure-Python reference implementation of the GFS keep-set spec.
+
+    A snapshot that is both a Sunday and a month-first is claimed by the
+    weekly tier only, so the monthly tier reaches further back instead of
+    double-counting it (mirrors prune_retention's `keep`-based skip check).
+    """
     parsed = sorted(datetime.date.fromisoformat(d) for d in dates)
     newest_first = list(reversed(parsed))
 
@@ -69,7 +74,8 @@ def expected_gfs(dates, daily_keep=7, weekly_keep=4, monthly_keep=6):
     remaining = newest_first[daily_keep:]
 
     weekly = [d for d in remaining if d.isoweekday() == 7][:weekly_keep]
-    monthly = [d for d in remaining if d.day == 1][:monthly_keep]
+    claimed = set(daily) | set(weekly)
+    monthly = [d for d in remaining if d.day == 1 and d not in claimed][:monthly_keep]
 
     return {d.isoformat() for d in daily + weekly + monthly}
 
@@ -101,6 +107,33 @@ class TestPruneRetentionGFS:
         survivors = run_prune(tmp_path, dates)
 
         assert survivors == set(dates)
+
+    def test_weekly_monthly_do_not_double_claim_overlap_date(self, tmp_path):
+        # 2026-03-01 is both a Sunday and a month-first. The weekly tier
+        # (newest-first) claims it before the monthly tier is evaluated, so
+        # it must consume only ONE keep-slot, not one in each tier — letting
+        # the monthly tier reach one snapshot further back (2025-09-01) than
+        # it could if the overlap date were double-counted.
+        dates = [
+            # Daily window (7 newest, non-tier-eligible for weekly/monthly).
+            "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12",
+            "2026-03-13", "2026-03-14", "2026-03-15",
+            # Weekly candidates, newest 4 Sundays outside the daily window.
+            # 2026-03-01 is also a month-first (the overlap case).
+            "2026-03-08", "2026-03-01", "2026-02-22", "2026-02-15",
+            # Monthly candidates: 2026-02-01 is also a Sunday but falls
+            # outside the top-4 weekly picks above, so it's still eligible
+            # here. Six distinct month-firsts fill the monthly_keep=6 slots.
+            "2026-02-01", "2026-01-01", "2025-12-01", "2025-11-01",
+            "2025-10-01", "2025-09-01",
+        ]
+
+        survivors = run_prune(tmp_path, dates)
+
+        assert survivors == expected_gfs(dates)
+        assert "2026-03-01" in survivors  # claimed by the weekly tier
+        # Only reachable if 2026-03-01 did NOT also consume a monthly slot.
+        assert "2025-09-01" in survivors
 
     def test_no_pruning_below_daily_keep_threshold(self, tmp_path):
         # Regression for the "18-file cliff": pruning must kick in once

@@ -76,8 +76,6 @@ prune_retention() {
   mapfile -t newest_first < <(printf '%s\n' "${snapshots[@]}" | sort -r)
 
   local -a keep=()
-  # Expanding this empty under set -u requires bash 4.4+ (Pi ships 5.x, CI runs 5.2);
-  # older bash treats an empty array expansion as an unbound variable.
   local -a daily_picks=()
 
   # Daily: the N most recent snapshots
@@ -86,11 +84,13 @@ prune_retention() {
     daily_picks+=("${newest_first[$i]}")
   done
 
-  # Weekly: most recent Sundays outside the daily window, up to weekly_keep
+  # Weekly: most recent Sundays outside the daily window, up to weekly_keep.
+  # ${daily_picks[@]+"${daily_picks[@]}"} expands to nothing (not an unbound-
+  # variable error) when daily_picks is empty, regardless of bash version.
   local weekly_count=0
   for f in "${newest_first[@]}"; do
     [[ $weekly_count -ge $weekly_keep ]] && break
-    _snapshot_in_list "$f" "${daily_picks[@]}" && continue
+    _snapshot_in_list "$f" ${daily_picks[@]+"${daily_picks[@]}"} && continue
     local fname snap_date dow
     fname="$(basename "$f")"
     snap_date="${fname#lights-pi-backup-}"
@@ -102,11 +102,14 @@ prune_retention() {
     fi
   done
 
-  # Monthly: most recent month-firsts outside the daily window, up to monthly_keep
+  # Monthly: most recent month-firsts outside the daily+weekly picks, up to
+  # monthly_keep. Skips against `keep` (not just daily_picks) so a snapshot
+  # that is both a Sunday and a month-first is claimed by one tier only,
+  # letting the monthly tier reach further back instead of double-counting it.
   local monthly_count=0
   for f in "${newest_first[@]}"; do
     [[ $monthly_count -ge $monthly_keep ]] && break
-    _snapshot_in_list "$f" "${daily_picks[@]}" && continue
+    _snapshot_in_list "$f" ${keep[@]+"${keep[@]}"} && continue
     local fname snap_date dom
     fname="$(basename "$f")"
     snap_date="${fname#lights-pi-backup-}"
@@ -120,7 +123,7 @@ prune_retention() {
 
   # Delete anything not in keep list
   for f in "${snapshots[@]}"; do
-    if ! _snapshot_in_list "$f" "${keep[@]}"; then
+    if ! _snapshot_in_list "$f" ${keep[@]+"${keep[@]}"}; then
       log "INFO: pruning ${f}"
       rm -f "$f"
     fi
