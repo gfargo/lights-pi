@@ -4695,9 +4695,10 @@ _mock_chase_generation: dict[int, int] = {}
 # Guards the generation-bump + registry read-modify-write in
 # `_mock_chase_start`/`_mock_chase_stop` so two genuinely concurrent
 # start/stop calls for the same function_id (Flask runs threaded) can't both
-# read the same prior generation and register with an identical value —
-# reentrant because `_mock_chase_start` calls `_mock_chase_stop` internally.
-_mock_chase_lock = threading.RLock()
+# read the same prior generation and register with an identical value.
+# A plain Lock suffices: `_mock_chase_start` calls `_mock_chase_stop` before
+# acquiring this lock (not while holding it), so there's no reentrant path.
+_mock_chase_lock = threading.Lock()
 
 
 def _chase_index_sequence(n: int, run_order: str):
