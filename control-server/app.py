@@ -4864,10 +4864,6 @@ def create_chase():
     tempo_source = _normalize_tempo_source(data.get("tempo_source"))
     path         = (data.get("path") or "AI Generated").strip()
 
-    # Reject duplicate names — chase Name is the agent-friendly key
-    if _find_function_element(name, function_type="Chaser") is not None:
-        return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
-
     # Normalize and validate steps. Each step becomes
     # { scene_id, fade_in_ms?, hold_ms?, fade_out_ms? }.
     normalized_steps = []
@@ -4904,6 +4900,12 @@ def create_chase():
         }), 400
 
     with _WORKSPACE_LOCK:
+        # Reject duplicate names — chase Name is the agent-friendly key.
+        # Checked inside the lock so a racing create_chase can't slip a
+        # second chase in under the same name between check and write.
+        if _find_function_element(name, function_type="Chaser") is not None:
+            return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
+
         chase_id = get_next_function_id()
         chase_xml = _build_chase_xml(
             name=name, steps=normalized_steps,

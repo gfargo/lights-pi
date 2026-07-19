@@ -73,9 +73,14 @@ class TestWorkspaceConcurrency:
         r = client.post("/api/scenes/save", json={"name": "Seed", "scene_xml": _scene_xml("Seed")})
         assert r.get_json()["success"] is True
 
-        # Two tap-source chases, both referencing the seed scene.
+        # Six tap-source chases, all referencing the seed scene. Each chase
+        # gets exactly one dedicated hammering thread below — that keeps the
+        # final BPM per chase deterministic (only one writer touches a given
+        # chase's Duration/Hold) while still exercising real cross-chase and
+        # cross-endpoint concurrency against the shared _WORKSPACE_LOCK.
         chase_ids = []
-        for chase_name in ("TapChase1", "TapChase2"):
+        for i in range(6):
+            chase_name = f"TapChase{i}"
             r = client.post("/api/chases", json={
                 "name": chase_name,
                 "steps": ["Seed"],
@@ -85,12 +90,11 @@ class TestWorkspaceConcurrency:
             assert body["success"] is True, body
             chase_ids.append(body["chase"]["id"])
 
-        N_TEMPO_THREADS = 12
         N_TAPS_PER_THREAD = 8
         N_SCENE_SAVES = 15
 
         scene_names = [f"ConcurrentScene{i}" for i in range(N_SCENE_SAVES)]
-        last_bpm_by_chase = {}
+        expected_bpm_by_chase = {}
 
         def hammer_tempo(chase_id, seed):
             app_client = flask_app.test_client()
@@ -111,22 +115,21 @@ class TestWorkspaceConcurrency:
             assert resp.status_code == 200, resp.get_json()
             assert resp.get_json()["success"] is True
 
-        with ThreadPoolExecutor(max_workers=N_TEMPO_THREADS + 4) as pool:
+        with ThreadPoolExecutor(max_workers=len(chase_ids) + 4) as pool:
             futures = []
-            for t in range(N_TEMPO_THREADS):
-                chase_id = chase_ids[t % len(chase_ids)]
-                futures.append(pool.submit(hammer_tempo, chase_id, t))
+            for seed, chase_id in enumerate(chase_ids):
+                futures.append(pool.submit(hammer_tempo, chase_id, seed))
             for name in scene_names:
                 futures.append(pool.submit(save_scene, name))
 
             for fut in as_completed(futures):
                 result = fut.result()
                 if isinstance(result, tuple):
-                    chase_id, bpm = result
-                    # Multiple threads share a chase_id — keep the highest-seen
-                    # BPM per thread group is not meaningful; just record that
-                    # each thread completed without raising.
-                    last_bpm_by_chase.setdefault(chase_id, []).append(bpm)
+                    chase_id, last_bpm = result
+                    # Exactly one thread writes each chase's tempo, so the
+                    # last BPM *that thread* sent is the only value that can
+                    # legally survive the lock's serialization.
+                    expected_bpm_by_chase[chase_id] = last_bpm
 
         # The workspace file must parse cleanly — no torn/truncated writes.
         tree = ET.parse(ws_path)
@@ -146,7 +149,11 @@ class TestWorkspaceConcurrency:
         for name in scene_names:
             assert name in found_names, f"lost scene save: {name}"
 
-        # Both chases must still exist with a valid, in-range tempo value.
+        # Every chase must still exist with the *exact* last BPM its dedicated
+        # thread sent — not just "some valid value" — proving no tempo write
+        # was silently lost to the race.
+        import app as app_module
+
         chase_elements = {
             f.get("ID"): f for f in all_functions if f.get("Type") == "Chaser"
         }
@@ -158,7 +165,11 @@ class TestWorkspaceConcurrency:
                 speed = chase_el.find("Speed")
             assert speed is not None
             duration = int(speed.get("Duration"))
-            assert duration > 0
+            expected_duration = app_module._bpm_to_step_ms(expected_bpm_by_chase[chase_id])
+            assert duration == expected_duration, (
+                f"chase {chase_id}: expected Duration {expected_duration} "
+                f"(from last BPM {expected_bpm_by_chase[chase_id]}), got {duration}"
+            )
             steps = list(chase_el.findall("qlc:Step", _NS)) + list(chase_el.findall("Step"))
             assert steps
             for step in steps:
