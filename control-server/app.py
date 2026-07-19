@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -22,7 +23,16 @@ from pathlib import Path
 
 import structlog
 import websockets
-from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    render_template,
+    request,
+    send_from_directory,
+    stream_with_context,
+)
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -31,7 +41,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Local QLC+ fixture definition parser (.qxf)
 sys.path.insert(0, str(Path(__file__).parent))
+import chat_store
 import fixture_definitions
+from event_bus import EventBus, format_sse, parse_filter
 
 # ---------------------------------------------------------------------------
 # Structured logging
@@ -65,6 +77,17 @@ log = structlog.get_logger("lights")
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
+# SSE event bus — module-level singleton
+# ---------------------------------------------------------------------------
+EVENT_BUS = EventBus()
+START_TIME = time.time()
+
+
+def _emit(event_type: str, data: dict) -> None:
+    """Convenience wrapper: publish *data* as *event_type* to all SSE clients."""
+    EVENT_BUS.publish(event_type, data)
+
+# ---------------------------------------------------------------------------
 # Security hardening (quick wins from security audit)
 # ---------------------------------------------------------------------------
 
@@ -78,7 +101,7 @@ _ALLOWED_ORIGINS = [
     "http://127.0.0.1:5000",
 ]
 # Allow Tailscale hostname (default to known tailnet, override via env)
-_ts_host = os.getenv("TAILSCALE_HOST", "lights.tailb82ead.ts.net")
+_ts_host = os.getenv("TAILSCALE_HOST", "riversway-lights.tailb82ead.ts.net")
 if _ts_host:
     _ALLOWED_ORIGINS.append(f"http://{_ts_host}")
     _ALLOWED_ORIGINS.append(f"http://{_ts_host}:5000")
@@ -135,6 +158,8 @@ else:
 
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
+CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
 
 # Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
 _scene_swatch_cache: dict = {}
@@ -158,6 +183,9 @@ AI_MODEL = os.getenv(
 )
 
 SERVICE_NAME = os.getenv("SERVICE", "qlcplus-web.service")
+
+# Initialise the chat history database on startup (idempotent).
+chat_store.init_db(CHAT_DB_PATH)
 
 
 def _is_local():
@@ -296,6 +324,7 @@ async def _ensure_qlc_ws():
                 asyncio.create_task(_qlc_reader(_qlc_ws))
                 _ws_reconnect_count += 1
                 log.info("qlc_ws_connected", url=QLC_WS_URL, reconnect_count=_ws_reconnect_count)
+                _emit("qlc_reconnect", {"url": QLC_WS_URL})
             except Exception as e:
                 _qlc_ws = None
                 log.error("qlc_ws_connect_failed", error_type=type(e).__name__, error=str(e))
@@ -332,6 +361,7 @@ async def _qlc_reader(ws):
             pass
         if _qlc_ws is ws:
             _qlc_ws = None
+            _emit("qlc_disconnect", {"url": QLC_WS_URL})
 
 
 async def _qlc_send_commands(commands):
@@ -446,6 +476,14 @@ def set_channel_values(channel_values):
         return True
     try:
         _qlc_run(_qlc_send_commands(commands), timeout=5)
+        # Emit a single coalesced channel_change event (list payload avoids
+        # flooding the stream when fades/strobe call us repeatedly).
+        _emit("channel_change", {
+            "channels": [{"channel": ch, "value": val}
+                         for cmd in commands
+                         for ch, val in [cmd.split("|")[1:3]]
+                         for ch, val in [(int(ch), int(val))]]
+        })
         return True
     except Exception as e:
         log.error("set_channel_values_failed", error=str(e))
@@ -631,6 +669,11 @@ def apply_existing_scene_live(scene_id_or_name):
         }
     success = set_channel_values(updates)
     scene_name = scene.get("Name", str(scene_id_or_name))
+    if success:
+        _emit("scene_activated", {
+            "scene_id": scene.get("ID"),
+            "scene_name": scene_name,
+        })
     return {
         "success": success,
         "output": f"Applied scene '{scene_name}' live via WebSocket ({len(updates)} channel values)",
@@ -672,6 +715,177 @@ def get_current_channel_values(max_ch=None):
     except Exception as e:
         log.warning("channel_values_fetch_failed", error=str(e))
         return {}
+
+
+# ----------------------------------------------------------------------------
+# Boot-time look restore (issue: unattended reboot = blackout)
+#
+# A fresh boot initializes every DMX channel to 0, so a self-reboot (watchdog
+# reset, power blip) leaves the venue dark even though everything recovered.
+# The server keeps a rolling snapshot of the last non-blackout look and, on a
+# fresh boot where output is still all-zero, re-applies it.
+#
+# Deliberate behaviors:
+#   - Blackouts are never saved: the file always holds the last *lit* look,
+#     so a reboot right after an intentional blackout will bring lights back.
+#   - Restore only runs within BOOT_RESTORE_MAX_UPTIME_S of kernel boot —
+#     a plain service restart (deploy) never re-applies stale state.
+#   - Restore requires positive evidence of blackout (a non-empty all-zero
+#     read); a failed/empty QLC+ fetch is retried, never treated as dark.
+# ----------------------------------------------------------------------------
+
+LAST_LOOK_FILE = Path.home() / ".qlcplus" / "last_look.json"
+BOOT_RESTORE_ENABLED = os.getenv("BOOT_RESTORE", "1").lower() not in ("0", "false", "no")
+BOOT_RESTORE_MAX_UPTIME_S = 600
+LAST_LOOK_SAVE_INTERVAL_S = 10
+
+
+def _proc_uptime_seconds() -> float | None:
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except Exception:
+        return None
+
+
+def _parse_last_look(text: str) -> dict[int, int]:
+    """Parse a saved look file into {channel: value}. Invalid entries are
+    dropped; anything unparseable yields {}."""
+    try:
+        data = json.loads(text)
+        raw = data.get("values", {})
+    except (ValueError, AttributeError):
+        return {}
+    values = {}
+    for ch, val in raw.items() if isinstance(raw, dict) else []:
+        try:
+            c, v = int(ch), int(val)
+        except (TypeError, ValueError):
+            continue
+        if c > 0:
+            values[c] = max(0, min(255, v))
+    return values
+
+
+def _should_restore_look(uptime_s, current_values, saved_values) -> bool:
+    """Pure decision: restore only on a fresh boot, with a lit saved look,
+    when current output is confirmed all-zero."""
+    if uptime_s is None or uptime_s > BOOT_RESTORE_MAX_UPTIME_S:
+        return False
+    if not saved_values or not any(saved_values.values()):
+        return False
+    if not current_values:  # empty dict = fetch failed, not evidence of dark
+        return False
+    return not any(current_values.values())
+
+
+def _load_last_look() -> dict[int, int]:
+    try:
+        return _parse_last_look(LAST_LOOK_FILE.read_text())
+    except OSError:
+        return {}
+
+
+def _parse_systemd_show_property(output: str, key: str) -> str:
+    """Extract `key=value` from `systemctl show -p <key>` output. Pure."""
+    prefix = f"{key}="
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _qlc_service_started_at() -> str:
+    """Monotonic start stamp of qlcplus-web — changes iff the service
+    (re)started. Empty string when unavailable."""
+    result = execute_command(
+        "systemctl show -p ActiveEnterTimestampMonotonic qlcplus-web.service"
+    )
+    return _parse_systemd_show_property(
+        result.get("output", ""), "ActiveEnterTimestampMonotonic"
+    )
+
+
+def _restore_after_qlc_restart():
+    """QLC+ just (re)started — it transmits all-zeros until something sets a
+    look, so an unattended crash-restart blacks the venue out exactly like a
+    reboot does. Re-apply the saved look once output is confirmed all-zero."""
+    saved = _load_last_look()
+    if not saved:
+        return
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        current = get_current_channel_values()
+        if current:
+            # uptime_s=0: the fresh-start guard is the restart we just saw
+            if _should_restore_look(0, current, saved):
+                ok = set_channel_values(saved.items())
+                lit = sum(1 for v in saved.values() if v)
+                print(f"qlc-restart-restore: re-applied last look ({lit} lit channels) ok={ok}")
+            else:
+                print("qlc-restart-restore: output already non-zero, leaving it alone")
+            return
+        time.sleep(5)
+    print("qlc-restart-restore: QLC+ never returned channel data, giving up")
+
+
+def _last_look_saver_loop():
+    """Every LAST_LOOK_SAVE_INTERVAL_S: snapshot the current look to disk if
+    it's lit and changed, and watch for QLC+ service restarts (which reset
+    output to zeros) to trigger a restore."""
+    last_written = None
+    qlc_started_at = _qlc_service_started_at()
+    while True:
+        time.sleep(LAST_LOOK_SAVE_INTERVAL_S)
+        try:
+            stamp = _qlc_service_started_at()
+            if stamp and qlc_started_at and stamp != qlc_started_at:
+                print("last-look saver: qlcplus-web restart detected — checking for blackout")
+                _restore_after_qlc_restart()
+            if stamp:
+                qlc_started_at = stamp
+
+            values = get_current_channel_values()
+            if not values or not any(values.values()):
+                continue  # never overwrite the saved look with a blackout
+            snap = {str(k): int(v) for k, v in sorted(values.items())}
+            if snap == last_written:
+                continue
+            LAST_LOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LAST_LOOK_FILE.write_text(json.dumps({
+                "values": snap,
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }))
+            last_written = snap
+        except Exception as e:
+            print(f"last-look saver error: {e}")
+
+
+def _boot_restore_last_look():
+    """On a fresh boot, re-apply the saved look once QLC+ confirms the
+    output is all-zero. Gives up quietly after ~3 minutes."""
+    saved = _load_last_look()
+    if not saved:
+        print("boot-restore: no saved look, skipping")
+        return
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        uptime_s = _proc_uptime_seconds()
+        if uptime_s is not None and uptime_s > BOOT_RESTORE_MAX_UPTIME_S:
+            print(f"boot-restore: uptime {int(uptime_s)}s > {BOOT_RESTORE_MAX_UPTIME_S}s — "
+                  "service restart, not a boot; skipping")
+            return
+        current = get_current_channel_values()
+        if current:
+            if _should_restore_look(uptime_s, current, saved):
+                ok = set_channel_values(saved.items())
+                lit = sum(1 for v in saved.values() if v)
+                print(f"boot-restore: re-applied last look ({lit} lit channels) ok={ok}")
+            else:
+                print("boot-restore: output already non-zero, leaving it alone")
+            return
+        time.sleep(5)
+    print("boot-restore: QLC+ never returned channel data, giving up")
 
 
 def _fixture_channels_info(fixture):
@@ -2381,6 +2595,56 @@ def healthz():
     return jsonify(payload), 200 if all_ok else 503
 
 
+@app.route("/api/events", methods=["GET"])
+def sse_events():
+    """Server-Sent Events stream for real-time rig state changes.
+
+    Optional query param:
+        ?filter=scenes,channels,groups,qlc,status
+    Omit *filter* (or leave empty) to receive all event types.
+
+    Event types:
+        channel_change  — {channels: [{channel, value}, ...]}
+        scene_activated — {scene_id, scene_name}
+        group_modified  — {group_name, action: created|updated|deleted}
+        qlc_disconnect  — {url}
+        qlc_reconnect   — {url}
+        service_status  — {uptime_s, qlc_connected}  (heartbeat, ≤15 s)
+    """
+    allowed = parse_filter(request.args.get("filter"))
+
+    @stream_with_context
+    def _generate():
+        q = EVENT_BUS.subscribe()
+        try:
+            while True:
+                try:
+                    envelope = q.get(timeout=15)
+                    evt_type = envelope["type"]
+                    if allowed is None or evt_type in allowed:
+                        yield format_sse(evt_type, envelope["data"])
+                except queue.Empty:
+                    # Heartbeat keeps the connection alive through idle periods
+                    # and through proxies that close idle TCP connections.
+                    uptime = round(time.time() - START_TIME)
+                    qlc_connected = _qlc_ws is not None and not getattr(_qlc_ws, "closed", False)
+                    yield format_sse("service_status", {
+                        "uptime_s": uptime,
+                        "qlc_connected": qlc_connected,
+                    })
+        except GeneratorExit:
+            pass
+        finally:
+            EVENT_BUS.unsubscribe(q)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return Response(_generate(), mimetype="text/event-stream", headers=headers)
+
+
 @app.route("/api/status", methods=["GET"])
 def get_status():
     """Get detailed multi-service health status"""
@@ -3045,6 +3309,7 @@ def create_group():
         "description": (data.get("description") or "").strip(),
     }
     _save_groups(groups)
+    _emit("group_modified", {"group_name": name, "action": "created"})
     return jsonify({
         "success": True,
         "group": {
@@ -3063,6 +3328,7 @@ def delete_group(group_name):
         return jsonify({"success": False, "error": f"Group '{group_name}' not found"}), 404
     del groups[group_name]
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "deleted"})
     return jsonify({"success": True})
 
 
@@ -3109,6 +3375,7 @@ def update_group(group_name):
         groups[group_name]["fixtures"] = fixture_ids
 
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "updated"})
     return jsonify({
         "success": True,
         "group": {
@@ -3147,6 +3414,7 @@ def add_fixtures_to_group(group_name):
             seen.add(fid)
     groups[group_name]["fixtures"] = current
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "updated"})
 
     return jsonify({
         "success": True,
@@ -3173,6 +3441,7 @@ def remove_fixtures_from_group(group_name):
     current = [fid for fid in (groups[group_name].get("fixtures") or []) if fid not in to_remove]
     groups[group_name]["fixtures"] = current
     _save_groups(groups)
+    _emit("group_modified", {"group_name": group_name, "action": "updated"})
 
     return jsonify({
         "success": True,
@@ -3815,6 +4084,7 @@ LOG_ALLOWED_SERVICES = {
     "lighting-control": "lighting-control.service",
     "lighting-mcp": "lighting-mcp.service",
     "nginx": "nginx.service",
+    "dmx-monitor": "dmx-monitor.service",
 }
 
 
@@ -3940,6 +4210,109 @@ def _read_proc_meminfo() -> dict:
     return info
 
 
+def _filter_dmx_usb_lines(lines: list[str]) -> list[str]:
+    """Filter `lsusb` lines down to DMX-interface candidates.
+
+    Matching by name alone is not enough: the ENTTEC DMX USB Pro's FT232
+    enumerates in `lsusb` as "Future Technology Devices International, Ltd
+    FT232 Serial (UART) IC" — no "FTDI", "ENTTEC", or "DMX" substring —
+    so the vendor id 0403 (FTDI) must be matched too.
+    """
+    keys = ("ftdi", "enttec", "dmx", "0403:")
+    return [ln for ln in lines if any(k in ln.lower() for k in keys)]
+
+
+# Bit positions documented for `vcgencmd get_throttled` (Raspberry Pi firmware).
+_THROTTLED_BITS = (
+    (0, "undervoltage_now"),
+    (1, "freq_capped_now"),
+    (2, "throttled_now"),
+    (3, "soft_temp_limit_now"),
+    (16, "undervoltage_since_boot"),
+    (17, "freq_capped_since_boot"),
+    (18, "throttled_since_boot"),
+    (19, "soft_temp_limit_since_boot"),
+)
+
+
+def _decode_throttled(raw: str) -> dict | None:
+    """Decode `vcgencmd get_throttled` output (e.g. "throttled=0x50005").
+
+    Returns None when the input doesn't parse. `ok` is True only when no
+    flag has ever been set since boot — the since-boot bits are what make
+    an intermittent brownout remotely observable after the fact.
+    """
+    text = (raw or "").strip()
+    if "=" in text:
+        text = text.split("=", 1)[1].strip()
+    try:
+        value = int(text, 16)
+    except (TypeError, ValueError):
+        return None
+    issues = [name for bit, name in _THROTTLED_BITS if value & (1 << bit)]
+    return {
+        "raw": f"0x{value:x}",
+        "ok": value == 0,
+        "issues": issues,
+    }
+
+
+def _analyze_boot_history(prev_boot_tail: str, current_kernel_log: str) -> dict:
+    """Classify whether the previous boot ended cleanly.
+
+    Two independent signals, both usable without any state file:
+      - the tail of the previous boot's journal (`journalctl -b -1 -n 40`):
+        a clean shutdown always leaves a shutdown trail (systemd-shutdown,
+        "Journal stopped", ...); an abrupt end (power loss, watchdog reset,
+        kernel hang) leaves none.
+      - the current boot's kernel log: ext4 logs "orphan cleanup" /
+        "recovering journal" when the filesystem wasn't cleanly unmounted.
+
+    Returns {"previous_boot_unclean": bool|None, "evidence": [...]} —
+    None when there is nothing to judge from (no previous boot journal
+    and no kernel evidence, e.g. journals not persistent).
+    """
+    clean_markers = (
+        "journal stopped",
+        "systemd-shutdown",
+        "reached target final",
+        "powering off",
+        "rebooting",
+        "shutting down",
+    )
+    fs_markers = ("orphan cleanup", "recovering journal", "not properly unmounted")
+
+    prev = (prev_boot_tail or "").lower()
+    kern = (current_kernel_log or "").lower()
+
+    evidence = [m for m in fs_markers if m in kern]
+    if prev and not any(m in prev for m in clean_markers):
+        evidence.append("previous boot journal ends without a shutdown sequence")
+
+    if not prev and not evidence:
+        return {"previous_boot_unclean": None, "evidence": []}
+    return {"previous_boot_unclean": bool(evidence), "evidence": evidence}
+
+
+# Computed once per process — the answer cannot change within a boot, and
+# dmx-monitor polls /api/diagnostics/system every 15 s.
+_BOOT_HISTORY_CACHE: dict | None = None
+
+
+def _boot_history() -> dict:
+    global _BOOT_HISTORY_CACHE
+    if _BOOT_HISTORY_CACHE is None:
+        prev = execute_command("journalctl -b -1 -n 40 --no-pager -o cat 2>/dev/null")
+        kern = execute_command(
+            "journalctl -k -b 0 --no-pager -o cat 2>/dev/null"
+            " | grep -iE 'orphan cleanup|recovering journal|not properly unmounted'"
+        )
+        _BOOT_HISTORY_CACHE = _analyze_boot_history(
+            prev.get("output", ""), kern.get("output", "")
+        )
+    return _BOOT_HISTORY_CACHE
+
+
 @app.route("/api/diagnostics/system", methods=["GET"])
 def diagnostics_system():
     """Return Pi-level health info: CPU temp, load, memory, disk, uptime,
@@ -4033,17 +4406,27 @@ def diagnostics_system():
         usb = execute_command("lsusb")
         if usb["success"]:
             all_lines = [ln for ln in usb["output"].splitlines() if ln.strip()]
-            interesting = [ln for ln in all_lines if any(
-                k in ln.lower() for k in ("ftdi", "enttec", "dmx")
-            )]
             out["usb"] = {
                 "all_count": len(all_lines),
-                "dmx_related": interesting,
+                "dmx_related": _filter_dmx_usb_lines(all_lines),
             }
         else:
             out["usb"] = None
     else:
         out["usb"] = None
+
+    # Power health — undervoltage/throttle flags from the firmware. The
+    # since-boot bits latch, so an intermittent brownout stays visible here
+    # long after it happened.
+    if IS_LOCAL:
+        vc = execute_command("vcgencmd get_throttled")
+        out["power"] = _decode_throttled(vc["output"]) if vc["success"] else None
+    else:
+        out["power"] = None
+
+    # Previous-boot forensics — did the last boot end without a shutdown
+    # sequence (power loss / watchdog reset / hang)?
+    out["boot"] = _boot_history() if IS_LOCAL else None
 
     # Service status for the three units (only when local).
     # Distinguishes "not_installed" (unit file missing) from "inactive"
@@ -5059,13 +5442,21 @@ _active_cue_lists: dict[int, dict] = {}
 _active_cue_lists_lock = threading.Lock()
 
 
-async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
+async def _run_cue_list_async(
+    cue_list_id: int,
+    cues: list[dict],
+    *,
+    now=time.time,
+    sleep=asyncio.sleep,
+):
     """Play a cue list — fire each cue at its at_ms relative to GO.
 
     Designed to tolerate cue dispatch failures: one bad cue prints a warning
     but the remaining cues still fire on schedule.
+
+    ``now`` and ``sleep`` are injectable for testing with a fake clock.
     """
-    started_at = time.time()
+    started_at = now()
     fired_indexes: list[int] = []
 
     with _active_cue_lists_lock:
@@ -5079,10 +5470,10 @@ async def _run_cue_list_async(cue_list_id: int, cues: list[dict]):
 
     try:
         for idx, cue in sorted_cues:
-            elapsed_ms = (time.time() - started_at) * 1000
+            elapsed_ms = (now() - started_at) * 1000
             wait_ms = max(0, cue["at_ms"] - elapsed_ms)
             if wait_ms > 0:
-                await asyncio.sleep(wait_ms / 1000)
+                await sleep(wait_ms / 1000)
 
             action_data = {
                 "action": cue["action"],
@@ -6273,6 +6664,109 @@ def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max
 
 
 # ----------------------------------------------------------------------------
+# Chat history persistence helpers
+# ----------------------------------------------------------------------------
+
+def _derive_chat_title(messages: list) -> str:
+    """Return a short title from the first user text in messages."""
+    for m in messages:
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, str):
+                return chat_store.derive_title(content)
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        return chat_store.derive_title(block.get("text", ""))
+    return "New conversation"
+
+
+def _try_summarize(conv_id: str) -> None:
+    """Background task: generate and persist a 1-2 sentence conversation summary."""
+    try:
+        msgs = chat_store.get_messages(CHAT_DB_PATH, conv_id)
+        lines = []
+        for m in msgs[-30:]:
+            content = m["content"]
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        break
+            if text.strip():
+                lines.append(f"{m['role'].upper()}: {text.strip()[:200]}")
+        if not lines:
+            return
+        system = (
+            "Summarize this lighting control conversation in 1-2 sentences. "
+            "Focus on what was accomplished (scenes created, colors set, issues resolved). "
+            "Be concise."
+        )
+        conv_text = "\n".join(lines)
+        if AI_PROVIDER == "anthropic" and AI_API_KEY:
+            summary = call_anthropic(system, conv_text)
+        elif AI_PROVIDER == "openai" and AI_API_KEY:
+            summary = call_openai(system, conv_text)
+        else:
+            return
+        chat_store.update_summary(CHAT_DB_PATH, conv_id, summary.strip())
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------------------
+# /api/conversations routes
+# ----------------------------------------------------------------------------
+
+@app.route("/api/conversations", methods=["GET"])
+def list_conversations_route():
+    return jsonify(chat_store.list_conversations(CHAT_DB_PATH))
+
+
+@app.route("/api/conversations", methods=["POST"])
+def create_conversation_route():
+    data = request.get_json(silent=True) or {}
+    title = data.get("title", "")
+    conv_id = chat_store.create_conversation(CHAT_DB_PATH, title=title)
+    return jsonify({"id": conv_id}), 201
+
+
+@app.route("/api/conversations/search", methods=["GET"])
+def search_conversations_route():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify([])
+    return jsonify(chat_store.search_conversations(CHAT_DB_PATH, q))
+
+
+@app.route("/api/conversations/<conv_id>", methods=["GET"])
+def get_conversation_route(conv_id):
+    if not chat_store.conversation_exists(CHAT_DB_PATH, conv_id):
+        return jsonify({"error": "not found"}), 404
+    msgs = chat_store.get_messages(CHAT_DB_PATH, conv_id)
+    return jsonify({"messages": msgs})
+
+
+@app.route("/api/conversations/<conv_id>", methods=["DELETE"])
+def delete_conversation_route(conv_id):
+    chat_store.delete_conversation(CHAT_DB_PATH, conv_id)
+    return "", 204
+
+
+@app.route("/api/conversations/<conv_id>/fork", methods=["POST"])
+def fork_conversation_route(conv_id):
+    if not chat_store.conversation_exists(CHAT_DB_PATH, conv_id):
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    upto = data.get("upto_index")
+    new_id = chat_store.fork_conversation(CHAT_DB_PATH, conv_id, upto_index=upto)
+    return jsonify({"id": new_id}), 201
+
+
+# ----------------------------------------------------------------------------
 # /api/chat endpoint
 # ----------------------------------------------------------------------------
 
@@ -6315,12 +6809,32 @@ def handle_chat():
     if not AI_API_KEY:
         return jsonify({"success": False, "error": "AI_API_KEY not configured"}), 400
 
+    # Resolve or create the conversation for persistence.
+    conv_id = data.get("conversation_id") or None
+    if conv_id and chat_store.conversation_exists(CHAT_DB_PATH, conv_id):
+        existing_count = chat_store.message_count(CHAT_DB_PATH, conv_id)
+    else:
+        conv_id = chat_store.create_conversation(
+            CHAT_DB_PATH, title=_derive_chat_title(incoming_messages)
+        )
+        existing_count = 0
+
     tools = _build_chat_tools()
 
     if AI_PROVIDER == "anthropic":
         result = _anthropic_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
     else:
         result = _openai_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
+
+    # Persist the new turns (everything that wasn't already in the DB).
+    new_turns = result.get("messages", [])[existing_count:]
+    if new_turns:
+        chat_store.append_messages(CHAT_DB_PATH, conv_id, new_turns)
+
+    # Auto-summarise asynchronously when we cross a multiple of CHAT_SUMMARIZE_EVERY.
+    total = chat_store.message_count(CHAT_DB_PATH, conv_id)
+    if total >= CHAT_SUMMARIZE_EVERY and total % CHAT_SUMMARIZE_EVERY == 0:
+        threading.Thread(target=_try_summarize, args=(conv_id,), daemon=True).start()
 
     return jsonify({
         "success": result.get("stop_reason") not in ("error",),
@@ -6329,6 +6843,7 @@ def handle_chat():
         "stop_reason": result.get("stop_reason"),
         "provider": AI_PROVIDER,
         "model": AI_MODEL,
+        "conversation_id": conv_id,
         **({"error": result["error"]} if result.get("error") else {}),
     })
 
@@ -6347,6 +6862,14 @@ if __name__ == "__main__":
             _qlc_run(_ensure_qlc_ws(), timeout=5)
         except Exception as e:
             log.warning("initial_qlc_connect_failed", error=str(e))
+
+    # Boot-time look restore + rolling last-look snapshot (see the
+    # boot-restore block near set_channel_values for the rules).
+    if BOOT_RESTORE_ENABLED and IS_LOCAL:
+        threading.Thread(target=_boot_restore_last_look, daemon=True,
+                         name="boot-restore").start()
+        threading.Thread(target=_last_look_saver_loop, daemon=True,
+                         name="last-look-saver").start()
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #

@@ -129,23 +129,25 @@ class TestSerializeGetChannelsValues:
 # ---------------------------------------------------------------------------
 
 class TestMockQLCWebSocket:
+    # asyncio.run(), not get_event_loop().run_until_complete(): implicit
+    # loop creation outside a running loop is gone in Python 3.12+.
     def test_send_ch_updates_bus(self):
         import asyncio
         ws = mock_dmx.MockQLCWebSocket()
-        asyncio.get_event_loop().run_until_complete(ws.send("CH|1|255"))
+        asyncio.run(ws.send("CH|1|255"))
         assert mock_dmx._BUS[(0, 0)] == 255
 
     def test_send_non_ch_ignored(self):
         import asyncio
         ws = mock_dmx.MockQLCWebSocket()
-        asyncio.get_event_loop().run_until_complete(ws.send("QLC+API|setFunctionStatus|1|1"))
+        asyncio.run(ws.send("QLC+API|setFunctionStatus|1|1"))
         assert mock_dmx._BUS == {}
 
     def test_close_sets_closed(self):
         import asyncio
         ws = mock_dmx.MockQLCWebSocket()
         assert ws.closed is False
-        asyncio.get_event_loop().run_until_complete(ws.close())
+        asyncio.run(ws.close())
         assert ws.closed is True
 
 
@@ -167,9 +169,11 @@ def mock_client():
     _app_module.app.config["TESTING"] = True
     with _app_module.app.test_client() as client:
         yield client
-    # Cleanup
+    # Cleanup — and reload once more with the env cleared, so later test
+    # files see the app module in its normal (non-mock) configuration.
     os.environ.pop("MOCK_DMX", None)
     os.environ.pop("QLC_WORKSPACE", None)
+    importlib.reload(_app_module)
     mock_dmx.reset()
 
 

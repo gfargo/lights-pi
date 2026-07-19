@@ -41,7 +41,10 @@ SSH_KEY="${SSH_KEY:-}"
 BACKUP_STORAGE="${BACKUP_STORAGE:-${SCRIPT_DIR}/backups}"
 SSL_CERT="${SSL_CERT:-${SCRIPT_DIR}/certs/qlc.crt}"
 SSL_KEY="${SSL_KEY:-${SCRIPT_DIR}/certs/qlc.key}"
-SSH_OPTIONS=()
+# ConnectTimeout keeps every command from hanging forever when mDNS
+# (lights.local) is flaky — fail fast so the caller can retry via
+# PI_HOST=<tailscale hostname> instead.
+SSH_OPTIONS=("-o" "ConnectTimeout=10")
 if [[ -n "$SSH_KEY" ]]; then
   SSH_OPTIONS+=("-i" "$SSH_KEY" "-o" "IdentitiesOnly=yes")
 fi
@@ -107,6 +110,11 @@ Network / WiFi:
   wifi-watchdog-status          show watchdog timer status
   wifi-watchdog-logs            show watchdog log history
   wifi-watchdog-uninstall       remove the watchdog
+  dmx-monitor-install           install long-running DMX output + system health monitor
+  dmx-monitor-status            show monitor service status
+  dmx-monitor-logs [n]          show monitor log history (default 100 lines)
+  dmx-monitor-uninstall         remove the monitor
+  rf-scan                       survey the 2.4 GHz band from the Pi (wireless DMX shares it)
   scan [--deep]                 scan network for Raspberry Pi devices (add --deep for IP range scan)
 
 System:
@@ -118,6 +126,8 @@ System:
   backup-timer-logs             show recent backup logs
   backup-timer-uninstall        remove the automated backup timer
   os-version                    show Raspberry Pi OS and kernel version
+  drift                         compare repo files + systemd units against what's deployed on the Pi
+  pull-file <remote> [dest]     copy a file from the Pi back into the repo for review/commit
   hdmi-disable                  disable HDMI to save power
   reboot                        reboot the Pi
   poweroff                      shut down the Pi
@@ -249,6 +259,16 @@ function command_benchmark() {
   system_benchmark
 }
 
+function command_drift() {
+  source "${SCRIPT_DIR}/scripts/lib/drift.sh"
+  deploy_drift
+}
+
+function command_pull_file() {
+  source "${SCRIPT_DIR}/scripts/lib/drift.sh"
+  deploy_pull_file "$@"
+}
+
 function command_check() {
   source "${SCRIPT_DIR}/scripts/lib/system.sh"
   system_check
@@ -336,6 +356,31 @@ function command_wifi_reconnect() {
   wifi_reconnect
 }
 
+function command_rf_scan() {
+  # The D-Fi wireless DMX link lives in the same 2.4 GHz band as WiFi.
+  # Survey what the Pi's radio can hear so strong APs can be kept away
+  # from the D-Fi's DIP-switch channel. (Receiver-side RSSI isn't
+  # observable — D-Fi is broadcast-only — but the interferers are.)
+  echo "=== 2.4 GHz RF environment seen from the Pi ==="
+  echo "    (wireless DMX shares this band; anything loud near the D-Fi's"
+  echo "     channel is a flicker suspect. WiFi ch N ≈ 2407+5N MHz)"
+  echo ""
+  run "sudo iw dev wlan0 scan 2>/dev/null" | awk '
+    function flush() {
+      if (freq != "")
+        printf("  %7s dBm  %6.0f MHz  wifi-ch %-3s  %s\n",
+               sig, freq, ch, ssid == "" ? "(hidden)" : ssid)
+    }
+    /^BSS/     { flush(); freq=""; sig="?"; ssid=""; ch="?" }
+    /freq:/    { freq=$2; if (freq >= 2412 && freq <= 2484) ch = int((freq - 2407) / 5) }
+    /signal:/  { sig=$2 }
+    /^\tSSID:/ { sub(/^\tSSID: */, ""); ssid=$0 }
+    END        { flush() }' | sort -rn
+  echo ""
+  echo "Signal guide: -30 dBm ≈ same room (loud), -70 dBm ≈ faint."
+  echo "If flicker persists, set the D-Fi DIP channel away from the strongest APs above."
+}
+
 function command_wifi_restart() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_restart
@@ -384,6 +429,26 @@ function command_wifi_watchdog_uninstall() {
 function command_wifi_edit() {
   source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
   wifi_edit_config "$@"
+}
+
+function command_dmx_monitor_install() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_install
+}
+
+function command_dmx_monitor_status() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_status
+}
+
+function command_dmx_monitor_logs() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_logs "$@"
+}
+
+function command_dmx_monitor_uninstall() {
+  source "${SCRIPT_DIR}/scripts/lib/dmx_monitor.sh"
+  dmx_monitor_uninstall
 }
 
 # Network commands (using lib/network.sh)
@@ -1299,6 +1364,11 @@ case "$1" in
   wifi-reconnect) command_wifi_reconnect ;;
   wifi-status) command_wifi_status ;;
   wifi-diagnose) command_wifi_diagnose ;;
+  rf-scan) command_rf_scan ;;
+  dmx-monitor-install) command_dmx_monitor_install ;;
+  dmx-monitor-status) command_dmx_monitor_status ;;
+  dmx-monitor-logs) shift; command_dmx_monitor_logs "$@" ;;
+  dmx-monitor-uninstall) command_dmx_monitor_uninstall ;;
   scan) shift; command_scan "$@" ;;
   update) command_update ;;
   update-qlc) command_update_qlc ;;
@@ -1319,6 +1389,8 @@ case "$1" in
   static-ip) shift; command_static_ip "$@" ;;
   hdmi-disable) command_hdmi_disable ;;
   os-version) command_os_version ;;
+  drift) command_drift ;;
+  pull-file) shift; command_pull_file "$@" ;;
   setup) command_setup ;;
   harden) command_harden ;;
   setup-full) command_setup_full ;;
