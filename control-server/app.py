@@ -4308,6 +4308,170 @@ def diagnostics_system():
     return jsonify({"success": True, **out})
 
 
+# ----------------------------------------------------------------------------
+# rf_scan — 2.4 GHz WiFi survey for wireless-DMX interference
+# ----------------------------------------------------------------------------
+#
+# Wireless DMX transmitters (D-Fi Hub and similar) share the 2.4 GHz ISM
+# band with WiFi. We can survey what the Pi's own WiFi radio hears there,
+# but the transmitter itself is broadcast-only — there's no software
+# readback of its channel or of what the receiver actually sees. So this
+# only ever reports the WiFi side and leaves cross-referencing against the
+# transmitter's own channel/DIP-switch table to the operator.
+
+_WIFI_NONOVERLAPPING_CHANNELS = (1, 6, 11)
+
+
+def _wifi_channel_from_freq(freq_mhz):
+    """2.4 GHz center frequency (MHz) -> WiFi channel number, or None
+    outside the 2.4 GHz band (e.g. 5 GHz results `iw scan` also returns)."""
+    if freq_mhz is None:
+        return None
+    if 2412 <= freq_mhz <= 2472:
+        return round((freq_mhz - 2407) / 5)
+    if freq_mhz == 2484:
+        return 14
+    return None
+
+
+def _parse_iw_scan_output(raw: str) -> list[dict]:
+    """Parse `iw dev <iface> scan` text into 2.4 GHz access-point records:
+    {ssid, signal_dbm, freq_mhz, channel}, loudest first.
+
+    5 GHz results are dropped — they share no spectrum with wireless DMX.
+    Mirrors the awk parser `lightsctl.sh`'s `rf-scan` command already uses.
+    """
+    access_points = []
+    current = None
+
+    def flush():
+        if not current:
+            return
+        ch = _wifi_channel_from_freq(current.get("freq_mhz"))
+        if ch is not None:
+            access_points.append({
+                "ssid": current.get("ssid") or None,
+                "signal_dbm": current.get("signal_dbm"),
+                "freq_mhz": current["freq_mhz"],
+                "channel": ch,
+            })
+
+    for line in raw.splitlines():
+        if line.startswith("BSS "):
+            flush()
+            current = {}
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("freq:"):
+            try:
+                current["freq_mhz"] = float(stripped.split()[1])
+            except (IndexError, ValueError):
+                pass
+        elif stripped.startswith("signal:"):
+            try:
+                current["signal_dbm"] = float(stripped.split()[1])
+            except (IndexError, ValueError):
+                pass
+        elif stripped.startswith("SSID:"):
+            current["ssid"] = stripped.split("SSID:", 1)[1].strip()
+    flush()
+
+    access_points.sort(key=lambda ap: ap["signal_dbm"] if ap["signal_dbm"] is not None else -999, reverse=True)
+    return access_points
+
+
+def _analyze_rf_channels(access_points: list[dict]) -> dict:
+    """Summarize 2.4 GHz occupancy: per-channel congestion (accounting for
+    the ~4-channel bleed of adjacent 20 MHz-wide WiFi channels), the
+    quietest 3-channel window, and plain-language suggestions."""
+    heard = [ap for ap in access_points if ap.get("channel") and 1 <= ap["channel"] <= 11
+             and ap.get("signal_dbm") is not None]
+
+    congestion = {}
+    for ch in range(1, 12):
+        loudest = None
+        for ap in heard:
+            if abs(ap["channel"] - ch) <= 4:
+                if loudest is None or ap["signal_dbm"] > loudest:
+                    loudest = ap["signal_dbm"]
+        congestion[ch] = loudest
+
+    def window_loudness(start):
+        vals = [congestion[c] for c in range(start, start + 3) if congestion.get(c) is not None]
+        return max(vals) if vals else -100.0
+    quiet_start = min(range(1, 10), key=window_loudness)
+    quiet_window = [quiet_start, quiet_start + 2]
+
+    suggestions = []
+    if not heard:
+        suggestions.append(
+            "No 2.4 GHz WiFi networks detected — the band looks clear right now. "
+            "Flicker during this window is unlikely to be WiFi-related."
+        )
+    else:
+        loudest_ch, loudest_dbm = max(congestion.items(), key=lambda kv: kv[1] if kv[1] is not None else -100)
+        if loudest_dbm is not None and loudest_dbm >= -55:
+            suggestions.append(
+                f"Channel {loudest_ch} is loud ({loudest_dbm:.0f} dBm). Keep your wireless DMX "
+                "transmitter's channel away from it and the 3-4 channels either side."
+            )
+        suggestions.append(
+            f"Quietest window right now: channels {quiet_window[0]}–{quiet_window[1]}. "
+            "Check your transmitter's channel/DIP-switch table for the setting closest to that range "
+            "— we can't read the transmitter's own channel back in software."
+        )
+        crowded_offgrid = [ap for ap in heard
+                           if ap["channel"] not in _WIFI_NONOVERLAPPING_CHANNELS and ap["signal_dbm"] >= -65]
+        if crowded_offgrid:
+            names = ", ".join(sorted({ap["ssid"] or "(hidden network)" for ap in crowded_offgrid}))
+            suggestions.append(
+                f"{names} — loud and not on the standard non-overlapping 1/6/11 channel set. "
+                "If it's a network you control, moving it to channel 1, 6, or 11 frees up more of the band."
+            )
+
+    return {
+        "per_channel_congestion_dbm": congestion,
+        "quiet_window": quiet_window,
+        "nonoverlapping_channels": list(_WIFI_NONOVERLAPPING_CHANNELS),
+        "suggestions": suggestions,
+    }
+
+
+@app.route("/api/diagnostics/rf_scan", methods=["POST"])
+def diagnostics_rf_scan():
+    """Survey the 2.4 GHz band from the Pi's own WiFi radio and analyze it
+    for wireless-DMX interference risk.
+
+    Returns detected access points plus a channel-congestion analysis and
+    plain-language suggestions. Local-only — needs `iw` + the wlan0 radio.
+    """
+    if not IS_LOCAL:
+        return jsonify({
+            "success": False,
+            "error": "rf_scan is only available when running on the Pi itself",
+            "is_local": False,
+        }), 503
+
+    result = execute_command("sudo -n iw dev wlan0 scan 2>/dev/null")
+    if not result["success"]:
+        return jsonify({
+            "success": False,
+            "error": result.get("error") or "iw scan failed — is wlan0 up?",
+        }), 500
+
+    access_points = _parse_iw_scan_output(result["output"])
+    analysis = _analyze_rf_channels(access_points)
+
+    return jsonify({
+        "success": True,
+        "interface": "wlan0",
+        "access_points": access_points,
+        "analysis": analysis,
+    })
+
+
 # =============================================================================
 # Chases / sequences (issue #4)
 # =============================================================================
@@ -6227,6 +6391,15 @@ def _build_chat_tools() -> list[dict]:
                 "required": ["service"],
             },
             "handler": lambda a: _call_self("GET", f"/api/diagnostics/logs/{a['service']}?n={a.get('n', 50)}"),
+        },
+        {
+            "name": "rf_scan",
+            "description": (
+                "Survey the 2.4 GHz WiFi band from the Pi's radio and analyze it for wireless-DMX "
+                "interference risk — per-channel congestion, the quietest window, and suggestions."
+            ),
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("POST", "/api/diagnostics/rf_scan"),
         },
 
         # ── Setup utility ────────────────────────────────────────────────
