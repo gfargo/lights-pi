@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=7.4
 ruff>=0.15
+mcp[cli]>=1.2.0
+httpx>=0.27.0

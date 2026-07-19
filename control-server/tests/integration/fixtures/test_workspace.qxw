@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Workspace>
+<Workspace xmlns="http://www.qlcplus.org/Workspace" CurrentWindow="DMXDumpFactory">
+ <Creator>
+  <Name>Q Light Controller Plus</Name>
+  <Version>4.14.1</Version>
+  <Author>Test Suite</Author>
+ </Creator>
+ <Engine>
+  <InputOutputMap>
+   <Universe Name="Universe 1" ID="0"/>
+  </InputOutputMap>
+  <Fixture>
+   <Manufacturer>Generic</Manufacturer>
+   <Model>Dimmer</Model>
+   <Mode>Dimmer</Mode>
+   <ID>1</ID>
+   <Name>Test Dimmer</Name>
+   <Universe>0</Universe>
+   <Address>0</Address>
+   <Channels>1</Channels>
+  </Fixture>
+  <Fixture>
+   <Manufacturer>Generic</Manufacturer>
+   <Model>RGB</Model>
+   <Mode>RGB</Mode>
+   <ID>2</ID>
+   <Name>Test RGB</Name>
+   <Universe>0</Universe>
+   <Address>1</Address>
+   <Channels>3</Channels>
+  </Fixture>
+ </Engine>
+</Workspace>
