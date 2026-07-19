@@ -3,9 +3,12 @@ sample fixture. The fallback path (MOCK_DMX=1, no QLC_WORKSPACE, no
 ~/.qlcplus/default.qxw) must redirect WORKSPACE_PATH to a scratch copy.
 """
 import importlib
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -101,6 +104,34 @@ class TestMockDmxFallbackWorkspace:
             monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
             importlib.reload(app_module)
         assert _FIXTURE.read_bytes() == fixture_bytes_before
+
+    def test_fallback_refuses_preplanted_symlink_at_scratch_dir(self, monkeypatch, tmp_path):
+        """A predictable per-uid scratch path is a symlink-attack target on a
+        shared host: another user who knows our uid could pre-create
+        lights-pi-mock-<uid> as a symlink before we ever run. The fallback must
+        refuse to follow it rather than silently writing through it (#66 review)."""
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        evil_target = tmp_path / "evil"
+        evil_target.mkdir()
+        (scratch_root / f"lights-pi-mock-{os.getuid()}").symlink_to(evil_target)
+
+        monkeypatch.setenv("MOCK_DMX", "1")
+        monkeypatch.delenv("QLC_WORKSPACE", raising=False)
+        monkeypatch.delenv("MOCK_DMX_PERSIST", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(scratch_root))
+
+        import app as _app_module
+
+        try:
+            with pytest.raises(RuntimeError, match="symlink attack|not a plain directory"):
+                importlib.reload(_app_module)
+        finally:
+            monkeypatch.delenv("MOCK_DMX", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
+            importlib.reload(_app_module)
+        assert not evil_target.joinpath("sample.qxw").exists()
 
     def test_explicit_qlc_workspace_is_unaffected(self, monkeypatch, tmp_path):
         """An explicit QLC_WORKSPACE pointing into the repo is the user's choice —

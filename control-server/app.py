@@ -117,8 +117,21 @@ if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
     _fixture_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
     # Namespaced by uid so concurrent MOCK_DMX sessions from different users on a
     # shared host don't clobber each other's scratch workspace (see #66 review).
-    _scratch_ws = Path(tempfile.gettempdir()) / f"lights-pi-mock-{os.getuid()}" / "sample.qxw"
-    _scratch_ws.parent.mkdir(parents=True, exist_ok=True)
+    _scratch_dir = Path(tempfile.gettempdir()) / f"lights-pi-mock-{os.getuid()}"
+    _scratch_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(_scratch_dir, mode=0o700)
+    except FileExistsError:
+        # Refuse to reuse a pre-existing path unless it's a plain directory we
+        # own — on a shared host an attacker who knows our uid could pre-plant
+        # a symlink at this predictable location to redirect workspace writes
+        # (see #66 review: mkdir(exist_ok=True) was symlink-attack prone).
+        if _scratch_dir.is_symlink() or not _scratch_dir.is_dir() or _scratch_dir.stat().st_uid != os.getuid():
+            raise RuntimeError(
+                f"refusing to use MOCK_DMX scratch dir {_scratch_dir}: it exists but "
+                "is not a plain directory owned by the current user"
+            )
+    _scratch_ws = _scratch_dir / "sample.qxw"
     _persist = os.getenv("MOCK_DMX_PERSIST", "").strip().lower() in ("1", "true", "yes")
     if not (_persist and _scratch_ws.exists()):
         shutil.copyfile(_fixture_ws, _scratch_ws)
