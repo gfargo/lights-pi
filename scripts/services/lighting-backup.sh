@@ -76,6 +76,8 @@ prune_retention() {
   mapfile -t newest_first < <(printf '%s\n' "${snapshots[@]}" | sort -r)
 
   local -a keep=()
+  # Expanding this empty under set -u requires bash 4.4+ (Pi ships 5.x, CI runs 5.2);
+  # older bash treats an empty array expansion as an unbound variable.
   local -a daily_picks=()
 
   # Daily: the N most recent snapshots
