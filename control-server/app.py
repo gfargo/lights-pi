@@ -121,7 +121,7 @@ if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
     _scratch_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.mkdir(_scratch_dir, mode=0o700)
-    except FileExistsError:
+    except FileExistsError as exc:
         # Refuse to reuse a pre-existing path unless it's a plain directory we
         # own — on a shared host an attacker who knows our uid could pre-plant
         # a symlink at this predictable location to redirect workspace writes
@@ -130,7 +130,7 @@ if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
             raise RuntimeError(
                 f"refusing to use MOCK_DMX scratch dir {_scratch_dir}: it exists but "
                 "is not a plain directory owned by the current user"
-            )
+            ) from exc
     _scratch_ws = _scratch_dir / "sample.qxw"
     _persist = os.getenv("MOCK_DMX_PERSIST", "").strip().lower() in ("1", "true", "yes")
     if not (_persist and _scratch_ws.exists()):
