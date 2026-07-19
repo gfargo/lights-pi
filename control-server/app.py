@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import queue
+import random
 import socket
 import subprocess
 import sys
@@ -4664,9 +4665,11 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
     """Sync wrapper around setFunctionStatus. Returns (ok, raw_response)."""
     if MOCK_DMX:
         if running:
-            _mock_chase_start(function_id)
-        else:
-            _mock_chase_stop(function_id)
+            started = _mock_chase_start(function_id)
+            if not started:
+                return False, f"mock chase {function_id} not started (missing or empty)"
+            return True, "QLC+API|setFunctionStatus|OK"
+        _mock_chase_stop(function_id)
         return True, "QLC+API|setFunctionStatus|OK"
     try:
         raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
@@ -4681,11 +4684,37 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
 # Chases in production are executed by QLC+ itself; in mock mode we need an
 # in-process stepper so the bus reflects what would be on the wire.
 
-_mock_chase_tasks: dict[int, asyncio.Task] = {}
+_mock_chase_tasks: dict[int, "concurrent.futures.Future"] = {}
 
 
-def _mock_chase_start(function_id: int) -> None:
-    """Start an in-process chase stepper for the given function ID."""
+def _chase_index_sequence(n: int, run_order: str):
+    """Yield step indices in playback order for the given run_order.
+
+    Loop: 0..n-1 repeating. SingleShot: 0..n-1 once. PingPong: bounces
+    forward then back without repeating the endpoints. Random: an endless
+    stream of random.randrange(n) picks.
+    """
+    if n <= 0:
+        return
+    if run_order == "Random":
+        while True:
+            yield random.randrange(n)
+    elif run_order == "PingPong":
+        while True:
+            yield from range(n)
+            yield from range(n - 2, 0, -1)
+    elif run_order == "SingleShot":
+        yield from range(n)
+    else:  # Loop (and anything unrecognized)
+        while True:
+            yield from range(n)
+
+
+def _mock_chase_start(function_id: int) -> bool:
+    """Start an in-process chase stepper for the given function ID.
+
+    Returns True if a stepper was actually spawned.
+    """
     _mock_chase_stop(function_id)  # cancel existing if any
     chase_elem = None
     try:
@@ -4696,20 +4725,31 @@ def _mock_chase_start(function_id: int) -> None:
     except Exception:
         pass
     if chase_elem is None:
-        return
+        return False
 
     chase_info = _describe_chase_full(chase_elem)
     if not chase_info["steps"]:
-        return
+        return False
 
     if _qlc_loop is None:
         _start_qlc_loop()
 
-    task = asyncio.run_coroutine_threadsafe(
+    fut = asyncio.run_coroutine_threadsafe(
         _mock_chase_run(function_id, chase_info),
         _qlc_loop,
     )
-    _mock_chase_tasks[function_id] = task
+    _mock_chase_tasks[function_id] = fut
+
+    def _cleanup(_done, _fid=function_id, _fut=fut):
+        # Identity-guarded: only remove OUR registration. Without this, an
+        # old (cancelled) task's cleanup can run after a restart has already
+        # registered a newer task under the same function_id, popping the
+        # new one and leaking the old stepper forever.
+        if _mock_chase_tasks.get(_fid) is _fut:
+            _mock_chase_tasks.pop(_fid, None)
+
+    fut.add_done_callback(_cleanup)
+    return True
 
 
 def _mock_chase_stop(function_id: int) -> None:
@@ -4724,12 +4764,9 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
     steps = chase_info["steps"]
     default_speed = chase_info.get("speed", {})
     run_order = chase_info.get("run_order", "Loop")
-    indices = list(range(len(steps)))
 
-    idx_iter = 0
     try:
-        while True:
-            i = indices[idx_iter % len(indices)]
+        for i in _chase_index_sequence(len(steps), run_order):
             step = steps[i]
             scene_id = step.get("scene_id")
             hold_ms = step.get("hold_ms", -1)
@@ -4763,14 +4800,8 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
             total_sleep = (fade_in_ms + hold_ms) / 1000
             if total_sleep > 0:
                 await asyncio.sleep(total_sleep)
-
-            idx_iter += 1
-            if run_order == "SingleShot" and idx_iter >= len(indices):
-                break
     except asyncio.CancelledError:
         pass
-    finally:
-        _mock_chase_tasks.pop(function_id, None)
 
 
 # ------------------------------- endpoints ----------------------------------
