@@ -4755,20 +4755,13 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
             # Apply the scene to the mock bus
             if scene_id is not None:
                 try:
-                    scene_elem = _find_scene_element(scene_id)
-                    if scene_elem is not None:
-                        cvs = scene_to_channel_values(scene_elem)
-                        # Build CH commands and apply directly — calling
-                        # set_channel_values() here would deadlock because
-                        # _qlc_run uses run_coroutine_threadsafe on the same
-                        # loop this coroutine is running on.
-                        commands = [
-                            f"CH|{ch}|{max(0, min(255, val))}"
-                            for ch, val in cvs
-                            if int(ch) > 0
-                        ]
-                        if commands:
-                            _mock_dmx.apply_commands(commands)
+                    # Build CH commands and apply directly — calling
+                    # set_channel_values() here would deadlock because
+                    # _qlc_run uses run_coroutine_threadsafe on the same
+                    # loop this coroutine is running on.
+                    commands = _scene_channel_commands(scene_id)
+                    if commands:
+                        _mock_dmx.apply_commands(commands)
                 except Exception as e:
                     print(f"[mock-chase {function_id}] step {i} apply error: {e}")
 
