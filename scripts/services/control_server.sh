@@ -68,7 +68,7 @@ Environment="PATH=/home/${PI_USER}/control-server-venv/bin:/usr/local/bin:/usr/b
 Environment="CONTROL_PORT=${CONTROL_PORT}"
 Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=/home/${PI_USER}/control-server/.env
-ExecStart=/home/${PI_USER}/control-server-venv/bin/python /home/${PI_USER}/control-server/app.py
+ExecStart=/home/${PI_USER}/control-server-venv/bin/gunicorn -k eventlet -w 1 -b 0.0.0.0:${CONTROL_PORT} -c /home/${PI_USER}/control-server/gunicorn.conf.py app:app
 Restart=always
 RestartSec=10
 

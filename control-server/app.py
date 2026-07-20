@@ -79,7 +79,10 @@ if _pi_host and _pi_host not in ("lights.local", _ts_host):
     _ALLOWED_ORIGINS.append(f"http://{_pi_host}:5000")
 
 CORS(app, origins=_ALLOWED_ORIGINS)
-socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS)
+# async_mode pinned explicitly (issue #47): engineio would auto-select
+# "eventlet" anyway once the package is importable, but pinning it protects
+# against a future dependency (e.g. gevent) silently changing the pick.
+socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS, async_mode="eventlet")
 
 
 @socketio.on("connect")
@@ -329,6 +332,27 @@ IS_LOCAL = _is_local()
 # The fix: maintain ONE long-lived WebSocket on a dedicated asyncio loop in a
 # background thread. All Flask requests dispatch sends to that loop via a
 # thread-safe call. The connection auto-reconnects if QLC+ drops it.
+#
+# Eventlet bridge (issue #47): under gunicorn's eventlet worker,
+# eventlet.monkey_patch() replaces `threading` with green-thread-aware
+# primitives tied to its cooperative hub. Two things break if this loop uses
+# those patched primitives directly:
+#   1. A monkey-patched threading.Event.set() called from a genuine OS thread
+#      is never observed by a wait() on that same (patched) Event elsewhere —
+#      verified directly: the waiter times out even though set() ran. Green
+#      primitives only signal correctly within the hub's own scheduling.
+#   2. concurrent.futures.Future (which asyncio.run_coroutine_threadsafe
+#      returns) waits via threading.Condition internally; blocking on
+#      future.result() either hangs the hub-side caller or corrupts the
+#      handoff for the same reason as (1).
+# The fix used below: run the loop's own thread and its startup handshake on
+# eventlet's *original* (pre-patch) threading module — genuine OS-thread
+# primitives on both ends of the handoff — and bridge the blocking wait for a
+# coroutine's result through eventlet.tpool.execute() using a done-callback +
+# original Event instead of touching the Future's patched Condition. This
+# combination was verified against a real `websockets` server: WS I/O
+# completes correctly and the eventlet hub stays responsive to other
+# greenlets while a QLC+ call is in flight.
 
 _qlc_loop: asyncio.AbstractEventLoop = None  # type: ignore
 _qlc_loop_thread: threading.Thread = None  # type: ignore
@@ -337,14 +361,43 @@ _qlc_ws_lock: asyncio.Lock = None  # type: ignore
 _qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
 
 
+def _eventlet_active() -> bool:
+    """True when running under gunicorn's eventlet worker (hub + monkey-patched threading)."""
+    try:
+        import eventlet.patcher
+    except ImportError:
+        return False
+    return eventlet.patcher.is_monkey_patched("thread")
+
+
+def _native_threading_module():
+    """Return the real (pre-monkey-patch) threading module when under eventlet."""
+    if _eventlet_active():
+        import eventlet.patcher
+        return eventlet.patcher.original("threading")
+    return threading
+
+
 def _start_qlc_loop():
     """Start the dedicated background event loop used for QLC+ comms."""
+    if _qlc_loop is not None and _qlc_loop.is_running():
+        return
+    if _eventlet_active():
+        import eventlet.tpool
+        eventlet.tpool.execute(_start_qlc_loop_sync)
+    else:
+        _start_qlc_loop_sync()
+
+
+def _start_qlc_loop_sync():
+    """Blocking implementation of _start_qlc_loop — see eventlet bridge note above."""
     global _qlc_loop, _qlc_loop_thread, _qlc_ws_lock
 
     if _qlc_loop is not None and _qlc_loop.is_running():
         return
 
-    ready = threading.Event()
+    native_threading = _native_threading_module()
+    ready = native_threading.Event()
 
     def _run_loop():
         global _qlc_loop, _qlc_ws_lock
@@ -358,9 +411,24 @@ def _start_qlc_loop():
         finally:
             loop.close()
 
-    _qlc_loop_thread = threading.Thread(target=_run_loop, daemon=True, name="qlc-ws-loop")
+    _qlc_loop_thread = native_threading.Thread(target=_run_loop, daemon=True, name="qlc-ws-loop")
     _qlc_loop_thread.start()
     ready.wait(timeout=5)
+
+
+def _wait_for_future(future: "concurrent.futures.Future", timeout):
+    """Block for *future* without touching its (possibly monkey-patched)
+    internal Condition's wait path. `done_event` is always the *original*
+    Event, and add_done_callback fires it from whichever real thread
+    completes the future — safe cross-thread signaling either way. Once
+    done_event fires, future.result(timeout=0) returns immediately via the
+    already-finished fast path (no further Condition wait)."""
+    done_event = _native_threading_module().Event()
+    future.add_done_callback(lambda _f: done_event.set())
+    if not done_event.wait(timeout):
+        future.cancel()
+        raise concurrent.futures.TimeoutError()
+    return future.result(timeout=0)
 
 
 def _qlc_run(coro, timeout=10):
@@ -368,6 +436,9 @@ def _qlc_run(coro, timeout=10):
     if _qlc_loop is None:
         _start_qlc_loop()
     future = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+    if _eventlet_active():
+        import eventlet.tpool
+        return eventlet.tpool.execute(_wait_for_future, future, timeout)
     try:
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
@@ -7542,8 +7613,23 @@ def handle_chat():
     })
 
 
-if __name__ == "__main__":
-    # Check if lightsctl exists
+_runtime_initialized = False
+
+
+def init_runtime() -> None:
+    """One-time startup side effects: QLC+ loop, boot-restore, audio subscribe.
+
+    Runs exactly once per process. In production this is called from
+    gunicorn's `post_fork` hook (control-server/gunicorn.conf.py) — after
+    eventlet's monkey-patching has happened, so _eventlet_active() reports
+    correctly and the QLC+ loop thread/bridge take the eventlet-safe path
+    (see #47). In local dev it's called from the __main__ block below.
+    """
+    global _runtime_initialized
+    if _runtime_initialized:
+        return
+    _runtime_initialized = True
+
     if not LIGHTSCTL.exists():
         print(f"Error: lightsctl.sh not found at {LIGHTSCTL}")
         sys.exit(1)
@@ -7573,13 +7659,14 @@ if __name__ == "__main__":
     else:
         print("⚠ Audio engine unavailable — aubio/sounddevice not installed")
 
-    # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
-    #
-    # NOTE on `allow_unsafe_werkzeug=True`:
-    # We intentionally use Werkzeug's WSGI server for the single-user studio
-    # LAN deploy. For a "real" production WSGI (gunicorn + eventlet/gevent
-    # worker), see issue #47 — that migration needs Pi-side testing because
-    # of the persistent QLC+ asyncio loop that lives in a thread.
+
+if __name__ == "__main__":
+    init_runtime()
+
+    # Run server with SocketIO's built-in dev server (debug=False to avoid
+    # stat reloader doubling connections). This path is local-dev only —
+    # production runs via `gunicorn -k eventlet -w 1 -c gunicorn.conf.py
+    # app:app` (see #47), which calls init_runtime() from post_fork instead.
     #
     # Silence Werkzeug's own "development server" warning (still visible on
     # service start otherwise). The flask-socketio "appears to be used in a

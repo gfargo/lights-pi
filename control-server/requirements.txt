@@ -3,6 +3,12 @@ flask-cors==6.0.2
 flask-socketio==5.6.1
 requests==2.34.2
 websockets==15.0.1
+# Production WSGI (issue #47) — gunicorn -k eventlet replaces the Werkzeug
+# dev server. Required at import time: engineio auto-selects its async mode
+# based on whichever of these is importable, so eventlet must be present even
+# for `python app.py` dev runs and the pytest suite.
+gunicorn==23.0.0
+eventlet==0.36.1
 # Audio reactivity (issue #28) — optional: server starts without these but
 # /api/audio/enable returns 503 until installed on the Pi.
 aubio>=0.4.9
