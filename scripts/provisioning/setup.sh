@@ -58,6 +58,8 @@ echo "[2/9] Packages"
 apt-get update
 apt-get -y upgrade
 apt-get install -y avahi-daemon tmux htop git curl ca-certificates usbutils wpasupplicant iw
+# Audio reactivity support (issue #28): USB mic via ALSA, aubio via portaudio
+apt-get install -y portaudio19-dev libaubio-dev python3-aubio
 
 systemctl enable avahi-daemon
 systemctl start avahi-daemon
@@ -202,6 +204,10 @@ echo "  Journal storage set to persistent."
 # ENTTEC USB access without sudo
 usermod -aG dialout ${PI_USER}
 echo "  ${PI_USER} added to dialout group (takes effect on next login)."
+
+# USB audio / ALSA access without sudo (required for audio reactivity, issue #28)
+usermod -aG audio ${PI_USER}
+echo "  ${PI_USER} added to audio group (USB mic access for BPM detection)."
 
 echo "[8/9] Pi model-specific optimizations"
 if [[ "\${PI_MODEL}" == "3" ]]; then
