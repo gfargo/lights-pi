@@ -4414,11 +4414,22 @@ def _update_tap_runner_bpm(chase_id: str, step_ms: float) -> bool:
     return True
 
 
+def _scene_channel_commands(scene_id) -> list:
+    """Resolve a scene to CH|abs|val commands, mirroring _mock_chase_run's step logic."""
+    scene_elem = _find_scene_element(scene_id)
+    if scene_elem is None:
+        return []
+    cvs = scene_to_channel_values(scene_elem)
+    return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
+
+
 def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
-    Each iteration activates the next scene via setFunctionStatus, then sleeps for
-    state['step_ms'] ms so that BPM changes take effect on the very next step.
+    Each iteration resolves the next step's scene to channel values and emits
+    CH|abs|val frames (same replace-per-step behaviour as _mock_chase_run), then
+    sleeps for state['step_ms'] ms so that BPM changes take effect on the very
+    next step.
     """
     _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
     if not scene_ids:
@@ -4433,7 +4444,9 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
         while state["running"]:
             scene_id = scene_ids[idx % n]
             try:
-                await _qlc_send_commands([f"QLC+API|setFunctionStatus|{scene_id}|1"])
+                commands = _scene_channel_commands(scene_id)
+                if commands:
+                    await _qlc_send_commands(commands)
             except Exception:
                 pass
             await asyncio.sleep(max(0.01, state["step_ms"] / 1000.0))
@@ -4839,24 +4852,17 @@ async def _mock_chase_run(function_id: int, chase_info: dict, gen: int) -> None:
             # Apply the scene to the mock bus
             if scene_id is not None:
                 try:
-                    scene_elem = _find_scene_element(scene_id)
-                    if scene_elem is not None:
-                        cvs = scene_to_channel_values(scene_elem)
-                        # Build CH commands and apply directly — calling
-                        # set_channel_values() here would deadlock because
-                        # _qlc_run uses run_coroutine_threadsafe on the same
-                        # loop this coroutine is running on.
-                        commands = [
-                            f"CH|{ch}|{max(0, min(255, val))}"
-                            for ch, val in cvs
-                            if int(ch) > 0
-                        ]
-                        # Re-check freshness: the scene lookup above re-parses
-                        # the workspace XML from disk, which is slow enough
-                        # for a stop() on another thread to have landed while
-                        # we were building `commands`.
-                        if commands and _mock_chase_generation.get(function_id) == gen:
-                            _mock_dmx.apply_commands(commands)
+                    # Build CH commands and apply directly — calling
+                    # set_channel_values() here would deadlock because
+                    # _qlc_run uses run_coroutine_threadsafe on the same
+                    # loop this coroutine is running on.
+                    commands = _scene_channel_commands(scene_id)
+                    # Re-check freshness: the scene lookup above re-parses
+                    # the workspace XML from disk, which is slow enough
+                    # for a stop() on another thread to have landed while
+                    # we were building `commands`.
+                    if commands and _mock_chase_generation.get(function_id) == gen:
+                        _mock_dmx.apply_commands(commands)
                 except Exception as e:
                     print(f"[mock-chase {function_id}] step {i} apply error: {e}")
 

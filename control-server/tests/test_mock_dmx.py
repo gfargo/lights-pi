@@ -368,6 +368,25 @@ class TestFlaskMockIntegration:
         state2 = mock_dmx.snapshot()
         assert state1 == state2, "Bus kept changing after stop — a stepper leaked from concurrent start/stop"
 
+    def test_tap_chase_advances_mock_bus(self, mock_client):
+        """Tap-source chase runner must also write to the mock bus (issue #67)."""
+        import time
+
+        mock_dmx.reset()
+        # Start the tap-tempo test chase (ID 102, two 100 ms steps)
+        r = mock_client.post("/api/chases/102/start")
+        assert r.status_code == 200
+        assert r.get_json()["success"] is True
+        # Wait long enough for at least one step to fire (step=100ms, add buffer)
+        time.sleep(0.5)
+        state = mock_client.get("/debug/dmx-state").get_json()
+        assert len(state) > 0, "Tap runner never wrote to the mock DMX bus"
+        # Stop the runner and confirm stepping ceases
+        mock_client.post("/api/chases/102/stop")
+        after_stop = mock_client.get("/debug/dmx-state").get_json()
+        time.sleep(0.3)
+        assert mock_client.get("/debug/dmx-state").get_json() == after_stop
+
 
 class TestDebugEndpointNotMounted:
     """Verify /debug/dmx-state returns 404 when not in mock mode."""
