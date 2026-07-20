@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import queue
+import random
 import shutil
 import socket
 import subprocess
@@ -4717,11 +4718,22 @@ def _update_tap_runner_bpm(chase_id: str, step_ms: float) -> bool:
     return True
 
 
+def _scene_channel_commands(scene_id) -> list:
+    """Resolve a scene to CH|abs|val commands, mirroring _mock_chase_run's step logic."""
+    scene_elem = _find_scene_element(scene_id)
+    if scene_elem is None:
+        return []
+    cvs = scene_to_channel_values(scene_elem)
+    return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
+
+
 def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
-    Each iteration activates the next scene via setFunctionStatus, then sleeps for
-    state['step_ms'] ms so that BPM changes take effect on the very next step.
+    Each iteration resolves the next step's scene to channel values and emits
+    CH|abs|val frames (same replace-per-step behaviour as _mock_chase_run), then
+    sleeps for state['step_ms'] ms so that BPM changes take effect on the very
+    next step.
     """
     _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
     if not scene_ids:
@@ -4736,7 +4748,9 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
         while state["running"]:
             scene_id = scene_ids[idx % n]
             try:
-                await _qlc_send_commands([f"QLC+API|setFunctionStatus|{scene_id}|1"])
+                commands = _scene_channel_commands(scene_id)
+                if commands:
+                    await _qlc_send_commands(commands)
             except Exception:
                 pass
             await asyncio.sleep(max(0.01, state["step_ms"] / 1000.0))
@@ -4969,9 +4983,11 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
     """Sync wrapper around setFunctionStatus. Returns (ok, raw_response)."""
     if MOCK_DMX:
         if running:
-            _mock_chase_start(function_id)
-        else:
-            _mock_chase_stop(function_id)
+            started = _mock_chase_start(function_id)
+            if not started:
+                return False, f"mock chase {function_id} not started (missing or empty)"
+            return True, "QLC+API|setFunctionStatus|OK"
+        _mock_chase_stop(function_id)
         return True, "QLC+API|setFunctionStatus|OK"
     try:
         raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
@@ -4986,7 +5002,22 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
 # Chases in production are executed by QLC+ itself; in mock mode we need an
 # in-process stepper so the bus reflects what would be on the wire.
 
-_mock_chase_tasks: dict[int, asyncio.Task] = {}
+_mock_chase_tasks: dict[int, "concurrent.futures.Future"] = {}
+
+# Bumped on every start/stop for a function_id. `_mock_chase_run` checks this
+# before every bus write, so a racing/stale task self-terminates even if
+# `Future.cancel()` hasn't been delivered yet — see the note in
+# `_mock_chase_start` about why cancellation alone isn't sufficient.
+_mock_chase_generation: dict[int, int] = {}
+
+# Guards the generation-bump + registry read-modify-write in
+# `_mock_chase_start`/`_mock_chase_stop` so two genuinely concurrent
+# start/stop calls for the same function_id (Flask runs threaded) can't both
+# read the same prior generation and register with an identical value.
+# A plain Lock suffices: neither function calls `Future.cancel()` while
+# holding it (that's deferred until after release — see the comment in
+# `_mock_chase_start`), so there's no reentrant path.
+_mock_chase_lock = threading.Lock()
 
 # Floor on each mock chase step's sleep so a zero-fade/zero-hold step (or a
 # chase with absent/non-numeric timing that falls back to 0) still yields to
@@ -4994,9 +5025,41 @@ _mock_chase_tasks: dict[int, asyncio.Task] = {}
 _MOCK_CHASE_MIN_STEP_S = 0.02
 
 
-def _mock_chase_start(function_id: int) -> None:
-    """Start an in-process chase stepper for the given function ID."""
-    _mock_chase_stop(function_id)  # cancel existing if any
+# Dedicated RNG for `Random` run_order playback, kept separate from the
+# `random` module's global state so tests can get deterministic picks via
+# `_mock_chase_random.seed(...)` without disturbing (or being disturbed by)
+# unrelated code that calls `random.seed()`/`random.random()` elsewhere.
+_mock_chase_random = random.Random()
+
+
+def _chase_index_sequence(n: int, run_order: str):
+    """Yield step indices in playback order for the given run_order.
+
+    Loop: 0..n-1 repeating. SingleShot: 0..n-1 once. PingPong: bounces
+    forward then back without repeating the endpoints. Random: an endless
+    stream of `_mock_chase_random.randrange(n)` picks.
+    """
+    if n <= 0:
+        return
+    if run_order == "Random":
+        while True:
+            yield _mock_chase_random.randrange(n)
+    elif run_order == "PingPong":
+        while True:
+            yield from range(n)
+            yield from range(n - 2, 0, -1)
+    elif run_order == "SingleShot":
+        yield from range(n)
+    else:  # Loop (and anything unrecognized)
+        while True:
+            yield from range(n)
+
+
+def _mock_chase_start(function_id: int) -> bool:
+    """Start an in-process chase stepper for the given function ID.
+
+    Returns True if a stepper was actually spawned.
+    """
     chase_elem = None
     try:
         for func in _engine_functions(_engine_element(_workspace_root())):
@@ -5006,40 +5069,87 @@ def _mock_chase_start(function_id: int) -> None:
     except Exception:
         pass
     if chase_elem is None:
-        return
+        _mock_chase_stop(function_id)  # cancel any existing stepper anyway
+        return False
 
     chase_info = _describe_chase_full(chase_elem)
     if not chase_info["steps"]:
-        return
+        _mock_chase_stop(function_id)  # cancel any existing stepper anyway
+        return False
 
     if _qlc_loop is None:
         _start_qlc_loop()
 
-    task = asyncio.run_coroutine_threadsafe(
-        _mock_chase_run(function_id, chase_info),
-        _qlc_loop,
-    )
-    _mock_chase_tasks[function_id] = task
+    # Single atomic section: pop the old registration, bump the generation,
+    # and register the new future all under one lock acquisition, so a
+    # concurrent start/stop for the same function_id can never observe (or
+    # race into) a torn state — e.g. an old task still registered under a
+    # newer generation. The old future's cancel() is deliberately deferred
+    # until AFTER the lock is released: concurrent.futures.Future.cancel()
+    # invokes done-callbacks synchronously (in the calling thread) when the
+    # future hasn't started running yet, and our own done-callback below
+    # also acquires this lock — cancelling while still holding it would
+    # deadlock (this is a plain Lock, not reentrant).
+    with _mock_chase_lock:
+        old_fut = _mock_chase_tasks.pop(function_id, None)
+        gen = _mock_chase_generation.get(function_id, 0) + 1
+        _mock_chase_generation[function_id] = gen
+
+        fut = asyncio.run_coroutine_threadsafe(
+            _mock_chase_run(function_id, chase_info, gen),
+            _qlc_loop,
+        )
+        _mock_chase_tasks[function_id] = fut
+
+    if old_fut is not None:
+        old_fut.cancel()
+
+    def _cleanup(_done, _fid=function_id, _fut=fut):
+        # Identity-guarded: only remove OUR registration. Without this, an
+        # old (cancelled) task's cleanup can run after a restart has already
+        # registered a newer task under the same function_id, popping the
+        # new one and leaking the old stepper forever.
+        with _mock_chase_lock:
+            if _mock_chase_tasks.get(_fid) is _fut:
+                _mock_chase_tasks.pop(_fid, None)
+
+    fut.add_done_callback(_cleanup)
+    return True
 
 
 def _mock_chase_stop(function_id: int) -> None:
     """Cancel the in-process chase stepper for the given function ID."""
-    task = _mock_chase_tasks.pop(function_id, None)
+    # Bump the generation unconditionally (even with no task registered) so
+    # a task that hasn't been scheduled onto the loop yet — and therefore
+    # has nothing to cancel() — still notices it's stale on its first turn.
+    with _mock_chase_lock:
+        _mock_chase_generation[function_id] = _mock_chase_generation.get(function_id, 0) + 1
+        task = _mock_chase_tasks.pop(function_id, None)
     if task is not None:
         task.cancel()
 
 
-async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
-    """Async chase stepper: apply each step's scene to the mock bus on schedule."""
+async def _mock_chase_run(function_id: int, chase_info: dict, gen: int) -> None:
+    """Async chase stepper: apply each step's scene to the mock bus on schedule.
+
+    `asyncio.Task.cancel()` delivered via `run_coroutine_threadsafe` is only
+    honoured at the next `await` point — but a brand-new task always runs its
+    body synchronously up to its *first* await regardless of when cancel()
+    was requested (cancellation propagation itself is one loop-tick behind
+    task creation). That lets a stale task from a start->restart->stop burst
+    slip in a bus write before it notices it's cancelled. Checking the
+    generation counter both before and after building the write (scene
+    lookup re-parses the workspace XML from disk, which is slow enough for a
+    stop() on another thread to land in between) closes that gap.
+    """
     steps = chase_info["steps"]
     default_speed = chase_info.get("speed", {})
     run_order = chase_info.get("run_order", "Loop")
-    indices = list(range(len(steps)))
 
-    idx_iter = 0
     try:
-        while True:
-            i = indices[idx_iter % len(indices)]
+        for i in _chase_index_sequence(len(steps), run_order):
+            if _mock_chase_generation.get(function_id) != gen:
+                return
             step = steps[i]
             scene_id = step.get("scene_id")
             hold_ms = step.get("hold_ms", -1)
@@ -5052,36 +5162,29 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
             # Apply the scene to the mock bus
             if scene_id is not None:
                 try:
-                    scene_elem = _find_scene_element(scene_id)
-                    if scene_elem is not None:
-                        cvs = scene_to_channel_values(scene_elem)
-                        # Build CH commands and apply directly — calling
-                        # set_channel_values() here would deadlock because
-                        # _qlc_run uses run_coroutine_threadsafe on the same
-                        # loop this coroutine is running on.
-                        commands = [
-                            f"CH|{ch}|{max(0, min(255, val))}"
-                            for ch, val in cvs
-                            if int(ch) > 0
-                        ]
-                        if commands:
-                            _mock_dmx.apply_commands(commands)
+                    # Build CH commands and apply directly — calling
+                    # set_channel_values() here would deadlock because
+                    # _qlc_run uses run_coroutine_threadsafe on the same
+                    # loop this coroutine is running on.
+                    commands = _scene_channel_commands(scene_id)
+                    # Re-check freshness: the scene lookup above re-parses
+                    # the workspace XML from disk, which is slow enough
+                    # for a stop() on another thread to have landed while
+                    # we were building `commands`.
+                    if commands and _mock_chase_generation.get(function_id) == gen:
+                        _mock_dmx.apply_commands(commands)
                 except Exception as e:
                     print(f"[mock-chase {function_id}] step {i} apply error: {e}")
 
             # Honour timing (fade_in + hold). Always yield at least once per
             # iteration — a zero-timing step must not starve the shared
-            # _qlc_loop (see OSS-885 / lights-pi#65).
+            # _qlc_loop (see OSS-885 / lights-pi#65). SingleShot termination
+            # is handled by _chase_index_sequence itself (it simply stops
+            # yielding), so no separate break condition is needed here.
             total_sleep = max((fade_in_ms + hold_ms) / 1000, _MOCK_CHASE_MIN_STEP_S)
             await asyncio.sleep(total_sleep)
-
-            idx_iter += 1
-            if run_order == "SingleShot" and idx_iter >= len(indices):
-                break
     except asyncio.CancelledError:
         pass
-    finally:
-        _mock_chase_tasks.pop(function_id, None)
 
 
 # ------------------------------- endpoints ----------------------------------

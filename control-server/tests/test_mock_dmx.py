@@ -1,6 +1,9 @@
 """Tests for the mock_dmx module."""
+import itertools
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -85,6 +88,36 @@ class TestSnapshot:
         keys = list(mock_dmx.snapshot().keys())
         assert keys == sorted(keys)
 
+    def test_concurrent_writes_and_reads_dont_raise(self):
+        """Regression: snapshot() must not race with apply_commands() inserting
+        new keys from another thread (RuntimeError: dict changed size during
+        iteration)."""
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            ch = 1
+            while not stop.is_set():
+                mock_dmx.apply_commands([f"CH|{ch}|100"])
+                ch = (ch % 500) + 1
+
+        def reader():
+            try:
+                while not stop.is_set():
+                    mock_dmx.snapshot()
+            except Exception as e:  # pragma: no cover - failure path
+                errors.append(e)
+
+        threads = [threading.Thread(target=writer) for _ in range(2)]
+        threads += [threading.Thread(target=reader) for _ in range(2)]
+        for t in threads:
+            t.start()
+        time.sleep(0.3)
+        stop.set()
+        for t in threads:
+            t.join(timeout=2)
+        assert errors == []
+
 
 # ---------------------------------------------------------------------------
 # serialize_get_channels_values — round-trip with _fetch_channel_values logic
@@ -149,6 +182,51 @@ class TestMockQLCWebSocket:
         assert ws.closed is False
         asyncio.run(ws.close())
         assert ws.closed is True
+
+
+# ---------------------------------------------------------------------------
+# _chase_index_sequence — run_order fidelity (pure helper, app.py)
+# ---------------------------------------------------------------------------
+
+class TestChaseIndexSequence:
+    def _seq(self, n, run_order, count):
+        import app as _app_module
+        return list(itertools.islice(_app_module._chase_index_sequence(n, run_order), count))
+
+    def test_loop_repeats(self):
+        assert self._seq(3, "Loop", 7) == [0, 1, 2, 0, 1, 2, 0]
+
+    def test_single_shot_runs_once_then_stops(self):
+        import app as _app_module
+        assert list(_app_module._chase_index_sequence(3, "SingleShot")) == [0, 1, 2]
+
+    def test_ping_pong_bounces(self):
+        # n=3 → forward 0,1,2 then back through the middle only: 1
+        assert self._seq(3, "PingPong", 8) == [0, 1, 2, 1, 0, 1, 2, 1]
+
+    def test_random_stays_in_range(self):
+        import app as _app_module
+        _app_module._mock_chase_random.seed(0)
+        picks = list(itertools.islice(_app_module._chase_index_sequence(5, "Random"), 50))
+        assert all(0 <= p < 5 for p in picks)
+
+    def test_random_is_deterministic_via_dedicated_rng(self):
+        """`Random` playback uses its own RNG instance (not the global
+        `random` module), so seeding it gives reproducible picks without
+        touching unrelated global random state."""
+        import app as _app_module
+
+        _app_module._mock_chase_random.seed(42)
+        picks_a = list(itertools.islice(_app_module._chase_index_sequence(5, "Random"), 20))
+        _app_module._mock_chase_random.seed(42)
+        picks_b = list(itertools.islice(_app_module._chase_index_sequence(5, "Random"), 20))
+        assert picks_a == picks_b
+
+    def test_zero_steps_yields_nothing(self):
+        assert self._seq(0, "Loop", 5) == []
+
+    def test_unknown_run_order_falls_back_to_loop(self):
+        assert self._seq(2, "Bogus", 5) == [0, 1, 0, 1, 0]
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +305,87 @@ class TestFlaskMockIntegration:
         # Stop the chase before asserting so it doesn't race with cleanup
         mock_client.post("/api/chases/100/stop")
         assert len(state) > 0, "Chase stepper never wrote to the mock DMX bus"
+
+    def test_restart_then_stop_leaves_no_orphan_stepper(self, mock_client):
+        """Regression: restarting a chase must not let the old task's cleanup
+        pop the newly-registered task, leaving an unstoppable orphan stepper."""
+        import app as _app_module
+
+        mock_dmx.reset()
+        r1 = mock_client.post("/api/chases/100/start")
+        assert r1.status_code == 200
+        r2 = mock_client.post("/api/chases/100/start")  # restart
+        assert r2.status_code == 200
+        r3 = mock_client.post("/api/chases/100/stop")
+        assert r3.status_code == 200
+
+        assert 100 not in _app_module._mock_chase_tasks
+
+        state1 = mock_dmx.snapshot()
+        time.sleep(0.3)
+        state2 = mock_dmx.snapshot()
+        assert state1 == state2, "Bus kept changing after stop — an orphan stepper is still running"
+
+    def test_start_empty_chase_reports_failure(self, mock_client):
+        """Chase 101 has zero steps; starting it must not report success."""
+        r = mock_client.post("/api/chases/101/start")
+        data = r.get_json()
+        assert data["success"] is False
+
+    def test_concurrent_start_stop_hammer_leaves_consistent_state(self, mock_client):
+        """Regression: the generation counter is a non-atomic read-modify-write.
+        Threads racing on start/stop for the same function_id could compute the
+        same generation and defeat the stale-task self-termination check —
+        a narrower reintroduction of the restart-race orphan bug, but under
+        true thread-level concurrency instead of sequential start/restart/stop.
+
+        Calls `_mock_chase_start`/`_mock_chase_stop` directly (rather than
+        through the Flask test client) since the werkzeug test client's app
+        context isn't safe to drive from multiple threads at once — that's
+        an artifact of the test harness, not the code under test.
+        """
+        import app as _app_module
+
+        mock_dmx.reset()
+
+        def hammer():
+            for _ in range(20):
+                _app_module._mock_chase_start(100)
+                _app_module._mock_chase_stop(100)
+
+        threads = [threading.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        _app_module._mock_chase_stop(100)  # make sure everything is stopped
+
+        assert 100 not in _app_module._mock_chase_tasks
+
+        state1 = mock_dmx.snapshot()
+        time.sleep(0.3)
+        state2 = mock_dmx.snapshot()
+        assert state1 == state2, "Bus kept changing after stop — a stepper leaked from concurrent start/stop"
+
+    def test_tap_chase_advances_mock_bus(self, mock_client):
+        """Tap-source chase runner must also write to the mock bus (issue #67)."""
+        import time
+
+        mock_dmx.reset()
+        # Start the tap-tempo test chase (ID 102, two 100 ms steps)
+        r = mock_client.post("/api/chases/102/start")
+        assert r.status_code == 200
+        assert r.get_json()["success"] is True
+        # Wait long enough for at least one step to fire (step=100ms, add buffer)
+        time.sleep(0.5)
+        state = mock_client.get("/debug/dmx-state").get_json()
+        assert len(state) > 0, "Tap runner never wrote to the mock DMX bus"
+        # Stop the runner and confirm stepping ceases
+        mock_client.post("/api/chases/102/stop")
+        after_stop = mock_client.get("/debug/dmx-state").get_json()
+        time.sleep(0.3)
+        assert mock_client.get("/debug/dmx-state").get_json() == after_stop
 
 
 class TestDebugEndpointNotMounted:
