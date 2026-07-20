@@ -8,6 +8,7 @@ from app import (
     _analyze_boot_history,
     _decode_throttled,
     _filter_dmx_usb_lines,
+    _last_look_file,
     _parse_last_look,
     _parse_systemd_show_property,
     _should_restore_look,
@@ -135,4 +136,49 @@ class TestShouldRestoreLook:
 
     def test_skips_without_saved_look(self):
         assert _should_restore_look(60, self.DARK, {}) is False
-        assert _should_restore_look(60, self.DARK, {1: 0}) is False
+
+
+class TestLastLookFile:
+    """A saved look must not leak across a workspace switch: different
+    workspaces can have entirely different fixture patches, so replaying
+    another venue's raw channel values via the restart-triggered restore
+    (load_workspace restarts qlcplus-web) is exactly the bug this scoping
+    prevents. Unlike fixture groups, there's no cross-workspace fallback
+    except for the pre-workspace-switching 'default' workspace."""
+
+    def test_new_workspace_gets_its_own_unwritten_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.WORKSPACE_DIR", tmp_path)
+        monkeypatch.setattr("app.LAST_LOOK_FILE", tmp_path / "last_look.json")
+        monkeypatch.setattr("app._active_workspace_name", lambda: "venue-b")
+        result = _last_look_file()
+        assert result == tmp_path / "last_look.venue-b.json"
+        assert not result.exists()
+
+    def test_uses_existing_per_workspace_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.WORKSPACE_DIR", tmp_path)
+        monkeypatch.setattr("app.LAST_LOOK_FILE", tmp_path / "last_look.json")
+        monkeypatch.setattr("app._active_workspace_name", lambda: "venue-a")
+        scoped = tmp_path / "last_look.venue-a.json"
+        scoped.write_text('{"values": {}}')
+        assert _last_look_file() == scoped
+
+    def test_default_workspace_falls_back_to_legacy_global_file(self, tmp_path, monkeypatch):
+        """Upgrading installs shouldn't lose crash-recovery on their first
+        restart after this change ships."""
+        monkeypatch.setattr("app.WORKSPACE_DIR", tmp_path)
+        legacy = tmp_path / "last_look.json"
+        legacy.write_text('{"values": {"1": 255}}')
+        monkeypatch.setattr("app.LAST_LOOK_FILE", legacy)
+        monkeypatch.setattr("app._active_workspace_name", lambda: "default")
+        assert _last_look_file() == legacy
+
+    def test_non_default_workspace_ignores_legacy_global_file(self, tmp_path, monkeypatch):
+        """The legacy-file fallback only applies to 'default' — any other
+        workspace gets its own empty scoped path, never the old global
+        snapshot (which could be from an unrelated fixture patch)."""
+        monkeypatch.setattr("app.WORKSPACE_DIR", tmp_path)
+        legacy = tmp_path / "last_look.json"
+        legacy.write_text('{"values": {"1": 255}}')
+        monkeypatch.setattr("app.LAST_LOOK_FILE", legacy)
+        monkeypatch.setattr("app._active_workspace_name", lambda: "venue-b")
+        assert _last_look_file() == tmp_path / "last_look.venue-b.json"

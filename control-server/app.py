@@ -967,9 +967,32 @@ def _should_restore_look(uptime_s, current_values, saved_values) -> bool:
     return not any(current_values.values())
 
 
+def _last_look_file() -> Path:
+    """Return the per-workspace last-look snapshot path.
+
+    Different workspaces can have entirely different fixture patches and
+    channel counts, so a saved look must not leak across a workspace switch
+    — unlike fixture groups (_groups_file), which are safe to share via a
+    global fallback, replaying another venue's raw channel values onto a
+    fresh patch is exactly the bug this scoping prevents (load_workspace
+    restarts qlcplus-web, and the restart-triggered restore would otherwise
+    blast the *previous* workspace's snapshot onto the newly loaded one).
+    Falls back to the pre-workspace-switching global file only for the
+    default workspace, so upgrading installs don't lose crash-recovery on
+    their first restart.
+    """
+    active = _active_workspace_name()
+    per_ws = WORKSPACE_DIR / f"last_look.{active}.json"
+    if per_ws.exists():
+        return per_ws
+    if active == "default" and LAST_LOOK_FILE.exists():
+        return LAST_LOOK_FILE
+    return per_ws
+
+
 def _load_last_look() -> dict[int, int]:
     try:
-        return _parse_last_look(LAST_LOOK_FILE.read_text())
+        return _parse_last_look(_last_look_file().read_text())
     except OSError:
         return {}
 
@@ -1040,8 +1063,9 @@ def _last_look_saver_loop():
             snap = {str(k): int(v) for k, v in sorted(values.items())}
             if snap == last_written:
                 continue
-            LAST_LOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
-            LAST_LOOK_FILE.write_text(json.dumps({
+            last_look_file = _last_look_file()
+            last_look_file.parent.mkdir(parents=True, exist_ok=True)
+            last_look_file.write_text(json.dumps({
                 "values": snap,
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }))
