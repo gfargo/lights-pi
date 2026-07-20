@@ -6640,11 +6640,18 @@ def _run_chat_with_failover(incoming_messages: list, tools: list) -> dict:
             attempts.append({"provider": provider, "skipped": "no_api_key"})
             continue
 
-        with _breaker_lock:
-            if _breaker_is_open(_provider_breaker, provider, time.time()):
-                logging.warning("chat_failover: skipping %s — circuit breaker open", provider)
-                attempts.append({"provider": provider, "skipped": "breaker_open"})
-                continue
+        # Skipping on an open breaker only makes sense if there's another
+        # provider left in the chain to fail over to. For a single-provider
+        # chain (the common case — AI_PROVIDER_FAILOVER unset), skipping
+        # would just manufacture a hard 60s outage window where pre-failover
+        # behavior would have kept retrying directly. Still attempt it; the
+        # breaker's failure count keeps accumulating for observability.
+        if len(chain) > 1:
+            with _breaker_lock:
+                if _breaker_is_open(_provider_breaker, provider, time.time()):
+                    logging.warning("chat_failover: skipping %s — circuit breaker open", provider)
+                    attempts.append({"provider": provider, "skipped": "breaker_open"})
+                    continue
 
         if provider == "anthropic":
             result = _anthropic_chat_loop(list(messages_to_try), tools, model, api_key)

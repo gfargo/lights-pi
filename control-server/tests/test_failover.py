@@ -225,6 +225,20 @@ class TestRunChatWithFailover:
         assert oai_called == [1]
         assert result["served_by"] == "openai"
 
+    def test_single_provider_ignores_open_breaker(self, monkeypatch):
+        """A single-provider chain (AI_PROVIDER_FAILOVER unset — the common,
+        default deployment shape) has nowhere to fail over to. An open
+        breaker must not block the only provider in the chain — that would
+        manufacture a hard 60s outage where pre-failover behavior would have
+        just kept retrying directly."""
+        self._patch(monkeypatch, ["anthropic"])
+        monkeypatch.setattr("app._provider_breaker", {"anthropic": {"fails": 3, "open_until": 9_999_999_999.0}})
+        monkeypatch.setattr("app._anthropic_chat_loop", lambda *a, **kw: _success("anthropic"))
+
+        result = _run_chat_with_failover(_MSGS, [])
+        assert result["served_by"] == "anthropic"
+        assert result["stop_reason"] != "error"
+
     def test_all_fail_returns_error(self, monkeypatch):
         self._patch(monkeypatch, ["anthropic", "openai"])
         monkeypatch.setattr("app._anthropic_chat_loop", lambda *a, **kw: _failover_err("anthropic"))
