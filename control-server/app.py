@@ -607,11 +607,12 @@ def _fixture_to_dict(fixture):
     }
 
 
-def get_workspace_fixtures():
+def get_workspace_fixtures(root=None):
     """Return fixture metadata from the configured workspace."""
-    if not WORKSPACE_PATH.exists():
-        return []
-    root = _workspace_root()
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
     return [_fixture_to_dict(f) for f in _fixture_elements(root)]
 
 
@@ -623,11 +624,12 @@ def _engine_element(root):
     return root.find("Engine")
 
 
-def get_workspace_scenes():
+def get_workspace_scenes(root=None):
     """Return real Engine scene functions, excluding Virtual Console references."""
-    if not WORKSPACE_PATH.exists():
-        return []
-    root = _workspace_root()
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
     engine = _engine_element(root)
     if engine is None:
         return []
@@ -2774,15 +2776,26 @@ def list_templates():
 def list_scenes():
     """List existing scene functions from the loaded workspace, each with a swatch URI."""
     try:
-        scenes = get_workspace_scenes()
+        root = _workspace_root() if WORKSPACE_PATH.exists() else None
+        scenes = get_workspace_scenes(root=root)
+        fixtures = get_workspace_fixtures(root=root) if root is not None else []
         try:
             mtime = WORKSPACE_PATH.stat().st_mtime
         except OSError:
             mtime = 0.0
+
+        engine = _engine_element(root) if root is not None else None
+        elems_by_id = {}
+        if engine is not None:
+            ns = "http://www.qlcplus.org/Workspace"
+            for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+                if func.get("Type") == "Scene" and (func.get("ID") or "").isdigit():
+                    elems_by_id[int(func.get("ID"))] = func
+
         for s in scenes:
             try:
-                elem = _find_scene_element(s["id"])
-                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime) if elem is not None else None
+                elem = elems_by_id.get(s["id"])
+                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime, fixtures=fixtures) if elem is not None else None
             except Exception:
                 s["swatch"] = None
         return jsonify({"scenes": scenes})
@@ -3460,7 +3473,7 @@ def remove_fixtures_from_group(group_name):
 # Scene management — describe / delete / rename / duplicate
 # ----------------------------------------------------------------------------
 
-def _scene_value_breakdown(scene_root) -> list:
+def _scene_value_breakdown(scene_root, fixtures=None) -> list:
     """Convert a scene <Function> element to a fixture-keyed value breakdown.
 
     Returns a list of dicts:
@@ -3469,7 +3482,9 @@ def _scene_value_breakdown(scene_root) -> list:
 
     The channel name comes from the .qxf parser when available.
     """
-    fixtures_by_id = {str(f["id"]): f for f in get_workspace_fixtures()}
+    fixtures_by_id = {
+        str(f["id"]): f for f in (fixtures if fixtures is not None else get_workspace_fixtures())
+    }
     out = []
     for fixture_val in _find_children(scene_root, "FixtureVal"):
         fid = fixture_val.get("ID")
@@ -3513,12 +3528,12 @@ def _scene_value_breakdown(scene_root) -> list:
     return out
 
 
-def _scene_swatch_svg(scene_root) -> str:
+def _scene_swatch_svg(scene_root, fixtures=None) -> str:
     """Return a data:image/svg+xml URI with one color band per fixture.
 
     Falls back to a dark neutral strip when no color roles are resolvable.
     """
-    breakdown = _scene_value_breakdown(scene_root)
+    breakdown = _scene_value_breakdown(scene_root, fixtures=fixtures)
     if not breakdown:
         return _neutral_swatch_svg()
 
@@ -3552,7 +3567,7 @@ def _neutral_swatch_svg() -> str:
     return f"data:image/svg+xml;charset=utf-8,{encoded}"
 
 
-def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str | None:
+def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float, fixtures=None) -> str | None:
     """Return cached swatch URI for a scene, re-computing when workspace changed."""
     global _scene_swatch_cache, _scene_swatch_cache_mtime
     if workspace_mtime != _scene_swatch_cache_mtime:
@@ -3560,7 +3575,7 @@ def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str 
         _scene_swatch_cache_mtime = workspace_mtime
     if scene_id not in _scene_swatch_cache:
         try:
-            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem)
+            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem, fixtures=fixtures)
         except Exception:
             _scene_swatch_cache[scene_id] = None
     return _scene_swatch_cache[scene_id]
