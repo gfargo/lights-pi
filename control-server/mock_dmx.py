@@ -11,34 +11,41 @@ All DMX writes in app.py flow through _qlc_send_commands which sends
 from __future__ import annotations
 
 import asyncio
+import threading
 
 # ---------------------------------------------------------------------------
 # The bus
 # ---------------------------------------------------------------------------
 
 _BUS: dict[tuple[int, int], int] = {}
+# The stepper mutates _BUS from the _qlc_loop thread while Flask request
+# threads read it (snapshot / serialize_get_channels_values) — one lock
+# guards both write and read paths.
+_LOCK = threading.Lock()
 
 
 def apply_commands(commands: list[str]) -> None:
     """Apply a list of raw QLC+ CH|abs|val commands to the mock bus."""
-    for cmd in commands:
-        parts = cmd.split("|")
-        if len(parts) == 3 and parts[0] == "CH":
-            try:
-                # QLC+ absolute channels are 1-based; convert to 0-based
-                # (universe, channel) via divmod on (abs - 1).
-                abs_ch = int(parts[1])
-                val = max(0, min(255, int(parts[2])))
-                if abs_ch >= 1:
-                    universe, channel = divmod(abs_ch - 1, 512)
-                    _BUS[(universe, channel)] = val
-            except (ValueError, IndexError):
-                pass
+    with _LOCK:
+        for cmd in commands:
+            parts = cmd.split("|")
+            if len(parts) == 3 and parts[0] == "CH":
+                try:
+                    # QLC+ absolute channels are 1-based; convert to 0-based
+                    # (universe, channel) via divmod on (abs - 1).
+                    abs_ch = int(parts[1])
+                    val = max(0, min(255, int(parts[2])))
+                    if abs_ch >= 1:
+                        universe, channel = divmod(abs_ch - 1, 512)
+                        _BUS[(universe, channel)] = val
+                except (ValueError, IndexError):
+                    pass
 
 
 def snapshot() -> dict[str, int]:
     """Return the current bus state with string keys ("u/ch", e.g. "0/12")."""
-    return {f"{u}/{c}": v for (u, c), v in sorted(_BUS.items())}
+    with _LOCK:
+        return {f"{u}/{c}": v for (u, c), v in sorted(_BUS.items())}
 
 
 def serialize_get_channels_values(max_ch: int) -> str:
@@ -49,16 +56,18 @@ def serialize_get_channels_values(max_ch: int) -> str:
     where i in range(2, len-1, 3) with parts[i]=abs, parts[i+1]=val.
     """
     parts = ["QLC+API", "getChannelsValues"]
-    for abs_ch in range(1, max_ch + 1):
-        universe, channel = divmod(abs_ch - 1, 512)
-        val = _BUS.get((universe, channel), 0)
-        parts += [str(abs_ch), str(val), ""]
+    with _LOCK:
+        for abs_ch in range(1, max_ch + 1):
+            universe, channel = divmod(abs_ch - 1, 512)
+            val = _BUS.get((universe, channel), 0)
+            parts += [str(abs_ch), str(val), ""]
     return "|".join(parts)
 
 
 def reset() -> None:
     """Clear the bus (used in tests)."""
-    _BUS.clear()
+    with _LOCK:
+        _BUS.clear()
 
 
 # ---------------------------------------------------------------------------
