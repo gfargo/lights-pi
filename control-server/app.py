@@ -624,6 +624,18 @@ def _engine_element(root):
     return root.find("Engine")
 
 
+def _iter_scene_functions(engine):
+    """Yield (id, element) for each real Engine scene function."""
+    ns = "http://www.qlcplus.org/Workspace"
+    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+        if func.get("Type") != "Scene":
+            continue
+        fid = func.get("ID")
+        if not fid or not fid.isdigit():
+            continue
+        yield int(fid), func
+
+
 def get_workspace_scenes(root=None):
     """Return real Engine scene functions, excluding Virtual Console references."""
     if root is None:
@@ -634,21 +646,15 @@ def get_workspace_scenes(root=None):
     if engine is None:
         return []
 
-    ns = "http://www.qlcplus.org/Workspace"
-    scenes = []
-    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
-        if func.get("Type") != "Scene":
-            continue
-        fid = func.get("ID")
-        if not fid or not fid.isdigit():
-            continue
-        scenes.append({
-            "id": int(fid),
+    return [
+        {
+            "id": fid,
             "name": func.get("Name", f"Scene {fid}"),
             "path": func.get("Path", ""),
             "fixture_values": len(_find_children(func, "FixtureVal")),
-        })
-    return scenes
+        }
+        for fid, func in _iter_scene_functions(engine)
+    ]
 
 
 def get_next_scene_id():
@@ -2785,12 +2791,7 @@ def list_scenes():
             mtime = 0.0
 
         engine = _engine_element(root) if root is not None else None
-        elems_by_id = {}
-        if engine is not None:
-            ns = "http://www.qlcplus.org/Workspace"
-            for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
-                if func.get("Type") == "Scene" and (func.get("ID") or "").isdigit():
-                    elems_by_id[int(func.get("ID"))] = func
+        elems_by_id = dict(_iter_scene_functions(engine)) if engine is not None else {}
 
         for s in scenes:
             try:
