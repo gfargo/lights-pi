@@ -464,6 +464,8 @@
         .badge-error   { background: #2e1a1a; color: #f87171; }
         .badge-model   { background: #1a1a1a; color: #666; border: 1px solid #333; }
         .badge-group   { background: #1a1e2e; color: #7aa2f7; }
+        .badge-switch  { background: #1a2e2e; color: #2dd4bf; border: 1px solid #2dd4bf40; }
+        .chat-switch-notice { text-align: center; margin: 0.4rem 0; }
         .history-debug-toggle { font-size: 0.7rem; color: #555; cursor: pointer; user-select: none; margin-left: auto; }
         .history-debug-toggle:hover { color: #999; }
         .history-debug { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; }
@@ -978,6 +980,54 @@
         }
         .result-bar.ok { color: #6ee7b7; border-left-color: #047857; }
         .result-bar.err { color: #f87171; border-left-color: #5a1818; }
+
+        /* ── RF scan (2.4 GHz WiFi vs wireless DMX) ── */
+        .rf-spectrum {
+            display: flex; align-items: flex-end; gap: 0.3rem;
+            height: 100px; margin-top: 0.75rem; padding: 0.6rem 0.6rem 0.4rem;
+            background: #0a0a0a; border: 1px solid #1f1f1f;
+        }
+        .rf-channel-bar {
+            flex: 1; display: flex; flex-direction: column; align-items: center;
+            justify-content: flex-end; height: 100%; gap: 0.35rem;
+        }
+        .rf-channel-bar .bar-track {
+            width: 100%; flex: 1; display: flex; align-items: flex-end;
+        }
+        .rf-channel-bar .bar-fill {
+            width: 100%; min-height: 2px; background: var(--signal-green);
+            transition: height 0.2s;
+        }
+        .rf-channel-bar.moderate .bar-fill { background: var(--signal-amber); }
+        .rf-channel-bar.loud .bar-fill { background: var(--signal-red); }
+        .rf-channel-bar .bar-label {
+            font-size: 0.6rem; color: #666; font-family: ui-monospace, "SF Mono", monospace;
+        }
+        .rf-channel-bar.recommended .bar-label { color: var(--amber-tungsten); font-weight: 600; }
+        .rf-channel-bar.quiet-window .bar-track { outline: 1px dashed var(--arc-cyan); outline-offset: 2px; }
+        .rf-legend {
+            display: flex; gap: 1rem; margin-top: 0.4rem; font-size: 0.65rem; color: #666;
+        }
+        .rf-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+        .rf-legend .swatch { width: 8px; height: 8px; display: inline-block; }
+        .rf-suggestions { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.35rem; }
+        .rf-suggestion {
+            font-size: 0.8rem; color: #ccc; padding: 0.45rem 0.6rem; line-height: 1.4;
+            background: #0a0a0a; border-left: 2px solid var(--amber-tungsten);
+        }
+        .rf-ap-list { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.2rem; }
+        .rf-ap-row {
+            display: grid; grid-template-columns: 1fr auto auto; gap: 0.6rem; align-items: baseline;
+            font-size: 0.75rem; padding: 0.35rem 0.5rem;
+            background: #0a0a0a; border: 1px solid #1a1a1a;
+        }
+        .rf-ap-row .ap-ssid { color: #ccc; }
+        .rf-ap-row .ap-channel, .rf-ap-row .ap-signal {
+            font-family: ui-monospace, "SF Mono", monospace; color: #666;
+        }
+        .rf-ap-row .ap-signal.loud { color: var(--signal-red); }
+        .rf-ap-row .ap-signal.moderate { color: var(--signal-amber); }
+        .rf-ap-row .ap-signal.quiet { color: var(--signal-green); }
         .logs-viewer {
             background: #0a0a0a; border: 1px solid #1f1f1f;
             color: #ccc; font-family: ui-monospace, "SF Mono", monospace;
@@ -1380,6 +1430,7 @@
             <button class="tab" onclick="switchTab('console', this)" role="tab" aria-selected="false">Virtual Console</button>
             <button class="tab" onclick="switchTab('cuelists', this)" role="tab" aria-selected="false">Cue Lists</button>
             <button class="tab" onclick="switchTab('chases', this)" role="tab" aria-selected="false">Chases</button>
+            <button class="tab" onclick="switchTab('audio', this)" role="tab" aria-selected="false">Audio</button>
             <button class="tab" onclick="switchTab('tools', this)" role="tab" aria-selected="false">Quick Tools</button>
             <button class="tab" onclick="switchTab('diag', this)" role="tab" aria-selected="false">Diagnostics</button>
         </div>
@@ -1628,6 +1679,77 @@
         </div>
 
         <!-- ══════════════════════════════════════
+             Audio tab — BPM detection + onset visualizer
+             ══════════════════════════════════════ -->
+        <div id="audio-tab" class="tab-content">
+            <div class="section-title">Audio Reactivity</div>
+
+            <div class="tool-panel" data-eyebrow="Live · BPM">
+                <div class="tool-header">
+                    <span class="tool-title">Detected tempo</span>
+                    <span class="tool-value" id="audioBpmDisplay">— BPM</span>
+                </div>
+                <div id="audioOnsetBar" style="height:6px;background:#222;border-radius:0;overflow:hidden;margin-bottom:0.75rem;">
+                    <div id="audioOnsetPulse" style="height:100%;width:0%;background:var(--amber-tungsten);transition:width 0.08s ease-out,background 0.15s;"></div>
+                </div>
+                <div class="tool-tick-row">
+                    <span id="audioStatusLabel">Disabled</span>
+                    <span id="audioOnsetLabel">No onset</span>
+                </div>
+                <div class="tool-actions" style="margin-top:0.75rem;">
+                    <button class="btn-secondary" onclick="disableAudio()">Disable</button>
+                    <button class="btn-primary" onclick="enableAudio()">Enable mic</button>
+                    <button class="btn-ghost" onclick="calibrateAudio()" title="Auto-set noise gate from ambient level">Calibrate</button>
+                </div>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="Noise gate · sensitivity">
+                <div class="tool-header">
+                    <span class="tool-title">Sensitivity</span>
+                    <span class="tool-value" id="audioSensValue">0.020</span>
+                </div>
+                <input type="range" id="audioSensSlider" class="strobe-slider" min="0" max="0.2" step="0.001" value="0.02"
+                       oninput="document.getElementById('audioSensValue').textContent=parseFloat(this.value).toFixed(3)">
+                <div class="tool-tick-row">
+                    <span>0 · always open</span>
+                    <span>0.02 · default</span>
+                    <span>0.1 · high noise</span>
+                    <span>0.2 · very loud</span>
+                </div>
+                <p class="hint">Lower = more sensitive. Use Calibrate to auto-set from ambient noise.</p>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="Onset flash">
+                <div class="tool-header">
+                    <span class="tool-title">React to</span>
+                </div>
+                <div class="tool-actions">
+                    <select id="audioReactTo" class="field-input" style="flex:1;">
+                        <option value="">Off (no flash)</option>
+                        <option value="any" selected>Any onset</option>
+                        <option value="kick">Kick (energy-based)</option>
+                        <option value="snare">Snare (HF-based)</option>
+                    </select>
+                </div>
+                <p class="hint" style="margin-top:0.5rem;">Flashes all fixtures on detected onset. Enable mic above to activate.</p>
+            </div>
+
+            <div class="tool-panel" data-eyebrow="Beat-clock · chase">
+                <div class="tool-header">
+                    <span class="tool-title">Audio-tempo chase</span>
+                </div>
+                <p class="hint">Step a chase at the detected BPM instead of its fixed speed.</p>
+                <div class="tool-actions" style="flex-wrap:wrap;gap:0.5rem;">
+                    <select id="audioChaseSelect" class="field-input" style="flex:1;min-width:10rem;">
+                        <option value="">— pick a chase —</option>
+                    </select>
+                    <button class="btn-secondary" onclick="stopAudioChase()">Stop</button>
+                    <button class="btn-primary" onclick="startAudioChase()">Start</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════════
              Quick Tools tab — Kelvin, strobe, palette
              ══════════════════════════════════════ -->
         <div id="tools-tab" class="tab-content">
@@ -1702,6 +1824,21 @@
                 </div>
             </div>
 
+            <div class="tool-panel" data-eyebrow="2.4 GHz · wireless DMX">
+                <div class="tool-header">
+                    <span class="tool-title">RF Environment</span>
+                    <button class="btn-secondary btn-tiny" onclick="runRfScan()" id="rfScanBtn">Scan</button>
+                </div>
+                <div class="field-hint" style="margin-bottom:0.5rem;">
+                    Surveys WiFi traffic sharing the band with your wireless DMX transmitter. Receiver-side
+                    signal isn't observable — this only reports what the Pi's own radio hears.
+                </div>
+                <div id="rfScanResult" class="result-bar">Click Scan to survey the band.</div>
+                <div id="rfSpectrum"></div>
+                <div id="rfSuggestions" class="rf-suggestions"></div>
+                <div id="rfApList" class="rf-ap-list"></div>
+            </div>
+
             <div class="tool-panel" data-eyebrow="Diagnostic · sweep">
                 <div class="tool-header">
                     <span class="tool-title">Test DMX</span>
@@ -1740,6 +1877,8 @@
         <footer>lights.local</footer>
     </div>
 
+    <!-- Socket.IO client — served by flask-socketio at this path -->
+    <script src="/socket.io/socket.io.js"></script>
     <script>
         /* ── DOM refs ── */
         const commandInput = document.getElementById('commandInput');
@@ -1871,7 +2010,7 @@
                 — replaceState (vs. pushState) keeps the back button useful
                 because tab clicks don't become history entries.
            ══════════════════════════════════════ */
-        const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'tools', 'diag'];
+        const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'audio', 'tools', 'diag'];
         let currentTab = 'ai';
 
         function switchTab(tabName, btn) {
@@ -1903,6 +2042,7 @@
             // Lazy-load tab content on switch (idempotent — each loader is safe to re-call).
             if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
             else if (tabName === 'chases') loadChases();
+            else if (tabName === 'audio')  initAudio();
             else if (tabName === 'tools') populateToolsGroupSelects();
             else if (tabName === 'diag')  loadSystemInfo();
             else if (tabName === 'chat') { renderChatHistory(); loadConversations(); }
@@ -3054,6 +3194,11 @@
             el.classList.add('bpm-bump');
         }
 
+        // chase name -> { inFlight: boolean, pendingBpm: number|null }
+        // Coalesces tempo POSTs so at most one is ever in flight per chase —
+        // tapping fires faster than the server can rewrite the workspace XML.
+        const tapTempoState = new Map();
+
         async function applyTapBpmToRunningChases(bpm) {
             try {
                 const r = await fetch('/api/chases');
@@ -3061,13 +3206,34 @@
                 if (!data.chases) return;
                 const tapChases = data.chases.filter(c => c.tempo_source === 'tap');
                 for (const c of tapChases) {
-                    fetch(`/api/chases/${encodeURIComponent(c.name)}/tempo`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ bpm }),
-                    }).catch(() => {});
+                    sendTapTempo(c.name, bpm);
                 }
             } catch (e) { /* non-critical */ }
+        }
+
+        function sendTapTempo(chaseName, bpm) {
+            let state = tapTempoState.get(chaseName);
+            if (!state) {
+                state = { inFlight: false, pendingBpm: null };
+                tapTempoState.set(chaseName, state);
+            }
+            if (state.inFlight) {
+                state.pendingBpm = bpm;
+                return;
+            }
+            state.inFlight = true;
+            fetch(`/api/chases/${encodeURIComponent(chaseName)}/tempo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bpm }),
+            }).catch(() => {}).finally(() => {
+                state.inFlight = false;
+                if (state.pendingBpm !== null) {
+                    const nextBpm = state.pendingBpm;
+                    state.pendingBpm = null;
+                    sendTapTempo(chaseName, nextBpm);
+                }
+            });
         }
 
         async function submitChase() {
@@ -3253,6 +3419,96 @@
                 grid.innerHTML = cards.join('') || '<p class="empty-state">No diagnostic data available.</p>';
             } catch (e) {
                 grid.innerHTML = `<p class="empty-state" style="color:#f87171;">Failed to load: ${escHtml(e.message)}</p>`;
+            }
+        }
+
+        /**
+         * Classify a dBm reading into the same loud/moderate/quiet bands
+         * the spectrum bars and AP list use for coloring.
+         */
+        function rfSignalBand(dbm) {
+            if (dbm === null || dbm === undefined) return 'quiet';
+            if (dbm >= -55) return 'loud';
+            if (dbm >= -70) return 'moderate';
+            return 'quiet';
+        }
+
+        function renderRfScan(data) {
+            const resultEl = document.getElementById('rfScanResult');
+            const spectrumEl = document.getElementById('rfSpectrum');
+            const suggestionsEl = document.getElementById('rfSuggestions');
+            const apListEl = document.getElementById('rfApList');
+
+            const aps = data.access_points || [];
+            const analysis = data.analysis || {};
+            const congestion = analysis.per_channel_congestion_dbm || {};
+            const quietWindow = analysis.quiet_window || [];
+            const nonoverlapping = new Set(analysis.nonoverlapping_channels || [1, 6, 11]);
+
+            resultEl.className = 'result-bar ok';
+            resultEl.textContent = aps.length
+                ? `✓ Heard ${aps.length} network${aps.length !== 1 ? 's' : ''} on 2.4 GHz`
+                : '✓ Scan complete — no 2.4 GHz networks heard';
+
+            spectrumEl.innerHTML = `
+                <div class="rf-spectrum">
+                    ${Array.from({ length: 11 }, (_, i) => i + 1).map(ch => {
+                        const dbm = congestion[ch] ?? congestion[String(ch)];
+                        const band = rfSignalBand(dbm);
+                        const heightPct = dbm == null ? 2 : Math.max(2, Math.min(100, Math.round((dbm + 95) / 65 * 100)));
+                        const recommended = nonoverlapping.has(ch) ? ' recommended' : '';
+                        const inQuietWindow = quietWindow.length === 2 && ch >= quietWindow[0] && ch <= quietWindow[1] ? ' quiet-window' : '';
+                        return `<div class="rf-channel-bar ${band}${recommended}${inQuietWindow}" title="Channel ${ch}${dbm != null ? `: ${dbm.toFixed ? dbm.toFixed(0) : dbm} dBm` : ': quiet'}">
+                            <div class="bar-track"><div class="bar-fill" style="height:${heightPct}%;"></div></div>
+                            <span class="bar-label">${ch}</span>
+                        </div>`;
+                    }).join('')}
+                </div>
+                <div class="rf-legend">
+                    <span><span class="swatch" style="background:var(--signal-green);"></span>quiet</span>
+                    <span><span class="swatch" style="background:var(--signal-amber);"></span>moderate</span>
+                    <span><span class="swatch" style="background:var(--signal-red);"></span>loud</span>
+                    <span><span class="swatch" style="background:var(--amber-tungsten);"></span>1/6/11 (non-overlapping)</span>
+                    <span><span class="swatch" style="border:1px dashed var(--arc-cyan);background:transparent;"></span>quietest window</span>
+                </div>`;
+
+            suggestionsEl.innerHTML = (analysis.suggestions || [])
+                .map(s => `<div class="rf-suggestion">${escHtml(s)}</div>`).join('');
+
+            apListEl.innerHTML = aps.map(ap => {
+                const band = rfSignalBand(ap.signal_dbm);
+                const dbmText = ap.signal_dbm != null ? `${ap.signal_dbm.toFixed(0)} dBm` : '?';
+                return `<div class="rf-ap-row">
+                    <span class="ap-ssid">${escHtml(ap.ssid || '(hidden network)')}</span>
+                    <span class="ap-channel">ch ${ap.channel}</span>
+                    <span class="ap-signal ${band}">${dbmText}</span>
+                </div>`;
+            }).join('');
+        }
+
+        async function runRfScan() {
+            const btn = document.getElementById('rfScanBtn');
+            const resultEl = document.getElementById('rfScanResult');
+            btn.disabled = true;
+            resultEl.className = 'result-bar';
+            resultEl.textContent = 'Scanning 2.4 GHz band…';
+            document.getElementById('rfSpectrum').innerHTML = '';
+            document.getElementById('rfSuggestions').innerHTML = '';
+            document.getElementById('rfApList').innerHTML = '';
+            try {
+                const r = await fetch('/api/diagnostics/rf_scan', { method: 'POST' });
+                const data = await r.json();
+                if (data.success) {
+                    renderRfScan(data);
+                } else {
+                    resultEl.className = 'result-bar err';
+                    resultEl.textContent = `✗ ${data.error || 'scan failed'}`;
+                }
+            } catch (e) {
+                resultEl.className = 'result-bar err';
+                resultEl.textContent = `✗ ${e.message}`;
+            } finally {
+                btn.disabled = false;
             }
         }
 
@@ -3606,7 +3862,17 @@
                     appendChatMessage(chatHistory[i], /* persist */ false);
                 }
 
-                // Refresh affected UI panels
+                // Show a notice when the server transparently switched providers.
+                if (data.switched && data.provider) {
+                    const notice = document.createElement('div');
+                    notice.className = 'chat-switch-notice';
+                    notice.innerHTML = `<span class="history-badge badge-switch">switched to ${data.provider}</span>`;
+                    document.getElementById('chatMessages').appendChild(notice);
+                    document.getElementById('chatPane').scrollTop = 1e9;
+                }
+
+                // Refresh affected UI panels (groups, scenes, chases, cue
+                // lists may have been created/deleted by the agent)
                 if (data.tool_calls && data.tool_calls.length) {
                     const touched = new Set(data.tool_calls.map(t => t.name));
                     if (touched.has('create_group') || touched.has('delete_group') ||
@@ -3644,6 +3910,147 @@
                 sendChatMessage();
             }
         });
+
+        /* ══════════════════════════════════════
+           Audio tab — BPM detection + onset flash
+           ══════════════════════════════════════ */
+        let _audioInitialized = false;
+        let _socket = null;
+        let _onsetTimer = null;
+
+        function _getSocket() {
+            if (_socket) return _socket;
+            if (typeof io === 'undefined') return null;
+            _socket = io({ transports: ['websocket', 'polling'] });
+            _socket.on('audio_bpm', function(data) {
+                const el = document.getElementById('audioBpmDisplay');
+                if (el) el.textContent = (data.bpm > 0 ? data.bpm.toFixed(1) : '—') + ' BPM';
+            });
+            _socket.on('audio_onset', function(data) {
+                const pulse = document.getElementById('audioOnsetPulse');
+                const label = document.getElementById('audioOnsetLabel');
+                if (pulse) {
+                    pulse.style.width = '100%';
+                    pulse.style.background = 'var(--amber-tungsten)';
+                    clearTimeout(_onsetTimer);
+                    _onsetTimer = setTimeout(function() {
+                        pulse.style.width = '0%';
+                    }, 120);
+                }
+                if (label) {
+                    const d = new Date(data.onset_ms);
+                    label.textContent = 'Onset ' + d.toLocaleTimeString();
+                }
+            });
+            _socket.on('audio_state', function(data) {
+                _applyAudioState(data);
+            });
+            return _socket;
+        }
+
+        function _applyAudioState(state) {
+            const label = document.getElementById('audioStatusLabel');
+            const bpm = document.getElementById('audioBpmDisplay');
+            if (label) label.textContent = state.available
+                ? (state.enabled ? 'Listening…' : 'Ready · not enabled')
+                : 'Unavailable (install aubio)';
+            if (bpm && state.bpm > 0) bpm.textContent = state.bpm.toFixed(1) + ' BPM';
+            const slider = document.getElementById('audioSensSlider');
+            const sensVal = document.getElementById('audioSensValue');
+            if (slider && state.sensitivity != null) {
+                slider.value = state.sensitivity;
+                if (sensVal) sensVal.textContent = parseFloat(state.sensitivity).toFixed(3);
+            }
+        }
+
+        function initAudio() {
+            _getSocket();
+            if (_audioInitialized) return;
+            _audioInitialized = true;
+            fetch('/api/audio').then(r => r.json()).then(_applyAudioState).catch(function() {});
+            fetch('/api/chases').then(r => r.json()).then(function(data) {
+                const sel = document.getElementById('audioChaseSelect');
+                if (!sel) return;
+                (data.chases || []).forEach(function(ch) {
+                    const opt = document.createElement('option');
+                    opt.value = ch.id;
+                    opt.textContent = ch.name || ('Chase ' + ch.id);
+                    sel.appendChild(opt);
+                });
+            }).catch(function() {});
+        }
+
+        async function enableAudio() {
+            const sens = parseFloat(document.getElementById('audioSensSlider').value);
+            const reactTo = document.getElementById('audioReactTo').value;
+            const body = { sensitivity: sens };
+            if (reactTo) body.react_to = reactTo;
+            try {
+                const r = await fetch('/api/audio/enable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const d = await r.json();
+                _applyAudioState(d);
+                const label = document.getElementById('audioStatusLabel');
+                if (label) label.textContent = d.success ? 'Listening…' : ('Error: ' + (d.error || 'unknown'));
+            } catch (e) {
+                const label = document.getElementById('audioStatusLabel');
+                if (label) label.textContent = 'Request failed';
+            }
+        }
+
+        async function disableAudio() {
+            try {
+                const r = await fetch('/api/audio/disable', { method: 'POST' });
+                const d = await r.json();
+                _applyAudioState(d);
+                const bpm = document.getElementById('audioBpmDisplay');
+                if (bpm) bpm.textContent = '— BPM';
+            } catch (e) {}
+        }
+
+        async function calibrateAudio() {
+            const label = document.getElementById('audioStatusLabel');
+            if (label) label.textContent = 'Calibrating…';
+            try {
+                const r = await fetch('/api/audio/calibrate', { method: 'POST' });
+                const d = await r.json();
+                if (d.success) {
+                    const slider = document.getElementById('audioSensSlider');
+                    const sensVal = document.getElementById('audioSensValue');
+                    if (slider) slider.value = d.threshold;
+                    if (sensVal) sensVal.textContent = parseFloat(d.threshold).toFixed(3);
+                    if (label) label.textContent = 'Calibrated — floor ' + d.noise_floor_rms.toFixed(4);
+                } else {
+                    if (label) label.textContent = 'Calibrate failed: ' + (d.error || 'unknown');
+                }
+            } catch (e) {
+                if (label) label.textContent = 'Calibrate request failed';
+            }
+        }
+
+        async function startAudioChase() {
+            const chaseId = document.getElementById('audioChaseSelect').value;
+            if (!chaseId) return;
+            const reactTo = document.getElementById('audioReactTo').value || 'any';
+            try {
+                await fetch('/api/audio/chase/' + chaseId + '/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ react_to: reactTo }),
+                });
+            } catch (e) {}
+        }
+
+        async function stopAudioChase() {
+            const chaseId = document.getElementById('audioChaseSelect').value;
+            if (!chaseId) return;
+            try {
+                await fetch('/api/audio/chase/' + chaseId + '/stop', { method: 'POST' });
+            } catch (e) {}
+        }
 
         /* ══════════════════════════════════════════════════════════════
            PWA — register service worker (silently no-op if unsupported)

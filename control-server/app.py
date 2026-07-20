@@ -7,11 +7,14 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import logging
 import math
 import os
 import queue
+import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -43,6 +46,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 import chat_store
 import fixture_definitions
+from audio_engine import _engine as _audio_engine
+from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
 
 # ---------------------------------------------------------------------------
@@ -115,6 +120,13 @@ if _pi_host and _pi_host not in ("lights.local", _ts_host):
 CORS(app, origins=_ALLOWED_ORIGINS)
 socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS)
 
+
+@socketio.on("connect")
+def _on_socket_connect():
+    """Send current audio engine state to a newly connected browser."""
+    socketio.emit("audio_state", _audio_engine.get_state())
+
+
 # 2. Set SECRET_KEY for session signing (audit item #21)
 app.config["SECRET_KEY"] = os.getenv(
     "FLASK_SECRET_KEY",
@@ -148,18 +160,74 @@ if MOCK_DMX:
     print("⚠  MOCK_DMX mode enabled — no QLC+ WebSocket will be opened")
 
 # Default to ~/.qlcplus/default.qxw, but can be overridden via env var.
-# In mock mode, fall back to the bundled sample workspace when no real one exists.
+# In mock mode, fall back to a scratch copy of the bundled sample workspace when no
+# real one exists — writes must never land on the git-tracked fixture (see #66).
 _default_ws = Path.home() / ".qlcplus" / "default.qxw"
 if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
-    _sample_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
-    WORKSPACE_PATH = _sample_ws
+    _fixture_ws = Path(__file__).parent / "tests" / "fixtures" / "sample.qxw"
+    # Namespaced by uid so concurrent MOCK_DMX sessions from different users on a
+    # shared host don't clobber each other's scratch workspace (see #66 review).
+    _scratch_dir = Path(tempfile.gettempdir()) / f"lights-pi-mock-{os.getuid()}"
+    _scratch_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(_scratch_dir, mode=0o700)
+    except FileExistsError as exc:
+        # Refuse to reuse a pre-existing path unless it's a plain directory we
+        # own — on a shared host an attacker who knows our uid could pre-plant
+        # a symlink at this predictable location to redirect workspace writes
+        # (see #66 review: mkdir(exist_ok=True) was symlink-attack prone).
+        if _scratch_dir.is_symlink() or not _scratch_dir.is_dir() or _scratch_dir.stat().st_uid != os.getuid():
+            raise RuntimeError(
+                f"refusing to use MOCK_DMX scratch dir {_scratch_dir}: it exists but "
+                "is not a plain directory owned by the current user"
+            ) from exc
+    _scratch_ws = _scratch_dir / "sample.qxw"
+    _persist = os.getenv("MOCK_DMX_PERSIST", "").strip().lower() in ("1", "true", "yes")
+    if not (_persist and _scratch_ws.exists()):
+        shutil.copyfile(_fixture_ws, _scratch_ws)
+    WORKSPACE_PATH = _scratch_ws
+    print(f"⚠  MOCK_DMX fallback workspace → {WORKSPACE_PATH} (copied from bundled fixture)")
 else:
     WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(_default_ws)))
 
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
+
+# Registry of audio-BPM-driven chases currently running.
+# Shape: { chase_key: { 'task': concurrent.futures.Future, 'react_to': str } }
+_active_audio_chases: dict[str, dict] = {}
+_active_audio_chases_lock = threading.Lock()
+
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
 CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
+
+# Serializes every workspace read-modify-write cycle (scene/chase saves, tempo
+# updates, id generation). RLock because route handlers hold it across id-gen
+# + inject, and the inject helpers re-acquire it themselves.
+_WORKSPACE_LOCK = threading.RLock()
+
+
+def _atomic_write_tree(tree: ET.ElementTree) -> None:
+    """Write an ElementTree to WORKSPACE_PATH atomically (tmp file + os.replace).
+
+    Callers must hold _WORKSPACE_LOCK. Writing to a temp file in the same
+    directory and replacing it keeps concurrent readers from ever observing
+    a torn/truncated .qxw.
+    """
+    d = WORKSPACE_PATH.parent
+    fd, tmp = tempfile.mkstemp(prefix=".qlc-ws-", suffix=".qxw", dir=str(d))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            tree.write(fh, encoding="UTF-8", xml_declaration=True)
+        with contextlib.suppress(OSError):
+            shutil.copymode(WORKSPACE_PATH, tmp)  # mkstemp defaults to 0600; keep the original mode
+        os.replace(tmp, str(WORKSPACE_PATH))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
 
 # Scene swatch cache: {scene_id: swatch_data_uri}; cleared when workspace mtime changes.
 _scene_swatch_cache: dict = {}
@@ -181,6 +249,73 @@ AI_MODEL = os.getenv(
     "AI_MODEL",
     "gpt-4.1" if os.getenv("AI_PROVIDER", "openai") == "openai" else "claude-3-5-sonnet-20241022",
 )
+
+# Per-provider API keys — prefer explicit per-provider env vars; fall back to
+# AI_API_KEY when it belongs to the primary provider.
+_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or (AI_API_KEY if AI_PROVIDER == "openai" else "")
+_ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or (AI_API_KEY if AI_PROVIDER == "anthropic" else "")
+
+# Per-provider model overrides. The secondary-provider fallbacks use fresh model IDs
+# so the stale claude-3-5 name doesn't silently carry over when anthropic is added as
+# a failover target to an openai-primary install.
+_OPENAI_MODEL = os.getenv("OPENAI_MODEL") or (AI_MODEL if AI_PROVIDER == "openai" else "gpt-4.1")
+_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL") or (AI_MODEL if AI_PROVIDER == "anthropic" else "claude-sonnet-4-6")
+
+
+def _parse_failover_chain(raw: str, default_provider: str) -> list:
+    """Parse AI_PROVIDER_FAILOVER into an ordered, de-duped list of valid providers.
+
+    Valid providers: 'anthropic', 'openai'. Unknowns (e.g. 'ollama') are dropped.
+    An empty/missing value returns [default_provider] if it is valid, else [].
+    """
+    _VALID = {"anthropic", "openai"}
+    if not raw or not raw.strip():
+        return [default_provider] if default_provider in _VALID else []
+    seen: list = []
+    for part in raw.split(","):
+        p = part.strip().lower()
+        if p in _VALID and p not in seen:
+            seen.append(p)
+    return seen if seen else ([default_provider] if default_provider in _VALID else [])
+
+
+def _provider_config(provider: str) -> tuple:
+    """Return (model, api_key) for the given provider."""
+    if provider == "anthropic":
+        return _ANTHROPIC_MODEL, _ANTHROPIC_API_KEY
+    if provider == "openai":
+        return _OPENAI_MODEL, _OPENAI_API_KEY
+    return "", ""
+
+
+# Ordered failover chain resolved once at startup.
+AI_PROVIDER_FAILOVER = os.getenv("AI_PROVIDER_FAILOVER", "")
+_AI_FAILOVER_CHAIN: list = _parse_failover_chain(AI_PROVIDER_FAILOVER, AI_PROVIDER)
+
+# ----------------------------------------------------------------------------
+# Circuit breaker — per-provider transient-failure back-off
+# ----------------------------------------------------------------------------
+_BREAKER_THRESHOLD = 3      # failures before opening
+_BREAKER_COOLDOWN_S = 60    # seconds to back off after opening
+_provider_breaker: dict = {}  # {provider: {"fails": int, "open_until": float}}
+_breaker_lock = threading.Lock()
+
+
+def _breaker_is_open(state: dict, provider: str, now: float) -> bool:
+    info = state.get(provider)
+    return info is not None and info.get("open_until", 0.0) > now
+
+
+def _breaker_record_failure(state: dict, provider: str, now: float) -> None:
+    info = state.setdefault(provider, {"fails": 0, "open_until": 0.0})
+    info["fails"] += 1
+    if info["fails"] >= _BREAKER_THRESHOLD:
+        info["open_until"] = now + _BREAKER_COOLDOWN_S
+
+
+def _breaker_record_success(state: dict, provider: str) -> None:
+    state.pop(provider, None)
+
 
 SERVICE_NAME = os.getenv("SERVICE", "qlcplus-web.service")
 
@@ -2848,8 +2983,9 @@ def save_scene():
         if not WORKSPACE_PATH.exists():
             return jsonify({"success": False, "error": "Workspace file not found"}), 500
 
-        next_id = get_next_scene_id()
-        success = _inject_scene_into_workspace(scene_xml, next_id)
+        with _WORKSPACE_LOCK:
+            next_id = get_next_scene_id()
+            success = _inject_scene_into_workspace(scene_xml, next_id)
 
         if success:
             return jsonify({
@@ -2881,8 +3017,9 @@ def snapshot_scene():
         if not scene_xml:
             return jsonify({"success": False, "error": "Could not read current channel values"}), 500
 
-        next_id = get_next_scene_id()
-        success = _inject_scene_into_workspace(scene_xml, next_id)
+        with _WORKSPACE_LOCK:
+            next_id = get_next_scene_id()
+            success = _inject_scene_into_workspace(scene_xml, next_id)
 
         if success:
             return jsonify({
@@ -2971,25 +3108,26 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
     Uses Python XML manipulation directly (no external scripts needed).
     """
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            log.error("workspace_missing_engine")
-            return False
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                log.error("workspace_missing_engine")
+                return False
 
-        # Parse the scene XML
-        scene_root = ET.fromstring(scene_xml.strip().split("<!DOCTYPE Function>")[-1].strip()
-                                   if "<!DOCTYPE" in scene_xml else scene_xml.strip())
+            # Parse the scene XML
+            scene_root = ET.fromstring(scene_xml.strip().split("<!DOCTYPE Function>")[-1].strip()
+                                       if "<!DOCTYPE" in scene_xml else scene_xml.strip())
 
-        # Set the ID attribute
-        scene_root.set("ID", str(scene_id))
+            # Set the ID attribute
+            scene_root.set("ID", str(scene_id))
 
-        # Append to Engine
-        engine.append(scene_root)
+            # Append to Engine
+            engine.append(scene_root)
 
-        # Write back
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            # Write back
+            _atomic_write_tree(tree)
         return True
     except Exception as e:
         log.error("scene_inject_failed", error=str(e))
@@ -3584,26 +3722,27 @@ def describe_scene(scene_id):
 def delete_scene(scene_id):
     """Delete a saved scene from the workspace permanently."""
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(scene_id).strip().lower()
-        ns = "http://www.qlcplus.org/Workspace"
-        target = None
-        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
-            if func.get("Type") != "Scene":
-                continue
-            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+            needle = str(scene_id).strip().lower()
+            ns = "http://www.qlcplus.org/Workspace"
+            target = None
+            for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+                if func.get("Type") != "Scene":
+                    continue
+                if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
 
-        engine.remove(target)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            engine.remove(target)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "deleted": {"id": target.get("ID"), "name": target.get("Name")},
@@ -3622,29 +3761,30 @@ def rename_scene(scene_id):
         return jsonify({"success": False, "error": "Provide name and/or path"}), 400
 
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(scene_id).strip().lower()
-        ns = "http://www.qlcplus.org/Workspace"
-        target = None
-        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
-            if func.get("Type") != "Scene":
-                continue
-            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+            needle = str(scene_id).strip().lower()
+            ns = "http://www.qlcplus.org/Workspace"
+            target = None
+            for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+                if func.get("Type") != "Scene":
+                    continue
+                if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
 
-        if new_name:
-            target.set("Name", new_name)
-        if new_path is not None:
-            target.set("Path", new_path)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            if new_name:
+                target.set("Name", new_name)
+            if new_path is not None:
+                target.set("Path", new_path)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "scene": {
@@ -3667,30 +3807,31 @@ def duplicate_scene(scene_id):
 
     try:
         import copy as _copy
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(scene_id).strip().lower()
-        ns = "http://www.qlcplus.org/Workspace"
-        source = None
-        for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
-            if func.get("Type") != "Scene":
-                continue
-            if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
-                source = func
-                break
-        if source is None:
-            return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
+            needle = str(scene_id).strip().lower()
+            ns = "http://www.qlcplus.org/Workspace"
+            source = None
+            for func in list(engine.findall(f"{{{ns}}}Function")) + list(engine.findall("Function")):
+                if func.get("Type") != "Scene":
+                    continue
+                if func.get("ID") == str(scene_id) or (func.get("Name") or "").lower() == needle:
+                    source = func
+                    break
+            if source is None:
+                return jsonify({"success": False, "error": f"Scene not found: {scene_id}"}), 404
 
-        clone = _copy.deepcopy(source)
-        clone.set("Name", new_name)
-        new_id = get_next_scene_id()
-        clone.set("ID", str(new_id))
-        engine.append(clone)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            clone = _copy.deepcopy(source)
+            clone.set("Name", new_name)
+            new_id = get_next_scene_id()
+            clone.set("ID", str(new_id))
+            engine.append(clone)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "scene": {
@@ -4443,6 +4584,170 @@ def diagnostics_system():
     return jsonify({"success": True, **out})
 
 
+# ----------------------------------------------------------------------------
+# rf_scan — 2.4 GHz WiFi survey for wireless-DMX interference
+# ----------------------------------------------------------------------------
+#
+# Wireless DMX transmitters (D-Fi Hub and similar) share the 2.4 GHz ISM
+# band with WiFi. We can survey what the Pi's own WiFi radio hears there,
+# but the transmitter itself is broadcast-only — there's no software
+# readback of its channel or of what the receiver actually sees. So this
+# only ever reports the WiFi side and leaves cross-referencing against the
+# transmitter's own channel/DIP-switch table to the operator.
+
+_WIFI_NONOVERLAPPING_CHANNELS = (1, 6, 11)
+
+
+def _wifi_channel_from_freq(freq_mhz):
+    """2.4 GHz center frequency (MHz) -> WiFi channel number, or None
+    outside the 2.4 GHz band (e.g. 5 GHz results `iw scan` also returns)."""
+    if freq_mhz is None:
+        return None
+    if 2412 <= freq_mhz <= 2472:
+        return round((freq_mhz - 2407) / 5)
+    if freq_mhz == 2484:
+        return 14
+    return None
+
+
+def _parse_iw_scan_output(raw: str) -> list[dict]:
+    """Parse `iw dev <iface> scan` text into 2.4 GHz access-point records:
+    {ssid, signal_dbm, freq_mhz, channel}, loudest first.
+
+    5 GHz results are dropped — they share no spectrum with wireless DMX.
+    Mirrors the awk parser `lightsctl.sh`'s `rf-scan` command already uses.
+    """
+    access_points = []
+    current = None
+
+    def flush():
+        if not current:
+            return
+        ch = _wifi_channel_from_freq(current.get("freq_mhz"))
+        if ch is not None:
+            access_points.append({
+                "ssid": current.get("ssid") or None,
+                "signal_dbm": current.get("signal_dbm"),
+                "freq_mhz": current["freq_mhz"],
+                "channel": ch,
+            })
+
+    for line in raw.splitlines():
+        if line.startswith("BSS "):
+            flush()
+            current = {}
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("freq:"):
+            try:
+                current["freq_mhz"] = float(stripped.split()[1])
+            except (IndexError, ValueError):
+                pass
+        elif stripped.startswith("signal:"):
+            try:
+                current["signal_dbm"] = float(stripped.split()[1])
+            except (IndexError, ValueError):
+                pass
+        elif stripped.startswith("SSID:"):
+            current["ssid"] = stripped.split("SSID:", 1)[1].strip()
+    flush()
+
+    access_points.sort(key=lambda ap: ap["signal_dbm"] if ap["signal_dbm"] is not None else -999, reverse=True)
+    return access_points
+
+
+def _analyze_rf_channels(access_points: list[dict]) -> dict:
+    """Summarize 2.4 GHz occupancy: per-channel congestion (accounting for
+    the ~4-channel bleed of adjacent 20 MHz-wide WiFi channels), the
+    quietest 3-channel window, and plain-language suggestions."""
+    heard = [ap for ap in access_points if ap.get("channel") and 1 <= ap["channel"] <= 11
+             and ap.get("signal_dbm") is not None]
+
+    congestion = {}
+    for ch in range(1, 12):
+        loudest = None
+        for ap in heard:
+            if abs(ap["channel"] - ch) <= 4:
+                if loudest is None or ap["signal_dbm"] > loudest:
+                    loudest = ap["signal_dbm"]
+        congestion[ch] = loudest
+
+    def window_loudness(start):
+        vals = [congestion[c] for c in range(start, start + 3) if congestion.get(c) is not None]
+        return max(vals) if vals else -100.0
+    quiet_start = min(range(1, 10), key=window_loudness)
+    quiet_window = [quiet_start, quiet_start + 2]
+
+    suggestions = []
+    if not heard:
+        suggestions.append(
+            "No 2.4 GHz WiFi networks detected — the band looks clear right now. "
+            "Flicker during this window is unlikely to be WiFi-related."
+        )
+    else:
+        loudest_ch, loudest_dbm = max(congestion.items(), key=lambda kv: kv[1] if kv[1] is not None else -100)
+        if loudest_dbm is not None and loudest_dbm >= -55:
+            suggestions.append(
+                f"Channel {loudest_ch} is loud ({loudest_dbm:.0f} dBm). Keep your wireless DMX "
+                "transmitter's channel away from it and the 3-4 channels either side."
+            )
+        suggestions.append(
+            f"Quietest window right now: channels {quiet_window[0]}–{quiet_window[1]}. "
+            "Check your transmitter's channel/DIP-switch table for the setting closest to that range "
+            "— we can't read the transmitter's own channel back in software."
+        )
+        crowded_offgrid = [ap for ap in heard
+                           if ap["channel"] not in _WIFI_NONOVERLAPPING_CHANNELS and ap["signal_dbm"] >= -65]
+        if crowded_offgrid:
+            names = ", ".join(sorted({ap["ssid"] or "(hidden network)" for ap in crowded_offgrid}))
+            suggestions.append(
+                f"{names} — loud and not on the standard non-overlapping 1/6/11 channel set. "
+                "If it's a network you control, moving it to channel 1, 6, or 11 frees up more of the band."
+            )
+
+    return {
+        "per_channel_congestion_dbm": congestion,
+        "quiet_window": quiet_window,
+        "nonoverlapping_channels": list(_WIFI_NONOVERLAPPING_CHANNELS),
+        "suggestions": suggestions,
+    }
+
+
+@app.route("/api/diagnostics/rf_scan", methods=["POST"])
+def diagnostics_rf_scan():
+    """Survey the 2.4 GHz band from the Pi's own WiFi radio and analyze it
+    for wireless-DMX interference risk.
+
+    Returns detected access points plus a channel-congestion analysis and
+    plain-language suggestions. Local-only — needs `iw` + the wlan0 radio.
+    """
+    if not IS_LOCAL:
+        return jsonify({
+            "success": False,
+            "error": "rf_scan is only available when running on the Pi itself",
+            "is_local": False,
+        }), 503
+
+    result = execute_command("sudo -n iw dev wlan0 scan 2>/dev/null")
+    if not result["success"]:
+        return jsonify({
+            "success": False,
+            "error": result.get("error") or "iw scan failed — is wlan0 up?",
+        }), 500
+
+    access_points = _parse_iw_scan_output(result["output"])
+    analysis = _analyze_rf_channels(access_points)
+
+    return jsonify({
+        "success": True,
+        "interface": "wlan0",
+        "access_points": access_points,
+        "analysis": analysis,
+    })
+
+
 # =============================================================================
 # Chases / sequences (issue #4)
 # =============================================================================
@@ -4548,11 +4853,22 @@ def _update_tap_runner_bpm(chase_id: str, step_ms: float) -> bool:
     return True
 
 
+def _scene_channel_commands(scene_id) -> list:
+    """Resolve a scene to CH|abs|val commands, mirroring _mock_chase_run's step logic."""
+    scene_elem = _find_scene_element(scene_id)
+    if scene_elem is None:
+        return []
+    cvs = scene_to_channel_values(scene_elem)
+    return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
+
+
 def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
-    Each iteration activates the next scene via setFunctionStatus, then sleeps for
-    state['step_ms'] ms so that BPM changes take effect on the very next step.
+    Each iteration resolves the next step's scene to channel values and emits
+    CH|abs|val frames (same replace-per-step behaviour as _mock_chase_run), then
+    sleeps for state['step_ms'] ms so that BPM changes take effect on the very
+    next step.
     """
     _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
     if not scene_ids:
@@ -4567,7 +4883,9 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
         while state["running"]:
             scene_id = scene_ids[idx % n]
             try:
-                await _qlc_send_commands([f"QLC+API|setFunctionStatus|{scene_id}|1"])
+                commands = _scene_channel_commands(scene_id)
+                if commands:
+                    await _qlc_send_commands(commands)
             except Exception:
                 pass
             await asyncio.sleep(max(0.01, state["step_ms"] / 1000.0))
@@ -4771,14 +5089,15 @@ def _build_chase_xml(
 def _inject_chase_into_workspace(chase_xml: str) -> bool:
     """Inject the chase XML into the workspace's Engine element."""
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return False
-        chase_root = ET.fromstring(chase_xml.strip())
-        engine.append(chase_root)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return False
+            chase_root = ET.fromstring(chase_xml.strip())
+            engine.append(chase_root)
+            _atomic_write_tree(tree)
         return True
     except Exception as e:
         log.error("chase_inject_failed", error=str(e))
@@ -4799,9 +5118,11 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
     """Sync wrapper around setFunctionStatus. Returns (ok, raw_response)."""
     if MOCK_DMX:
         if running:
-            _mock_chase_start(function_id)
-        else:
-            _mock_chase_stop(function_id)
+            started = _mock_chase_start(function_id)
+            if not started:
+                return False, f"mock chase {function_id} not started (missing or empty)"
+            return True, "QLC+API|setFunctionStatus|OK"
+        _mock_chase_stop(function_id)
         return True, "QLC+API|setFunctionStatus|OK"
     try:
         raw = _qlc_run(_set_function_status_async(function_id, running), timeout=4)
@@ -4816,12 +5137,64 @@ def set_function_status(function_id: int, running: bool) -> tuple[bool, str]:
 # Chases in production are executed by QLC+ itself; in mock mode we need an
 # in-process stepper so the bus reflects what would be on the wire.
 
-_mock_chase_tasks: dict[int, asyncio.Task] = {}
+_mock_chase_tasks: dict[int, "concurrent.futures.Future"] = {}
+
+# Bumped on every start/stop for a function_id. `_mock_chase_run` checks this
+# before every bus write, so a racing/stale task self-terminates even if
+# `Future.cancel()` hasn't been delivered yet — see the note in
+# `_mock_chase_start` about why cancellation alone isn't sufficient.
+_mock_chase_generation: dict[int, int] = {}
+
+# Guards the generation-bump + registry read-modify-write in
+# `_mock_chase_start`/`_mock_chase_stop` so two genuinely concurrent
+# start/stop calls for the same function_id (Flask runs threaded) can't both
+# read the same prior generation and register with an identical value.
+# A plain Lock suffices: neither function calls `Future.cancel()` while
+# holding it (that's deferred until after release — see the comment in
+# `_mock_chase_start`), so there's no reentrant path.
+_mock_chase_lock = threading.Lock()
+
+# Floor on each mock chase step's sleep so a zero-fade/zero-hold step (or a
+# chase with absent/non-numeric timing that falls back to 0) still yields to
+# the shared _qlc_loop every iteration instead of busy-spinning it forever.
+_MOCK_CHASE_MIN_STEP_S = 0.02
 
 
-def _mock_chase_start(function_id: int) -> None:
-    """Start an in-process chase stepper for the given function ID."""
-    _mock_chase_stop(function_id)  # cancel existing if any
+# Dedicated RNG for `Random` run_order playback, kept separate from the
+# `random` module's global state so tests can get deterministic picks via
+# `_mock_chase_random.seed(...)` without disturbing (or being disturbed by)
+# unrelated code that calls `random.seed()`/`random.random()` elsewhere.
+_mock_chase_random = random.Random()
+
+
+def _chase_index_sequence(n: int, run_order: str):
+    """Yield step indices in playback order for the given run_order.
+
+    Loop: 0..n-1 repeating. SingleShot: 0..n-1 once. PingPong: bounces
+    forward then back without repeating the endpoints. Random: an endless
+    stream of `_mock_chase_random.randrange(n)` picks.
+    """
+    if n <= 0:
+        return
+    if run_order == "Random":
+        while True:
+            yield _mock_chase_random.randrange(n)
+    elif run_order == "PingPong":
+        while True:
+            yield from range(n)
+            yield from range(n - 2, 0, -1)
+    elif run_order == "SingleShot":
+        yield from range(n)
+    else:  # Loop (and anything unrecognized)
+        while True:
+            yield from range(n)
+
+
+def _mock_chase_start(function_id: int) -> bool:
+    """Start an in-process chase stepper for the given function ID.
+
+    Returns True if a stepper was actually spawned.
+    """
     chase_elem = None
     try:
         for func in _engine_functions(_engine_element(_workspace_root())):
@@ -4831,40 +5204,87 @@ def _mock_chase_start(function_id: int) -> None:
     except Exception:
         pass
     if chase_elem is None:
-        return
+        _mock_chase_stop(function_id)  # cancel any existing stepper anyway
+        return False
 
     chase_info = _describe_chase_full(chase_elem)
     if not chase_info["steps"]:
-        return
+        _mock_chase_stop(function_id)  # cancel any existing stepper anyway
+        return False
 
     if _qlc_loop is None:
         _start_qlc_loop()
 
-    task = asyncio.run_coroutine_threadsafe(
-        _mock_chase_run(function_id, chase_info),
-        _qlc_loop,
-    )
-    _mock_chase_tasks[function_id] = task
+    # Single atomic section: pop the old registration, bump the generation,
+    # and register the new future all under one lock acquisition, so a
+    # concurrent start/stop for the same function_id can never observe (or
+    # race into) a torn state — e.g. an old task still registered under a
+    # newer generation. The old future's cancel() is deliberately deferred
+    # until AFTER the lock is released: concurrent.futures.Future.cancel()
+    # invokes done-callbacks synchronously (in the calling thread) when the
+    # future hasn't started running yet, and our own done-callback below
+    # also acquires this lock — cancelling while still holding it would
+    # deadlock (this is a plain Lock, not reentrant).
+    with _mock_chase_lock:
+        old_fut = _mock_chase_tasks.pop(function_id, None)
+        gen = _mock_chase_generation.get(function_id, 0) + 1
+        _mock_chase_generation[function_id] = gen
+
+        fut = asyncio.run_coroutine_threadsafe(
+            _mock_chase_run(function_id, chase_info, gen),
+            _qlc_loop,
+        )
+        _mock_chase_tasks[function_id] = fut
+
+    if old_fut is not None:
+        old_fut.cancel()
+
+    def _cleanup(_done, _fid=function_id, _fut=fut):
+        # Identity-guarded: only remove OUR registration. Without this, an
+        # old (cancelled) task's cleanup can run after a restart has already
+        # registered a newer task under the same function_id, popping the
+        # new one and leaking the old stepper forever.
+        with _mock_chase_lock:
+            if _mock_chase_tasks.get(_fid) is _fut:
+                _mock_chase_tasks.pop(_fid, None)
+
+    fut.add_done_callback(_cleanup)
+    return True
 
 
 def _mock_chase_stop(function_id: int) -> None:
     """Cancel the in-process chase stepper for the given function ID."""
-    task = _mock_chase_tasks.pop(function_id, None)
+    # Bump the generation unconditionally (even with no task registered) so
+    # a task that hasn't been scheduled onto the loop yet — and therefore
+    # has nothing to cancel() — still notices it's stale on its first turn.
+    with _mock_chase_lock:
+        _mock_chase_generation[function_id] = _mock_chase_generation.get(function_id, 0) + 1
+        task = _mock_chase_tasks.pop(function_id, None)
     if task is not None:
         task.cancel()
 
 
-async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
-    """Async chase stepper: apply each step's scene to the mock bus on schedule."""
+async def _mock_chase_run(function_id: int, chase_info: dict, gen: int) -> None:
+    """Async chase stepper: apply each step's scene to the mock bus on schedule.
+
+    `asyncio.Task.cancel()` delivered via `run_coroutine_threadsafe` is only
+    honoured at the next `await` point — but a brand-new task always runs its
+    body synchronously up to its *first* await regardless of when cancel()
+    was requested (cancellation propagation itself is one loop-tick behind
+    task creation). That lets a stale task from a start->restart->stop burst
+    slip in a bus write before it notices it's cancelled. Checking the
+    generation counter both before and after building the write (scene
+    lookup re-parses the workspace XML from disk, which is slow enough for a
+    stop() on another thread to land in between) closes that gap.
+    """
     steps = chase_info["steps"]
     default_speed = chase_info.get("speed", {})
     run_order = chase_info.get("run_order", "Loop")
-    indices = list(range(len(steps)))
 
-    idx_iter = 0
     try:
-        while True:
-            i = indices[idx_iter % len(indices)]
+        for i in _chase_index_sequence(len(steps), run_order):
+            if _mock_chase_generation.get(function_id) != gen:
+                return
             step = steps[i]
             scene_id = step.get("scene_id")
             hold_ms = step.get("hold_ms", -1)
@@ -4877,35 +5297,29 @@ async def _mock_chase_run(function_id: int, chase_info: dict) -> None:
             # Apply the scene to the mock bus
             if scene_id is not None:
                 try:
-                    scene_elem = _find_scene_element(scene_id)
-                    if scene_elem is not None:
-                        cvs = scene_to_channel_values(scene_elem)
-                        # Build CH commands and apply directly — calling
-                        # set_channel_values() here would deadlock because
-                        # _qlc_run uses run_coroutine_threadsafe on the same
-                        # loop this coroutine is running on.
-                        commands = [
-                            f"CH|{ch}|{max(0, min(255, val))}"
-                            for ch, val in cvs
-                            if int(ch) > 0
-                        ]
-                        if commands:
-                            _mock_dmx.apply_commands(commands)
+                    # Build CH commands and apply directly — calling
+                    # set_channel_values() here would deadlock because
+                    # _qlc_run uses run_coroutine_threadsafe on the same
+                    # loop this coroutine is running on.
+                    commands = _scene_channel_commands(scene_id)
+                    # Re-check freshness: the scene lookup above re-parses
+                    # the workspace XML from disk, which is slow enough
+                    # for a stop() on another thread to have landed while
+                    # we were building `commands`.
+                    if commands and _mock_chase_generation.get(function_id) == gen:
+                        _mock_dmx.apply_commands(commands)
                 except Exception as e:
                     print(f"[mock-chase {function_id}] step {i} apply error: {e}")
 
-            # Honour timing (fade_in + hold)
-            total_sleep = (fade_in_ms + hold_ms) / 1000
-            if total_sleep > 0:
-                await asyncio.sleep(total_sleep)
-
-            idx_iter += 1
-            if run_order == "SingleShot" and idx_iter >= len(indices):
-                break
+            # Honour timing (fade_in + hold). Always yield at least once per
+            # iteration — a zero-timing step must not starve the shared
+            # _qlc_loop (see OSS-885 / lights-pi#65). SingleShot termination
+            # is handled by _chase_index_sequence itself (it simply stops
+            # yielding), so no separate break condition is needed here.
+            total_sleep = max((fade_in_ms + hold_ms) / 1000, _MOCK_CHASE_MIN_STEP_S)
+            await asyncio.sleep(total_sleep)
     except asyncio.CancelledError:
         pass
-    finally:
-        _mock_chase_tasks.pop(function_id, None)
 
 
 # ------------------------------- endpoints ----------------------------------
@@ -4966,10 +5380,6 @@ def create_chase():
     tempo_source = _normalize_tempo_source(data.get("tempo_source"))
     path         = (data.get("path") or "AI Generated").strip()
 
-    # Reject duplicate names — chase Name is the agent-friendly key
-    if _find_function_element(name, function_type="Chaser") is not None:
-        return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
-
     # Normalize and validate steps. Each step becomes
     # { scene_id, fade_in_ms?, hold_ms?, fade_out_ms? }.
     normalized_steps = []
@@ -5005,15 +5415,22 @@ def create_chase():
             "unknown": unknown_refs,
         }), 400
 
-    chase_id = get_next_function_id()
-    chase_xml = _build_chase_xml(
-        name=name, steps=normalized_steps,
-        fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
-        direction=direction, run_order=run_order, path=path,
-        chase_id=chase_id, tempo_source=tempo_source,
-    )
-    if not _inject_chase_into_workspace(chase_xml):
-        return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
+    with _WORKSPACE_LOCK:
+        # Reject duplicate names — chase Name is the agent-friendly key.
+        # Checked inside the lock so a racing create_chase can't slip a
+        # second chase in under the same name between check and write.
+        if _find_function_element(name, function_type="Chaser") is not None:
+            return jsonify({"success": False, "error": f"Chase '{name}' already exists"}), 409
+
+        chase_id = get_next_function_id()
+        chase_xml = _build_chase_xml(
+            name=name, steps=normalized_steps,
+            fade_in_ms=fade_in_ms, hold_ms=hold_ms, fade_out_ms=fade_out_ms,
+            direction=direction, run_order=run_order, path=path,
+            chase_id=chase_id, tempo_source=tempo_source,
+        )
+        if not _inject_chase_into_workspace(chase_xml):
+            return jsonify({"success": False, "error": "Failed to write chase to workspace"}), 500
 
     return jsonify({
         "success": True,
@@ -5038,25 +5455,26 @@ def create_chase():
 def delete_chase(chase_id):
     """Remove a chase from the workspace."""
     try:
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(chase_id).strip().lower()
-        target = None
-        for func in _engine_functions(engine):
-            if func.get("Type") != "Chaser":
-                continue
-            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+            needle = str(chase_id).strip().lower()
+            target = None
+            for func in _engine_functions(engine):
+                if func.get("Type") != "Chaser":
+                    continue
+                if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
 
-        engine.remove(target)
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            engine.remove(target)
+            _atomic_write_tree(tree)
         return jsonify({
             "success": True,
             "deleted": {"id": target.get("ID"), "name": target.get("Name")},
@@ -5148,31 +5566,32 @@ def set_chase_tempo(chase_id):
 
         step_ms = _bpm_to_step_ms(bpm)
 
-        tree = ET.parse(WORKSPACE_PATH)
-        root = tree.getroot()
-        engine = _engine_element(root)
-        if engine is None:
-            return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
+        with _WORKSPACE_LOCK:
+            tree = ET.parse(WORKSPACE_PATH)
+            root = tree.getroot()
+            engine = _engine_element(root)
+            if engine is None:
+                return jsonify({"success": False, "error": "No Engine element in workspace"}), 500
 
-        needle = str(chase_id).strip().lower()
-        target = None
-        for func in _engine_functions(engine):
-            if func.get("Type") != "Chaser":
-                continue
-            if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
-                target = func
-                break
-        if target is None:
-            return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+            needle = str(chase_id).strip().lower()
+            target = None
+            for func in _engine_functions(engine):
+                if func.get("Type") != "Chaser":
+                    continue
+                if func.get("ID") == str(chase_id) or (func.get("Name") or "").lower() == needle:
+                    target = func
+                    break
+            if target is None:
+                return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
 
-        speed = next(iter(_find_children(target, "Speed")), None)
-        if speed is not None:
-            speed.set("Duration", str(step_ms))
+            speed = next(iter(_find_children(target, "Speed")), None)
+            if speed is not None:
+                speed.set("Duration", str(step_ms))
 
-        for step in _find_children(target, "Step"):
-            step.set("Hold", str(step_ms))
+            for step in _find_children(target, "Step"):
+                step.set("Hold", str(step_ms))
 
-        tree.write(str(WORKSPACE_PATH), encoding="UTF-8", xml_declaration=True)
+            _atomic_write_tree(tree)
 
         # Update the live server-side tap runner if this chase is currently running.
         # The async loop reads state['step_ms'] on every iteration so the next step
@@ -5749,6 +6168,295 @@ def stop_cue_list(cl_id_or_name):
         "cue_list": {"id": cl["id"], "name": cl["name"]},
         "was_running": was_running,
     })
+
+
+# =============================================================================
+# Audio reactivity — BPM detection + onset flash (issue #28)
+# =============================================================================
+#
+# Architecture:
+#   AudioEngine (audio_engine.py) owns the capture thread and aubio detectors.
+#   It publishes {"type":"bpm"|"onset", ...} events to registered subscribers.
+#
+#   Two subscribers are wired at engine.start() time:
+#     1. _audio_socketio_subscriber  — emits "audio_bpm" / "audio_onset" to
+#        all connected browser clients so the UI tab stays live.
+#     2. _onset_flash_subscriber     — calls apply_brightness_live for the
+#        blink-on-onset effect.  Registered only when react_to is set.
+#
+#   A beat-clock chase engine (_run_audio_chase_async) drives step scenes in
+#   time with detected BPM — required because QLC+ has no runtime speed-
+#   control command over the WebSocket.
+#
+# Storage: audio chase metadata lives in AUDIO_CHASES_FILE (sidecar JSON,
+#   same pattern as CUE_LISTS_FILE).  QLC+ workspace XML is untouched.
+
+
+def _audio_socketio_subscriber(event: dict) -> None:
+    """Forward audio engine events to connected browser clients."""
+    if event.get("type") == "bpm":
+        socketio.emit("audio_bpm", {"bpm": event["bpm"]})
+    elif event.get("type") == "onset":
+        socketio.emit("audio_onset", {
+            "onset_ms": event["onset_ms"],
+            "rms": event.get("rms", 0),
+        })
+
+
+def _make_onset_flash_subscriber(react_to: str = "any", target_groups=None):
+    """Return a subscriber that briefly flashes fixture brightness on onset."""
+    def _cb(event: dict) -> None:
+        if event.get("type") != "onset":
+            return
+        try:
+            apply_brightness_live(255, target_groups=target_groups)
+        except Exception as exc:
+            print(f"[onset-flash] error: {exc}")
+    return _cb
+
+
+# Module-level reference so we can remove the onset flash subscriber on disable
+_onset_flash_cb = None
+
+
+def _load_audio_chases() -> dict:
+    if not AUDIO_CHASES_FILE.exists():
+        return {"audio_chases": {}}
+    try:
+        data = json.loads(AUDIO_CHASES_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"audio_chases": {}}
+    data.setdefault("audio_chases", {})
+    return data
+
+
+def _save_audio_chases(data: dict) -> None:
+    AUDIO_CHASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUDIO_CHASES_FILE.write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Beat-clock chase engine
+# ---------------------------------------------------------------------------
+
+
+async def _run_audio_chase_async(chase_key: str, step_channel_values: list) -> None:
+    """Step through a chase in time with the detected audio BPM.
+
+    step_channel_values is pre-resolved list of [(abs_ch, val), ...] per step,
+    so we avoid re-parsing the workspace XML each beat.
+    """
+    n = len(step_channel_values)
+    if n == 0:
+        return
+
+    current_step = 0
+    with _active_audio_chases_lock:
+        _active_audio_chases.setdefault(chase_key, {})["running"] = True
+
+    try:
+        while True:
+            cvs = step_channel_values[current_step % n]
+            if cvs:
+                set_channel_values(cvs)
+            bpm = _audio_engine.get_bpm()
+            interval_ms = bpm_to_interval_ms(bpm) if bpm > 0 else 500.0
+            current_step += 1
+            await asyncio.sleep(interval_ms / 1000.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[audio-chase {chase_key}] error: {exc}")
+    finally:
+        with _active_audio_chases_lock:
+            _active_audio_chases.pop(chase_key, None)
+
+
+def _start_audio_chase(chase_id_or_name: str, react_to: str = "any") -> dict:
+    """Pre-resolve step scenes and launch the beat-clock task."""
+    chase = _find_function_element(chase_id_or_name, function_type="Chaser")
+    if chase is None:
+        return {"success": False, "error": f"Chase not found: {chase_id_or_name}"}
+
+    chase_key = str(chase.get("ID", chase_id_or_name))
+
+    # Stop any existing beat-clock for this chase
+    with _active_audio_chases_lock:
+        existing = _active_audio_chases.get(chase_key)
+    if existing and existing.get("task"):
+        existing["task"].cancel()
+
+    # Pre-resolve each step → channel values
+    steps = sorted(
+        _find_children(chase, "Step"),
+        key=lambda s: int(s.get("Number", "0")) if s.get("Number", "0").isdigit() else 0,
+    )
+    step_cvs = []
+    for step in steps:
+        scene_ref = step.get("Values") or (step.text or "").strip()
+        scene_el = _find_scene_element(scene_ref) if scene_ref else None
+        step_cvs.append(scene_to_channel_values(scene_el) if scene_el else [])
+
+    if _qlc_loop is None:
+        _start_qlc_loop()
+
+    coro = _run_audio_chase_async(chase_key, step_cvs)
+    task = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+
+    with _active_audio_chases_lock:
+        _active_audio_chases[chase_key] = {"task": task, "react_to": react_to}
+
+    # Persist to sidecar
+    data = _load_audio_chases()
+    data["audio_chases"][chase_key] = {
+        "chase_name": chase.get("Name", ""),
+        "react_to": react_to,
+    }
+    _save_audio_chases(data)
+
+    return {
+        "success": True,
+        "chase": {"id": chase_key, "name": chase.get("Name", "")},
+        "react_to": react_to,
+    }
+
+
+def _stop_audio_chase(chase_id_or_name: str) -> dict:
+    chase = _find_function_element(chase_id_or_name, function_type="Chaser")
+    chase_key = str(chase.get("ID", chase_id_or_name)) if chase else str(chase_id_or_name)
+    with _active_audio_chases_lock:
+        entry = _active_audio_chases.get(chase_key)
+    if not entry:
+        return {"success": False, "error": f"Audio chase not running: {chase_id_or_name}"}
+    task = entry.get("task")
+    if task:
+        task.cancel()
+    return {"success": True, "chase_key": chase_key}
+
+
+# ---------------------------------------------------------------------------
+# REST endpoints — /api/audio
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/audio", methods=["GET"])
+def get_audio_state():
+    """Return current audio engine state."""
+    return jsonify(_audio_engine.get_state())
+
+
+@app.route("/api/audio/enable", methods=["POST"])
+def enable_audio():
+    """Start the audio engine.
+
+    Body (all optional):
+        {
+          "device":      null | int | "hw:1,0",   # sounddevice device id/name
+          "sensitivity": 0.02                      # noise-gate RMS threshold
+          "react_to":    "any" | "kick" | "snare" # onset flash mode; null = off
+        }
+    """
+    global _onset_flash_cb
+    body = request.get_json(silent=True) or {}
+
+    device = body.get("device")
+    sensitivity = body.get("sensitivity")
+    react_to = body.get("react_to")
+
+    # Wire SocketIO subscriber (idempotent)
+    _audio_engine.unsubscribe(_audio_socketio_subscriber)
+    _audio_engine.subscribe(_audio_socketio_subscriber)
+
+    # Remove old onset flash subscriber if any
+    if _onset_flash_cb is not None:
+        _audio_engine.unsubscribe(_onset_flash_cb)
+        _onset_flash_cb = None
+
+    # Register new onset flash subscriber
+    if react_to:
+        _onset_flash_cb = _make_onset_flash_subscriber(react_to)
+        _audio_engine.subscribe(_onset_flash_cb)
+
+    ok = _audio_engine.start(device=device, sensitivity=sensitivity)
+    if not ok:
+        return jsonify({
+            "success": False,
+            "error": (
+                "Audio engine unavailable — install aubio, sounddevice, and numpy on the Pi. "
+                "See scripts/provisioning/setup.sh for the apt packages."
+            ),
+            "available": False,
+        }), 503
+
+    return jsonify({"success": True, **_audio_engine.get_state()})
+
+
+@app.route("/api/audio/disable", methods=["POST"])
+def disable_audio():
+    """Stop the audio engine and any running audio chases."""
+    global _onset_flash_cb
+    _audio_engine.stop()
+    if _onset_flash_cb is not None:
+        _audio_engine.unsubscribe(_onset_flash_cb)
+        _onset_flash_cb = None
+    _audio_engine.unsubscribe(_audio_socketio_subscriber)
+    return jsonify({"success": True, **_audio_engine.get_state()})
+
+
+@app.route("/api/audio/calibrate", methods=["POST"])
+def calibrate_audio():
+    """Auto-set noise gate from recent ambient audio samples.
+
+    The engine must already be enabled so samples are available.
+    Sets sensitivity to 3× the measured background RMS.
+    """
+    result = _audio_engine.calibrate()
+    if not result["success"]:
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route("/api/audio/chase/<path:chase_id>/start", methods=["POST"])
+def start_audio_chase(chase_id):
+    """Start a beat-clock-driven chase slaved to the detected audio BPM.
+
+    Body (optional):
+        { "react_to": "any" | "kick" | "snare" }
+    """
+    if not _audio_engine.available:
+        return jsonify({"success": False, "error": "Audio engine not available"}), 503
+    body = request.get_json(silent=True) or {}
+    react_to = body.get("react_to", "any")
+    result = _start_audio_chase(chase_id, react_to=react_to)
+    if not result["success"]:
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@app.route("/api/audio/chase/<path:chase_id>/stop", methods=["POST"])
+def stop_audio_chase(chase_id):
+    """Stop a running audio-driven chase."""
+    result = _stop_audio_chase(chase_id)
+    if not result["success"]:
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@app.route("/api/audio/chases", methods=["GET"])
+def list_audio_chases():
+    """List audio chases and which are currently running."""
+    data = _load_audio_chases()
+    with _active_audio_chases_lock:
+        running_keys = set(_active_audio_chases.keys())
+    chases = []
+    for key, meta in data["audio_chases"].items():
+        chases.append({
+            "chase_id": key,
+            "chase_name": meta.get("chase_name", ""),
+            "react_to": meta.get("react_to", "any"),
+            "running": key in running_keys,
+        })
+    return jsonify({"audio_chases": chases})
 
 
 # =============================================================================
@@ -6363,6 +7071,15 @@ def _build_chat_tools() -> list[dict]:
             },
             "handler": lambda a: _call_self("GET", f"/api/diagnostics/logs/{a['service']}?n={a.get('n', 50)}"),
         },
+        {
+            "name": "rf_scan",
+            "description": (
+                "Survey the 2.4 GHz WiFi band from the Pi's radio and analyze it for wireless-DMX "
+                "interference risk — per-channel congestion, the quietest window, and suggestions."
+            ),
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": lambda a: _call_self("POST", "/api/diagnostics/rf_scan"),
+        },
 
         # ── Setup utility ────────────────────────────────────────────────
         {
@@ -6386,6 +7103,26 @@ def _build_chat_tools() -> list[dict]:
             }),
         },
     ]
+
+
+# ----------------------------------------------------------------------------
+# Failover error classification
+# ----------------------------------------------------------------------------
+
+def _is_failover_error(exc) -> bool:
+    """True when the exception indicates a transient provider failure worth retrying elsewhere.
+
+    Timeouts and connection errors are always failover-eligible.
+    HTTP 5xx and 429 (rate-limit) are failover-eligible.
+    HTTP 4xx (except 429) are real errors — not retried.
+    """
+    import requests
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else 0
+        return status >= 500 or status == 429
+    return False
 
 
 # ----------------------------------------------------------------------------
@@ -6447,11 +7184,16 @@ def _anthropic_chat_loop(messages: list, tools: list, model: str, api_key: str, 
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:
+            http_status = None
+            if hasattr(e, "response") and e.response is not None:
+                http_status = e.response.status_code
             return {
                 "messages": messages,
                 "tool_calls": tool_calls_made,
                 "stop_reason": "error",
                 "error": f"Anthropic API error: {e}",
+                "should_failover": _is_failover_error(e),
+                "http_status": http_status,
             }
 
         # Append assistant response (preserves tool_use blocks for protocol)
@@ -6590,11 +7332,16 @@ def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:
+            http_status = None
+            if hasattr(e, "response") and e.response is not None:
+                http_status = e.response.status_code
             return {
                 "messages": messages,
                 "tool_calls": tool_calls_made,
                 "stop_reason": "error",
                 "error": f"OpenAI API error: {e}",
+                "should_failover": _is_failover_error(e),
+                "http_status": http_status,
             }
 
         msg = data["choices"][0]["message"]
@@ -6660,6 +7407,86 @@ def _openai_chat_loop(messages: list, tools: list, model: str, api_key: str, max
         "messages": messages,
         "tool_calls": tool_calls_made,
         "stop_reason": "max_iters",
+    }
+
+
+# ----------------------------------------------------------------------------
+# Failover orchestrator
+# ----------------------------------------------------------------------------
+
+def _run_chat_with_failover(incoming_messages: list, tools: list) -> dict:
+    """Run one chat turn through the failover chain.
+
+    Iterates _AI_FAILOVER_CHAIN; skips providers whose circuit breaker is open
+    or whose API key is missing. On a failover-eligible error records the failure
+    and continues to the next provider. Returns the loop result dict augmented
+    with 'served_by', 'switched', and 'attempts'.
+    """
+    chain = _AI_FAILOVER_CHAIN
+    attempts: list = []
+    messages_to_try = list(incoming_messages)
+
+    for provider in chain:
+        model, api_key = _provider_config(provider)
+        if not api_key:
+            logging.warning("chat_failover: skipping %s — no API key configured", provider)
+            attempts.append({"provider": provider, "skipped": "no_api_key"})
+            continue
+
+        # Skipping on an open breaker only makes sense if there's another
+        # provider left in the chain to fail over to. For a single-provider
+        # chain (the common case — AI_PROVIDER_FAILOVER unset), skipping
+        # would just manufacture a hard 60s outage window where pre-failover
+        # behavior would have kept retrying directly. Still attempt it; the
+        # breaker's failure count keeps accumulating for observability.
+        if len(chain) > 1:
+            with _breaker_lock:
+                if _breaker_is_open(_provider_breaker, provider, time.time()):
+                    logging.warning("chat_failover: skipping %s — circuit breaker open", provider)
+                    attempts.append({"provider": provider, "skipped": "breaker_open"})
+                    continue
+
+        if provider == "anthropic":
+            result = _anthropic_chat_loop(list(messages_to_try), tools, model, api_key)
+        else:
+            result = _openai_chat_loop(list(messages_to_try), tools, model, api_key)
+
+        if result.get("stop_reason") == "error" and result.get("should_failover"):
+            with _breaker_lock:
+                _breaker_record_failure(_provider_breaker, provider, time.time())
+            logging.warning(
+                "chat_failover: %s failed (http_status=%s), trying next provider. error=%s",
+                provider, result.get("http_status"), result.get("error"),
+            )
+            attempts.append({
+                "provider": provider,
+                "error": result.get("error"),
+                "http_status": result.get("http_status"),
+            })
+            # Forward messages at the clean turn boundary to the next provider.
+            messages_to_try = result.get("messages", messages_to_try)
+            continue
+
+        # Success or non-retryable error (e.g. 401) — return as-is.
+        if result.get("stop_reason") != "error":
+            with _breaker_lock:
+                _breaker_record_success(_provider_breaker, provider)
+
+        result["served_by"] = provider
+        result["switched"] = bool(chain) and provider != chain[0]
+        result["attempts"] = attempts
+        return result
+
+    # All providers exhausted.
+    return {
+        "messages": incoming_messages,
+        "tool_calls": [],
+        "stop_reason": "error",
+        "error": "All providers in failover chain failed or are unavailable.",
+        "should_failover": False,
+        "served_by": None,
+        "switched": False,
+        "attempts": attempts,
     }
 
 
@@ -6798,7 +7625,7 @@ def handle_chat():
     if not isinstance(incoming_messages, list) or not incoming_messages:
         return jsonify({"success": False, "error": "messages must be a non-empty array"}), 400
 
-    if AI_PROVIDER not in ("anthropic", "openai"):
+    if not _AI_FAILOVER_CHAIN:
         return jsonify({
             "success": False,
             "error": (
@@ -6806,8 +7633,9 @@ def handle_chat():
                 "Ollama tool-calling is not supported yet."
             ),
         }), 400
-    if not AI_API_KEY:
-        return jsonify({"success": False, "error": "AI_API_KEY not configured"}), 400
+    usable = [p for p in _AI_FAILOVER_CHAIN if _provider_config(p)[1]]
+    if not usable:
+        return jsonify({"success": False, "error": "No API key configured for any provider in the failover chain"}), 400
 
     # Resolve or create the conversation for persistence.
     conv_id = data.get("conversation_id") or None
@@ -6820,11 +7648,9 @@ def handle_chat():
         existing_count = 0
 
     tools = _build_chat_tools()
-
-    if AI_PROVIDER == "anthropic":
-        result = _anthropic_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
-    else:
-        result = _openai_chat_loop(list(incoming_messages), tools, AI_MODEL, AI_API_KEY)
+    result = _run_chat_with_failover(list(incoming_messages), tools)
+    served_by = result.get("served_by") or AI_PROVIDER
+    served_model = _provider_config(served_by)[0] if served_by else AI_MODEL
 
     # Persist the new turns (everything that wasn't already in the DB).
     new_turns = result.get("messages", [])[existing_count:]
@@ -6841,9 +7667,12 @@ def handle_chat():
         "messages": result.get("messages", []),
         "tool_calls": result.get("tool_calls", []),
         "stop_reason": result.get("stop_reason"),
-        "provider": AI_PROVIDER,
-        "model": AI_MODEL,
+        "provider": served_by,
+        "model": served_model,
         "conversation_id": conv_id,
+        "switched": result.get("switched", False),
+        "failover_chain": _AI_FAILOVER_CHAIN,
+        "attempts": result.get("attempts", []),
         **({"error": result["error"]} if result.get("error") else {}),
     })
 
@@ -6870,6 +7699,14 @@ if __name__ == "__main__":
                          name="boot-restore").start()
         threading.Thread(target=_last_look_saver_loop, daemon=True,
                          name="last-look-saver").start()
+
+    # Wire audio SocketIO subscriber so BPM/onset events stream to the browser.
+    # The engine only starts capture when /api/audio/enable is called.
+    _audio_engine.subscribe(_audio_socketio_subscriber)
+    if _audio_engine.available:
+        print("✓ Audio engine ready (aubio + sounddevice found)")
+    else:
+        print("⚠ Audio engine unavailable — aubio/sounddevice not installed")
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #

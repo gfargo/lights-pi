@@ -1,0 +1,152 @@
+"""Guard tests for #66 — MOCK_DMX fallback must never mutate the git-tracked
+sample fixture. The fallback path (MOCK_DMX=1, no QLC_WORKSPACE, no
+~/.qlcplus/default.qxw) must redirect WORKSPACE_PATH to a scratch copy.
+"""
+import importlib
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample.qxw"
+
+
+def _reload_app_in_fallback_mode(monkeypatch, tmp_home, persist=False, tmp_scratch_root=None):
+    """Reload app.py with MOCK_DMX=1, no QLC_WORKSPACE, and HOME pointed at an
+    empty tmp dir so ~/.qlcplus/default.qxw is absent — exercising the fallback
+    branch rather than an explicit-QLC_WORKSPACE path.
+
+    tmp_scratch_root, when given, is patched in as tempfile.gettempdir() so each
+    test gets its own scratch location instead of sharing the real global temp
+    dir — avoids cross-test coupling under parallel test execution.
+    """
+    monkeypatch.setenv("MOCK_DMX", "1")
+    monkeypatch.delenv("QLC_WORKSPACE", raising=False)
+    if persist:
+        monkeypatch.setenv("MOCK_DMX_PERSIST", "1")
+    else:
+        monkeypatch.delenv("MOCK_DMX_PERSIST", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_home))
+    if tmp_scratch_root is not None:
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_scratch_root))
+
+    import app as _app_module
+
+    importlib.reload(_app_module)
+    return _app_module
+
+
+class TestMockDmxFallbackWorkspace:
+    def test_fallback_workspace_is_not_the_repo_fixture(self, monkeypatch, tmp_path):
+        fixture_bytes_before = _FIXTURE.read_bytes()
+        scratch_root = tmp_path / "scratch"
+        app_module = _reload_app_in_fallback_mode(
+            monkeypatch, tmp_path / "home", tmp_scratch_root=scratch_root
+        )
+        try:
+            assert app_module.WORKSPACE_PATH != _FIXTURE
+            assert str(app_module.WORKSPACE_PATH).startswith(str(scratch_root))
+            assert app_module.WORKSPACE_PATH.exists()
+            assert app_module.WORKSPACE_PATH.read_bytes() == fixture_bytes_before
+        finally:
+            monkeypatch.delenv("MOCK_DMX", raising=False)
+            # Point HOME at a throwaway dir (not delenv) before the teardown
+            # reload — app.py's module-level chat_store.init_db(CHAT_DB_PATH)
+            # resolves Path.home(), and an unset HOME falls back to the real
+            # system home, writing a real ~/.qlcplus/chat_history.db.
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
+            importlib.reload(app_module)
+        assert _FIXTURE.read_bytes() == fixture_bytes_before
+
+    def test_writing_to_fallback_workspace_does_not_touch_fixture(self, monkeypatch, tmp_path):
+        """Simulates a writer (scene save / chase creation) hitting WORKSPACE_PATH —
+        the git-tracked fixture must remain byte-identical."""
+        fixture_bytes_before = _FIXTURE.read_bytes()
+        app_module = _reload_app_in_fallback_mode(
+            monkeypatch, tmp_path / "home", tmp_scratch_root=tmp_path / "scratch"
+        )
+        try:
+            # Mutate the scratch copy the way a real writer (tree.write(...)) would.
+            with open(app_module.WORKSPACE_PATH, "ab") as f:
+                f.write(b"<!-- test mutation -->")
+            assert app_module.WORKSPACE_PATH.read_bytes() != fixture_bytes_before
+        finally:
+            monkeypatch.delenv("MOCK_DMX", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
+            importlib.reload(app_module)
+        assert _FIXTURE.read_bytes() == fixture_bytes_before, (
+            "tests/fixtures/sample.qxw was mutated — a workspace writer leaked "
+            "into the git-tracked fixture"
+        )
+
+    def test_persist_flag_reuses_existing_scratch_copy(self, monkeypatch, tmp_path):
+        fixture_bytes_before = _FIXTURE.read_bytes()
+        app_module = _reload_app_in_fallback_mode(
+            monkeypatch, tmp_path / "home", persist=True, tmp_scratch_root=tmp_path / "scratch"
+        )
+        try:
+            scratch = app_module.WORKSPACE_PATH
+            marker = b"<!-- persisted marker -->"
+            with open(scratch, "ab") as f:
+                f.write(marker)
+
+            # Reload again with MOCK_DMX_PERSIST=1 — scratch file already exists,
+            # so it should be reused rather than overwritten from the fixture.
+            importlib.reload(app_module)
+            assert app_module.WORKSPACE_PATH.read_bytes().endswith(marker)
+        finally:
+            monkeypatch.delenv("MOCK_DMX", raising=False)
+            monkeypatch.delenv("MOCK_DMX_PERSIST", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
+            importlib.reload(app_module)
+        assert _FIXTURE.read_bytes() == fixture_bytes_before
+
+    def test_fallback_refuses_preplanted_symlink_at_scratch_dir(self, monkeypatch, tmp_path):
+        """A predictable per-uid scratch path is a symlink-attack target on a
+        shared host: another user who knows our uid could pre-create
+        lights-pi-mock-<uid> as a symlink before we ever run. The fallback must
+        refuse to follow it rather than silently writing through it (#66 review)."""
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        evil_target = tmp_path / "evil"
+        evil_target.mkdir()
+        (scratch_root / f"lights-pi-mock-{os.getuid()}").symlink_to(evil_target)
+
+        monkeypatch.setenv("MOCK_DMX", "1")
+        monkeypatch.delenv("QLC_WORKSPACE", raising=False)
+        monkeypatch.delenv("MOCK_DMX_PERSIST", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(scratch_root))
+
+        import app as _app_module
+
+        try:
+            with pytest.raises(RuntimeError, match="symlink attack|not a plain directory"):
+                importlib.reload(_app_module)
+        finally:
+            monkeypatch.delenv("MOCK_DMX", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
+            importlib.reload(_app_module)
+        assert not evil_target.joinpath("sample.qxw").exists()
+
+    def test_explicit_qlc_workspace_is_unaffected(self, monkeypatch, tmp_path):
+        """An explicit QLC_WORKSPACE pointing into the repo is the user's choice —
+        only the implicit fallback gets copy-on-use treatment."""
+        monkeypatch.setenv("MOCK_DMX", "1")
+        monkeypatch.setenv("QLC_WORKSPACE", str(_FIXTURE))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+        import app as _app_module
+
+        importlib.reload(_app_module)
+        try:
+            assert _app_module.WORKSPACE_PATH == _FIXTURE
+        finally:
+            monkeypatch.delenv("MOCK_DMX", raising=False)
+            monkeypatch.delenv("QLC_WORKSPACE", raising=False)
+            monkeypatch.setenv("HOME", str(tmp_path / "teardown_home"))
+            importlib.reload(_app_module)
