@@ -464,6 +464,8 @@
         .badge-error   { background: #2e1a1a; color: #f87171; }
         .badge-model   { background: #1a1a1a; color: #666; border: 1px solid #333; }
         .badge-group   { background: #1a1e2e; color: #7aa2f7; }
+        .badge-switch  { background: #1a2e2e; color: #2dd4bf; border: 1px solid #2dd4bf40; }
+        .chat-switch-notice { text-align: center; margin: 0.4rem 0; }
         .history-debug-toggle { font-size: 0.7rem; color: #555; cursor: pointer; user-select: none; margin-left: auto; }
         .history-debug-toggle:hover { color: #999; }
         .history-debug { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; }
@@ -3860,7 +3862,17 @@
                     appendChatMessage(chatHistory[i], /* persist */ false);
                 }
 
-                // Refresh affected UI panels
+                // Show a notice when the server transparently switched providers.
+                if (data.switched && data.provider) {
+                    const notice = document.createElement('div');
+                    notice.className = 'chat-switch-notice';
+                    notice.innerHTML = `<span class="history-badge badge-switch">switched to ${data.provider}</span>`;
+                    document.getElementById('chatMessages').appendChild(notice);
+                    document.getElementById('chatPane').scrollTop = 1e9;
+                }
+
+                // Refresh affected UI panels (groups, scenes, chases, cue
+                // lists may have been created/deleted by the agent)
                 if (data.tool_calls && data.tool_calls.length) {
                     const touched = new Set(data.tool_calls.map(t => t.name));
                     if (touched.has('create_group') || touched.has('delete_group') ||
