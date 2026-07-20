@@ -35,6 +35,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 import chat_store
 import fixture_definitions
+from audio_engine import _engine as _audio_engine
+from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
 
 app = Flask(__name__)
@@ -77,6 +79,13 @@ if _pi_host and _pi_host not in ("lights.local", _ts_host):
 
 CORS(app, origins=_ALLOWED_ORIGINS)
 socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS)
+
+
+@socketio.on("connect")
+def _on_socket_connect():
+    """Send current audio engine state to a newly connected browser."""
+    socketio.emit("audio_state", _audio_engine.get_state())
+
 
 # 2. Set SECRET_KEY for session signing (audit item #21)
 app.config["SECRET_KEY"] = os.getenv(
@@ -143,6 +152,13 @@ else:
 
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
+
+# Registry of audio-BPM-driven chases currently running.
+# Shape: { chase_key: { 'task': concurrent.futures.Future, 'react_to': str } }
+_active_audio_chases: dict[str, dict] = {}
+_active_audio_chases_lock = threading.Lock()
+
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
 CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
 
@@ -5850,6 +5866,295 @@ def stop_cue_list(cl_id_or_name):
 
 
 # =============================================================================
+# Audio reactivity — BPM detection + onset flash (issue #28)
+# =============================================================================
+#
+# Architecture:
+#   AudioEngine (audio_engine.py) owns the capture thread and aubio detectors.
+#   It publishes {"type":"bpm"|"onset", ...} events to registered subscribers.
+#
+#   Two subscribers are wired at engine.start() time:
+#     1. _audio_socketio_subscriber  — emits "audio_bpm" / "audio_onset" to
+#        all connected browser clients so the UI tab stays live.
+#     2. _onset_flash_subscriber     — calls apply_brightness_live for the
+#        blink-on-onset effect.  Registered only when react_to is set.
+#
+#   A beat-clock chase engine (_run_audio_chase_async) drives step scenes in
+#   time with detected BPM — required because QLC+ has no runtime speed-
+#   control command over the WebSocket.
+#
+# Storage: audio chase metadata lives in AUDIO_CHASES_FILE (sidecar JSON,
+#   same pattern as CUE_LISTS_FILE).  QLC+ workspace XML is untouched.
+
+
+def _audio_socketio_subscriber(event: dict) -> None:
+    """Forward audio engine events to connected browser clients."""
+    if event.get("type") == "bpm":
+        socketio.emit("audio_bpm", {"bpm": event["bpm"]})
+    elif event.get("type") == "onset":
+        socketio.emit("audio_onset", {
+            "onset_ms": event["onset_ms"],
+            "rms": event.get("rms", 0),
+        })
+
+
+def _make_onset_flash_subscriber(react_to: str = "any", target_groups=None):
+    """Return a subscriber that briefly flashes fixture brightness on onset."""
+    def _cb(event: dict) -> None:
+        if event.get("type") != "onset":
+            return
+        try:
+            apply_brightness_live(255, target_groups=target_groups)
+        except Exception as exc:
+            print(f"[onset-flash] error: {exc}")
+    return _cb
+
+
+# Module-level reference so we can remove the onset flash subscriber on disable
+_onset_flash_cb = None
+
+
+def _load_audio_chases() -> dict:
+    if not AUDIO_CHASES_FILE.exists():
+        return {"audio_chases": {}}
+    try:
+        data = json.loads(AUDIO_CHASES_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"audio_chases": {}}
+    data.setdefault("audio_chases", {})
+    return data
+
+
+def _save_audio_chases(data: dict) -> None:
+    AUDIO_CHASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUDIO_CHASES_FILE.write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Beat-clock chase engine
+# ---------------------------------------------------------------------------
+
+
+async def _run_audio_chase_async(chase_key: str, step_channel_values: list) -> None:
+    """Step through a chase in time with the detected audio BPM.
+
+    step_channel_values is pre-resolved list of [(abs_ch, val), ...] per step,
+    so we avoid re-parsing the workspace XML each beat.
+    """
+    n = len(step_channel_values)
+    if n == 0:
+        return
+
+    current_step = 0
+    with _active_audio_chases_lock:
+        _active_audio_chases.setdefault(chase_key, {})["running"] = True
+
+    try:
+        while True:
+            cvs = step_channel_values[current_step % n]
+            if cvs:
+                set_channel_values(cvs)
+            bpm = _audio_engine.get_bpm()
+            interval_ms = bpm_to_interval_ms(bpm) if bpm > 0 else 500.0
+            current_step += 1
+            await asyncio.sleep(interval_ms / 1000.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[audio-chase {chase_key}] error: {exc}")
+    finally:
+        with _active_audio_chases_lock:
+            _active_audio_chases.pop(chase_key, None)
+
+
+def _start_audio_chase(chase_id_or_name: str, react_to: str = "any") -> dict:
+    """Pre-resolve step scenes and launch the beat-clock task."""
+    chase = _find_function_element(chase_id_or_name, function_type="Chaser")
+    if chase is None:
+        return {"success": False, "error": f"Chase not found: {chase_id_or_name}"}
+
+    chase_key = str(chase.get("ID", chase_id_or_name))
+
+    # Stop any existing beat-clock for this chase
+    with _active_audio_chases_lock:
+        existing = _active_audio_chases.get(chase_key)
+    if existing and existing.get("task"):
+        existing["task"].cancel()
+
+    # Pre-resolve each step → channel values
+    steps = sorted(
+        _find_children(chase, "Step"),
+        key=lambda s: int(s.get("Number", "0")) if s.get("Number", "0").isdigit() else 0,
+    )
+    step_cvs = []
+    for step in steps:
+        scene_ref = step.get("Values") or (step.text or "").strip()
+        scene_el = _find_scene_element(scene_ref) if scene_ref else None
+        step_cvs.append(scene_to_channel_values(scene_el) if scene_el else [])
+
+    if _qlc_loop is None:
+        _start_qlc_loop()
+
+    coro = _run_audio_chase_async(chase_key, step_cvs)
+    task = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+
+    with _active_audio_chases_lock:
+        _active_audio_chases[chase_key] = {"task": task, "react_to": react_to}
+
+    # Persist to sidecar
+    data = _load_audio_chases()
+    data["audio_chases"][chase_key] = {
+        "chase_name": chase.get("Name", ""),
+        "react_to": react_to,
+    }
+    _save_audio_chases(data)
+
+    return {
+        "success": True,
+        "chase": {"id": chase_key, "name": chase.get("Name", "")},
+        "react_to": react_to,
+    }
+
+
+def _stop_audio_chase(chase_id_or_name: str) -> dict:
+    chase = _find_function_element(chase_id_or_name, function_type="Chaser")
+    chase_key = str(chase.get("ID", chase_id_or_name)) if chase else str(chase_id_or_name)
+    with _active_audio_chases_lock:
+        entry = _active_audio_chases.get(chase_key)
+    if not entry:
+        return {"success": False, "error": f"Audio chase not running: {chase_id_or_name}"}
+    task = entry.get("task")
+    if task:
+        task.cancel()
+    return {"success": True, "chase_key": chase_key}
+
+
+# ---------------------------------------------------------------------------
+# REST endpoints — /api/audio
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/audio", methods=["GET"])
+def get_audio_state():
+    """Return current audio engine state."""
+    return jsonify(_audio_engine.get_state())
+
+
+@app.route("/api/audio/enable", methods=["POST"])
+def enable_audio():
+    """Start the audio engine.
+
+    Body (all optional):
+        {
+          "device":      null | int | "hw:1,0",   # sounddevice device id/name
+          "sensitivity": 0.02                      # noise-gate RMS threshold
+          "react_to":    "any" | "kick" | "snare" # onset flash mode; null = off
+        }
+    """
+    global _onset_flash_cb
+    body = request.get_json(silent=True) or {}
+
+    device = body.get("device")
+    sensitivity = body.get("sensitivity")
+    react_to = body.get("react_to")
+
+    # Wire SocketIO subscriber (idempotent)
+    _audio_engine.unsubscribe(_audio_socketio_subscriber)
+    _audio_engine.subscribe(_audio_socketio_subscriber)
+
+    # Remove old onset flash subscriber if any
+    if _onset_flash_cb is not None:
+        _audio_engine.unsubscribe(_onset_flash_cb)
+        _onset_flash_cb = None
+
+    # Register new onset flash subscriber
+    if react_to:
+        _onset_flash_cb = _make_onset_flash_subscriber(react_to)
+        _audio_engine.subscribe(_onset_flash_cb)
+
+    ok = _audio_engine.start(device=device, sensitivity=sensitivity)
+    if not ok:
+        return jsonify({
+            "success": False,
+            "error": (
+                "Audio engine unavailable — install aubio, sounddevice, and numpy on the Pi. "
+                "See scripts/provisioning/setup.sh for the apt packages."
+            ),
+            "available": False,
+        }), 503
+
+    return jsonify({"success": True, **_audio_engine.get_state()})
+
+
+@app.route("/api/audio/disable", methods=["POST"])
+def disable_audio():
+    """Stop the audio engine and any running audio chases."""
+    global _onset_flash_cb
+    _audio_engine.stop()
+    if _onset_flash_cb is not None:
+        _audio_engine.unsubscribe(_onset_flash_cb)
+        _onset_flash_cb = None
+    _audio_engine.unsubscribe(_audio_socketio_subscriber)
+    return jsonify({"success": True, **_audio_engine.get_state()})
+
+
+@app.route("/api/audio/calibrate", methods=["POST"])
+def calibrate_audio():
+    """Auto-set noise gate from recent ambient audio samples.
+
+    The engine must already be enabled so samples are available.
+    Sets sensitivity to 3× the measured background RMS.
+    """
+    result = _audio_engine.calibrate()
+    if not result["success"]:
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route("/api/audio/chase/<path:chase_id>/start", methods=["POST"])
+def start_audio_chase(chase_id):
+    """Start a beat-clock-driven chase slaved to the detected audio BPM.
+
+    Body (optional):
+        { "react_to": "any" | "kick" | "snare" }
+    """
+    if not _audio_engine.available:
+        return jsonify({"success": False, "error": "Audio engine not available"}), 503
+    body = request.get_json(silent=True) or {}
+    react_to = body.get("react_to", "any")
+    result = _start_audio_chase(chase_id, react_to=react_to)
+    if not result["success"]:
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@app.route("/api/audio/chase/<path:chase_id>/stop", methods=["POST"])
+def stop_audio_chase(chase_id):
+    """Stop a running audio-driven chase."""
+    result = _stop_audio_chase(chase_id)
+    if not result["success"]:
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@app.route("/api/audio/chases", methods=["GET"])
+def list_audio_chases():
+    """List audio chases and which are currently running."""
+    data = _load_audio_chases()
+    with _active_audio_chases_lock:
+        running_keys = set(_active_audio_chases.keys())
+    chases = []
+    for key, meta in data["audio_chases"].items():
+        chases.append({
+            "chase_id": key,
+            "chase_name": meta.get("chase_name", ""),
+            "react_to": meta.get("react_to", "any"),
+            "running": key in running_keys,
+        })
+    return jsonify({"audio_chases": chases})
+
+
+# =============================================================================
 # Agentic chat (issue: agent-driven web UI experience)
 # =============================================================================
 #
@@ -6977,6 +7282,14 @@ if __name__ == "__main__":
                          name="boot-restore").start()
         threading.Thread(target=_last_look_saver_loop, daemon=True,
                          name="last-look-saver").start()
+
+    # Wire audio SocketIO subscriber so BPM/onset events stream to the browser.
+    # The engine only starts capture when /api/audio/enable is called.
+    _audio_engine.subscribe(_audio_socketio_subscriber)
+    if _audio_engine.available:
+        print("✓ Audio engine ready (aubio + sounddevice found)")
+    else:
+        print("⚠ Audio engine unavailable — aubio/sounddevice not installed")
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #
