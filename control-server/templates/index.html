@@ -2241,9 +2241,9 @@
         }
 
         function escHtml(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
         }
 
         /* ══════════════════════════════════════
@@ -2332,7 +2332,7 @@
                 const grid = document.getElementById('sceneGrid');
                 allScenesData = data.scenes || [];
                 grid.innerHTML = allScenesData.map(s => {
-                    const swatchStyle = s.swatch ? ` style="background-image:url('${s.swatch}')"` : '';
+                    const swatchStyle = s.swatch ? ` style="background-image:url('${escHtml(s.swatch)}')"` : '';
                     return `
                     <div class="scene-btn-wrap">
                         <span class="scene-swatch"${swatchStyle}></span>
@@ -2394,8 +2394,8 @@
                           }))
                         : getChannelNames(f).map(n => ({ name: n, role: null }));
                     const sliders = channels.map((ch, i) => {
-                        const roleAttr = ch.role ? ` data-role="${ch.role}"` : '';
-                        const titleAttr = ch.role ? ` title="${ch.role}"` : '';
+                        const roleAttr = ch.role ? ` data-role="${escHtml(ch.role)}"` : '';
+                        const titleAttr = ch.role ? ` title="${escHtml(ch.role)}"` : '';
                         return `
                         <div class="channel-control"${roleAttr}>
                             <div class="channel-label"${titleAttr}>${escHtml(ch.name)}</div>
