@@ -24,10 +24,11 @@ def test_zero_timing_step_does_not_block_event_loop():
         "speed": {"hold_ms": 0, "fade_in_ms": 0},
         "run_order": "Loop",
     }
+    app_module._mock_chase_generation[999999] = 0
 
     async def drive():
         task = asyncio.create_task(
-            app_module._mock_chase_run(999999, chase_info)
+            app_module._mock_chase_run(999999, chase_info, 0)
         )
         # If the stepper never yields, this sleep (scheduled on the same
         # loop) never resumes and the outer wait_for below times out.
@@ -52,9 +53,12 @@ def test_single_shot_zero_timing_chase_completes():
         "speed": {"hold_ms": 0, "fade_in_ms": 0},
         "run_order": "SingleShot",
     }
+    app_module._mock_chase_generation[999998] = 0
 
     asyncio.run(asyncio.wait_for(
-        app_module._mock_chase_run(999998, chase_info), timeout=2.0
+        app_module._mock_chase_run(999998, chase_info, 0), timeout=2.0
     ))
 
-    assert 999998 not in app_module._mock_chase_tasks
+    # _mock_chase_run itself never touches _mock_chase_tasks (that's
+    # _mock_chase_start's job via the done-callback) — this just confirms
+    # the coroutine returned instead of hanging on the SingleShot chase.
