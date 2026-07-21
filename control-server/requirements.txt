@@ -4,6 +4,7 @@ flask-socketio==5.6.1
 requests==2.34.2
 structlog==24.4.0
 websockets==15.0.1
+python-osc==1.9.3
 # Audio reactivity (issue #28) — optional: server starts without these but
 # /api/audio/enable returns 503 until installed on the Pi.
 aubio>=0.4.9

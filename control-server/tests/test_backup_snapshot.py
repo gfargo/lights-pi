@@ -28,12 +28,13 @@ def _make_home(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("BACKUP_REMOTE=\n")
-    # create_snapshot only archives .env when BACKUP_INCLUDE_ENV=1, so these
-    # tests need a real backup-worthy directory present to exercise the
-    # tar/gzip path (regression for gfargo/lights-pi#96).
-    control_server = home / "control-server"
-    control_server.mkdir()
-    (control_server / "scenes.json").write_text("{}")
+    # create_snapshot only archives .config/qlcplus, .qlcplus, and
+    # control-server (not .env, which is opt-in via BACKUP_INCLUDE_ENV) — it
+    # needs at least one of those present or it bails out early with
+    # "nothing to back up" and never writes a snapshot.
+    qlcplus_dir = home / ".config" / "qlcplus"
+    qlcplus_dir.mkdir(parents=True)
+    (qlcplus_dir / "workspace.qxw").write_text("<Workspace/>\n")
     return home
 
 
