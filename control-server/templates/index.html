@@ -2259,9 +2259,22 @@
         }
 
         function escHtml(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        // For interpolating into a single-quoted JS string literal inside an
+        // inline event-handler attribute, e.g. onclick="foo('${escJsAttr(x)}')".
+        // The browser HTML-decodes attribute values *before* the JS parser sees
+        // them, so escHtml('&#39;) alone re-hydrates back into a real quote and
+        // lets the string break out. Escape for the JS-string context first,
+        // then HTML-escape the result so decoding restores the JS escape intact.
+        function escJsAttr(s) {
+            const jsEscaped = String(s).replace(/[\\'\n\r\u2028\u2029]/g, c => ({
+                '\\': '\\\\', "'": "\\'", '\n': '\\n', '\r': '\\r', '\u2028': '\\u2028', '\u2029': '\\u2029'
+            }[c]));
+            return escHtml(jsEscaped);
         }
 
         /* ══════════════════════════════════════
@@ -2288,7 +2301,7 @@
                             `<div class="drawer-fixture-item"><span class="drawer-fixture-dot"></span>${escHtml(String(f))}</div>`
                         ).join('');
                         const sceneBtns = templates.map(t =>
-                            `<button class="drawer-scene-btn" onclick="applyGroupTemplate('${escHtml(g.name)}','${t}')">${t.replace(/-/g,' ')}</button>`
+                            `<button class="drawer-scene-btn" onclick="applyGroupTemplate('${escJsAttr(g.name)}','${t}')">${t.replace(/-/g,' ')}</button>`
                         ).join('');
                         return `
                             <div class="drawer-group" id="dg-${idx}">
@@ -2302,8 +2315,8 @@
                                 <div class="drawer-group-scenes">${sceneBtns}</div>
                                 <div class="drawer-fixture-list">${fixtureItems}</div>
                                 <div class="drawer-group-actions">
-                                    <button class="btn-ghost btn-tiny" onclick="event.stopPropagation(); renameGroup('${escHtml(g.name)}')">Rename</button>
-                                    <button class="btn-danger btn-tiny" onclick="event.stopPropagation(); deleteGroup('${escHtml(g.name)}')">Delete</button>
+                                    <button class="btn-ghost btn-tiny" onclick="event.stopPropagation(); renameGroup('${escJsAttr(g.name)}')">Rename</button>
+                                    <button class="btn-danger btn-tiny" onclick="event.stopPropagation(); deleteGroup('${escJsAttr(g.name)}')">Delete</button>
                                 </div>
                             </div>`;
                     }).join('');
@@ -2314,7 +2327,7 @@
                 const targetRow = document.getElementById('targetGroupsRow');
                 if (allGroupsData.length) {
                     chipsContainer.innerHTML = allGroupsData.map(g =>
-                        `<span class="group-chip" data-group="${escHtml(g.name)}" onclick="toggleGroupChip('${escHtml(g.name)}')">${escHtml(g.name)}</span>`
+                        `<span class="group-chip" data-group="${escHtml(g.name)}" onclick="toggleGroupChip('${escJsAttr(g.name)}')">${escHtml(g.name)}</span>`
                     ).join('');
                     targetRow.style.display = 'flex';
                 }
@@ -2828,7 +2841,7 @@
                                 ? `<button class="btn-stop btn-tiny" onclick="stopCueList(${cl.id})">■ STOP</button>`
                                 : `<button class="btn-go btn-tiny" onclick="goCueList(${cl.id})">▶ GO</button>`}
                             <button class="btn-ghost btn-tiny" onclick="describeCueList(${cl.id})">View</button>
-                            <button class="btn-ghost btn-tiny" onclick="deleteCueListConfirm(${cl.id}, '${escHtml(cl.name)}')">✕</button>
+                            <button class="btn-ghost btn-tiny" onclick="deleteCueListConfirm(${cl.id}, '${escJsAttr(cl.name)}')">✕</button>
                         </div>
                     </div>`;
                 }).join('');
@@ -3073,9 +3086,9 @@
                             </div>
                         </div>
                         <div class="resource-actions">
-                            <button class="btn-go btn-tiny" onclick="startChaseRow('${escHtml(c.name)}')">▶ Start</button>
-                            <button class="btn-stop btn-tiny" onclick="stopChaseRow('${escHtml(c.name)}')">■ Stop</button>
-                            <button class="btn-ghost btn-tiny" onclick="deleteChaseConfirm('${escHtml(c.name)}')">✕</button>
+                            <button class="btn-go btn-tiny" onclick="startChaseRow('${escJsAttr(c.name)}')">▶ Start</button>
+                            <button class="btn-stop btn-tiny" onclick="stopChaseRow('${escJsAttr(c.name)}')">■ Stop</button>
+                            <button class="btn-ghost btn-tiny" onclick="deleteChaseConfirm('${escJsAttr(c.name)}')">✕</button>
                         </div>
                     </div>`).join('');
             } catch (e) { console.error(e); }
@@ -3139,7 +3152,7 @@
                 return;
             }
             container.innerHTML = allScenesData.map(s =>
-                `<button class="scene-pick-btn" onclick="addChaseStep('${escHtml(s.name)}')">${escHtml(s.name)}</button>`
+                `<button class="scene-pick-btn" onclick="addChaseStep('${escJsAttr(s.name)}')">${escHtml(s.name)}</button>`
             ).join('');
         }
         function addChaseStep(sceneName) {
@@ -3749,7 +3762,7 @@
                 const active = c.id === currentConversationId ? ' active' : '';
                 const title = escHtml(c.title || 'Untitled');
                 const date = escHtml(_fmtDate(c.updated_at));
-                return `<div class="conv-item${active}" onclick="loadConversation('${escHtml(c.id)}')"
+                return `<div class="conv-item${active}" onclick="loadConversation('${escJsAttr(c.id)}')"
                              title="${escHtml(c.summary || c.title || '')}">
                     <div class="conv-title">${title}</div>
                     <div class="conv-date">${date}</div>
@@ -3797,7 +3810,7 @@
                     const active = item.conversation_id === currentConversationId ? ' active' : '';
                     const snippet = (item.snippets || []).slice(0,2).map(s => escHtml(s)).join(' · ');
                     return `<div class="conv-item${active}"
-                                 onclick="loadConversation('${escHtml(item.conversation_id)}')">
+                                 onclick="loadConversation('${escJsAttr(item.conversation_id)}')">
                         <div class="conv-title">${escHtml(item.title || 'Untitled')}</div>
                         <div class="conv-date" style="white-space:normal">${snippet}</div>
                     </div>`;

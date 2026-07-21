@@ -616,11 +616,12 @@ def _fixture_to_dict(fixture):
     }
 
 
-def get_workspace_fixtures():
+def get_workspace_fixtures(root=None):
     """Return fixture metadata from the configured workspace."""
-    if not WORKSPACE_PATH.exists():
-        return []
-    root = _workspace_root()
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
     return [_fixture_to_dict(f) for f in _fixture_elements(root)]
 
 
@@ -632,11 +633,12 @@ def _engine_element(root):
     return root.find("Engine")
 
 
-def get_workspace_scenes():
+def get_workspace_scenes(root=None):
     """Return real Engine scene functions, excluding Virtual Console references."""
-    if not WORKSPACE_PATH.exists():
-        return []
-    root = _workspace_root()
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
     engine = _engine_element(root)
     if engine is None:
         return []
@@ -656,6 +658,18 @@ def get_workspace_scenes():
             "fixture_values": len(_find_children(func, "FixtureVal")),
         })
     return scenes
+
+
+def _iter_scene_functions(engine):
+    """Yield (id, element) for each real Engine scene function."""
+    ns = "http://www.qlcplus.org/Workspace"
+    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+        if func.get("Type") != "Scene":
+            continue
+        fid = func.get("ID")
+        if not fid or not fid.isdigit():
+            continue
+        yield int(fid), func
 
 
 def get_next_scene_id():
@@ -3008,15 +3022,21 @@ def list_templates():
 def list_scenes():
     """List existing scene functions from the loaded workspace, each with a swatch URI."""
     try:
-        scenes = get_workspace_scenes()
+        root = _workspace_root() if WORKSPACE_PATH.exists() else None
+        scenes = get_workspace_scenes(root=root)
+        fixtures = get_workspace_fixtures(root=root) if root is not None else []
         try:
             mtime = WORKSPACE_PATH.stat().st_mtime
         except OSError:
             mtime = 0.0
+
+        engine = _engine_element(root) if root is not None else None
+        elems_by_id = dict(_iter_scene_functions(engine)) if engine is not None else {}
+
         for s in scenes:
             try:
-                elem = _find_scene_element(s["id"])
-                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime) if elem is not None else None
+                elem = elems_by_id.get(s["id"])
+                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime, fixtures=fixtures) if elem is not None else None
             except Exception:
                 s["swatch"] = None
         return jsonify({"scenes": scenes})
@@ -3905,7 +3925,7 @@ def import_workspace():
 # Scene management — describe / delete / rename / duplicate
 # ----------------------------------------------------------------------------
 
-def _scene_value_breakdown(scene_root) -> list:
+def _scene_value_breakdown(scene_root, fixtures=None) -> list:
     """Convert a scene <Function> element to a fixture-keyed value breakdown.
 
     Returns a list of dicts:
@@ -3914,7 +3934,9 @@ def _scene_value_breakdown(scene_root) -> list:
 
     The channel name comes from the .qxf parser when available.
     """
-    fixtures_by_id = {str(f["id"]): f for f in get_workspace_fixtures()}
+    if fixtures is None:
+        fixtures = get_workspace_fixtures()
+    fixtures_by_id = {str(f["id"]): f for f in fixtures}
     out = []
     for fixture_val in _find_children(scene_root, "FixtureVal"):
         fid = fixture_val.get("ID")
@@ -3953,12 +3975,12 @@ def _scene_value_breakdown(scene_root) -> list:
     return out
 
 
-def _scene_swatch_svg(scene_root) -> str:
+def _scene_swatch_svg(scene_root, fixtures=None) -> str:
     """Return a data:image/svg+xml URI with one color band per fixture.
 
     Falls back to a dark neutral strip when no color roles are resolvable.
     """
-    breakdown = _scene_value_breakdown(scene_root)
+    breakdown = _scene_value_breakdown(scene_root, fixtures=fixtures)
     if not breakdown:
         return _neutral_swatch_svg()
 
@@ -3992,7 +4014,7 @@ def _neutral_swatch_svg() -> str:
     return f"data:image/svg+xml;charset=utf-8,{encoded}"
 
 
-def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str | None:
+def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float, fixtures=None) -> str | None:
     """Return cached swatch URI for a scene, re-computing when workspace changed."""
     global _scene_swatch_cache, _scene_swatch_cache_mtime
     if workspace_mtime != _scene_swatch_cache_mtime:
@@ -4000,7 +4022,7 @@ def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str 
         _scene_swatch_cache_mtime = workspace_mtime
     if scene_id not in _scene_swatch_cache:
         try:
-            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem)
+            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem, fixtures=fixtures)
         except Exception:
             _scene_swatch_cache[scene_id] = None
     return _scene_swatch_cache[scene_id]
@@ -5167,6 +5189,26 @@ def _scene_channel_commands(scene_id) -> list:
     return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
 
 
+def _tap_runner_blackout_commands(scene_ids: list) -> list:
+    """CH|<abs>|0 for every channel touched across scene_ids, deduped in first-seen order.
+
+    Used to clear a tap runner's footprint on stop — a surgical blackout that only
+    zeroes channels the runner actually wrote, not the whole rig.
+    """
+    channels = []
+    seen = set()
+    for scene_id in scene_ids:
+        for cmd in _scene_channel_commands(scene_id):
+            parts = cmd.split("|")
+            if len(parts) != 3:
+                continue
+            ch = parts[1]
+            if ch not in seen:
+                seen.add(ch)
+                channels.append(ch)
+    return [f"CH|{ch}|0" for ch in channels]
+
+
 def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
@@ -5175,11 +5217,11 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
     sleeps for state['step_ms'] ms so that BPM changes take effect on the very
     next step.
     """
-    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
+    _stop_tap_runner(chase_id, teardown=False)  # cancel any existing runner for this chase
     if not scene_ids:
         return
     _start_qlc_loop()  # ensure background event loop is running
-    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    state: dict = {"step_ms": float(initial_step_ms), "running": True, "scene_ids": list(scene_ids)}
     _tap_runners[str(chase_id)] = state
     n = len(scene_ids)
 
@@ -5199,13 +5241,26 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
     asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
 
 
-def _stop_tap_runner(chase_id: str) -> bool:
-    """Cancel a running server-side tap runner. Returns True if one was active."""
+def _stop_tap_runner(chase_id: str, teardown: bool = True) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active.
+
+    teardown=True (stop/user-facing) blackouts the runner's channel footprint so
+    the rig doesn't stay lit at the last step's values. teardown=False (internal
+    restart path in _start_tap_runner) skips the blackout so restarting a tap
+    chase doesn't clobber the freshly-started runner's first frame.
+    """
     state = _tap_runners.pop(str(chase_id), None)
-    if state:
-        state["running"] = False
-        return True
-    return False
+    if not state:
+        return False
+    state["running"] = False
+    if teardown:
+        try:
+            commands = _tap_runner_blackout_commands(state.get("scene_ids", []))
+            if commands:
+                _qlc_run(_qlc_send_commands(commands), timeout=5)
+        except Exception:
+            pass
+    return True
 
 
 def _engine_functions(engine):
