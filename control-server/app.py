@@ -339,6 +339,8 @@ _qlc_loop_thread: threading.Thread = None  # type: ignore
 _qlc_ws = None  # the actual websocket connection (lives on _qlc_loop)
 _qlc_ws_lock: asyncio.Lock = None  # type: ignore
 _qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
+_last_dmx_write_ts: float = None  # type: ignore  # set after each successful send
+_ws_reconnect_count: int = 0  # monotonic count of successful (re)connections
 
 
 def _start_qlc_loop():
@@ -463,13 +465,16 @@ async def _qlc_reader(ws):
 
 async def _qlc_send_commands(commands):
     """Send one or more raw QLC+ commands over the persistent WebSocket."""
+    global _last_dmx_write_ts
     if MOCK_DMX:
         _mock_dmx.apply_commands(commands)
+        _last_dmx_write_ts = time.time()
         return
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
             await ws.send(command)
+    _last_dmx_write_ts = time.time()
 
 
 async def _qlc_request_reply(command, response_marker, timeout=2.0):
@@ -786,13 +791,34 @@ def _scene_root_from_xml(scene_xml):
     return ET.fromstring(scene_xml)
 
 
-def scene_to_channel_values(scene_root):
-    """Convert a QLC+ scene Function element to absolute channel/value pairs.
+def _decode_fixture_val_pairs(pairs, channel_count):
+    """Decode raw FixtureVal (channel, value) pairs into 0-based offsets.
 
-    Existing QLC+ workspace scenes use zero-based FixtureVal channels, while
-    generated scenes in this project use one-based channels. Detect either form
-    per fixture by checking whether channel 0 appears.
+    QLC+ stores FixtureVal channels 0-based natively, but some historical
+    hand-authored scenes in this project used 1-based channels. The base
+    can't be reliably guessed per-scene from sparse data alone, so we anchor
+    the decision in facts knowable from the fixture definition:
+
+    - Any channel == 0 can only occur in 0-based data (1-based data never
+      contains 0) -> 0-based.
+    - Else, any channel == channel_count can only occur in 1-based data (a
+      0-based offset's max is channel_count - 1) -> 1-based.
+    - Otherwise the data is ambiguous; default to 0-based, matching QLC+'s
+      native format and the scenes this heuristic most commonly sees.
     """
+    if any(channel == 0 for channel, _ in pairs):
+        one_based = False
+    elif channel_count and any(channel == channel_count for channel, _ in pairs):
+        one_based = True
+    else:
+        one_based = False
+
+    shift = 1 if one_based else 0
+    return [(channel - shift, value) for channel, value in pairs]
+
+
+def scene_to_channel_values(scene_root):
+    """Convert a QLC+ scene Function element to absolute channel/value pairs."""
     fixtures = {str(f["id"]): f for f in get_workspace_fixtures()}
     updates = []
 
@@ -812,9 +838,7 @@ def scene_to_channel_values(scene_root):
         if not pairs:
             continue
 
-        zero_based = any(channel == 0 for channel, _ in pairs)
-        for channel, value in pairs:
-            offset = channel if zero_based else channel - 1
+        for offset, value in _decode_fixture_val_pairs(pairs, fixture["channels"]):
             if offset < 0 or offset >= fixture["channels"]:
                 continue
             absolute_channel = fixture["universe"] * 512 + fixture["address"] + offset + 1
@@ -2719,6 +2743,90 @@ def handle_action():
     })
 
 
+_HEALTHZ_UNSET = object()
+
+
+def _dmx_device_readable(dev):
+    return os.access(dev, os.R_OK)
+
+
+def _healthz_status(
+    qlc_ws=_HEALTHZ_UNSET,
+    last_dmx_ts=_HEALTHZ_UNSET,
+    workspace_path=None,
+    dmx_device_glob=None,
+    dmx_readable_fn=None,
+    now=None,
+):
+    """Aggregate health of all subsystems. Returns (payload_dict, all_critical_ok).
+
+    All parameters are injectable for unit testing; defaults pull from live globals.
+    dmx_readable_fn: optional callable(path) -> bool; defaults to os.access(path, os.R_OK).
+    """
+    import glob as _glob
+
+    if qlc_ws is _HEALTHZ_UNSET:
+        qlc_ws = _qlc_ws
+    if last_dmx_ts is _HEALTHZ_UNSET:
+        last_dmx_ts = _last_dmx_write_ts
+    if workspace_path is None:
+        workspace_path = WORKSPACE_PATH
+    if now is None:
+        now = time.time()
+    if dmx_readable_fn is None:
+        dmx_readable_fn = _dmx_device_readable
+
+    ws_ok = False
+    try:
+        if qlc_ws is not None and not getattr(qlc_ws, "closed", False):
+            ws_ok = True
+    except Exception:
+        pass
+
+    dmx_device = None
+    try:
+        devices = (
+            dmx_device_glob
+            if dmx_device_glob is not None
+            else _glob.glob("/dev/ttyUSB*") + _glob.glob("/dev/ttyACM*")
+        )
+        if devices:
+            dev = devices[0]
+            dmx_device = dev if dmx_readable_fn(dev) else None
+    except Exception:
+        pass
+
+    dmx_age = None
+    if last_dmx_ts is not None:
+        dmx_age = round(now - last_dmx_ts, 1)
+
+    workspace_ok = False
+    try:
+        if workspace_path.exists():
+            ET.parse(str(workspace_path))
+            workspace_ok = True
+    except Exception:
+        pass
+
+    payload = {
+        "flask": True,
+        "qlc_ws": ws_ok,
+        "dmx_device": dmx_device or False,
+        "last_dmx_write_age_s": dmx_age,
+        "workspace_loaded": workspace_ok,
+    }
+
+    all_ok = ws_ok and workspace_ok
+    return payload, all_ok
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Deep health endpoint. 200 = all critical checks green, 503 = any red."""
+    payload, all_ok = _healthz_status()
+    return jsonify(payload), 200 if all_ok else 503
+
+
 @app.route("/api/events", methods=["GET"])
 def sse_events():
     """Server-Sent Events stream for real-time rig state changes.
@@ -3824,16 +3932,11 @@ def _scene_value_breakdown(scene_root) -> list:
         if not pairs:
             continue
 
-        # Detect 0-based vs 1-based channel numbering (same logic as
-        # scene_to_channel_values) so the offsets we report are 0-based.
-        zero_based = any(channel == 0 for channel, _ in pairs)
-
         channel_info = _fixture_channels_info(fixture)
         info_by_offset = {ci["offset"]: ci for ci in channel_info}
 
         channels = []
-        for raw_ch, value in pairs:
-            offset = raw_ch if zero_based else raw_ch - 1
+        for offset, value in _decode_fixture_val_pairs(pairs, int(fixture.get("channels", 0))):
             ci = info_by_offset.get(offset, {})
             channels.append({
                 "offset": offset,
