@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 import xml.etree.ElementTree as ET
 from datetime import timedelta
 from pathlib import Path
@@ -253,6 +254,7 @@ else:
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
+CUE_AUDIO_DIR = Path.home() / ".qlcplus" / "audio"
 
 # Registry of audio-BPM-driven chases currently running.
 # Shape: { chase_key: { 'task': concurrent.futures.Future, 'react_to': str } }
@@ -5984,6 +5986,7 @@ def _serialize_cue_list(cl: dict, include_runtime: bool = False) -> dict:
         "duration": _format_time_ms(cl.get("duration_ms", 0)),
         "cue_count": len(cl.get("cues", [])),
         "cues": [_serialize_cue(c) for c in cl.get("cues", [])],
+        "audio_file": cl.get("audio_file"),
     }
     if include_runtime:
         runtime = _active_cue_lists.get(cl["id"])
@@ -6012,6 +6015,71 @@ def _find_cue_list(id_or_name) -> tuple[dict, dict] | tuple[None, None]:
         if str(cl["id"]) == str(id_or_name) or cl["name"].lower() == needle:
             return data, cl
     return None, None
+
+
+def _cue_active_at(cues: list[dict], at_ms: int) -> dict | None:
+    """Return the last cue whose at_ms <= at_ms, or None if at_ms is
+    before the first cue (or there are no cues)."""
+    candidates = [c for c in cues if c["at_ms"] <= at_ms]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c["at_ms"])
+
+
+def _audio_file_path(cl: dict) -> Path | None:
+    """Resolve a cue list's associated audio file within CUE_AUDIO_DIR.
+
+    Returns None if there's no audio_file set, it's an absolute path, or it
+    resolves outside CUE_AUDIO_DIR (path traversal guard).
+    """
+    audio_file = cl.get("audio_file")
+    if not audio_file:
+        return None
+    if Path(audio_file).is_absolute():
+        return None
+    candidate = (CUE_AUDIO_DIR / audio_file).resolve()
+    audio_dir = CUE_AUDIO_DIR.resolve()
+    if audio_dir not in candidate.parents and candidate != audio_dir:
+        return None
+    return candidate
+
+
+def _wav_peaks(path: Path, resolution_ms: int = 50) -> list[dict]:
+    """Return per-bucket {"peak", "rms"} amplitude data (normalized 0-1)
+    for a PCM WAV file, one bucket per resolution_ms of audio.
+
+    Pure stdlib (wave + array) — deliberately avoids numpy so this helper
+    (and CI) never depends on it.
+    """
+    import array
+
+    with wave.open(str(path), "rb") as wf:
+        n_channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        frame_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+
+    type_codes = {1: "b", 2: "h", 4: "i"}
+    if sample_width not in type_codes or n_channels < 1 or frame_rate <= 0:
+        return []
+
+    samples = array.array(type_codes[sample_width])
+    samples.frombytes(raw[: len(raw) - (len(raw) % (sample_width * n_channels))])
+    max_val = float(2 ** (8 * sample_width - 1))
+
+    frames_per_bucket = max(1, int(frame_rate * resolution_ms / 1000))
+    samples_per_bucket = frames_per_bucket * n_channels
+
+    peaks = []
+    for start in range(0, len(samples), samples_per_bucket):
+        bucket = samples[start:start + samples_per_bucket]
+        if not bucket:
+            continue
+        peak = max(abs(s) for s in bucket) / max_val
+        rms = math.sqrt(sum((s / max_val) ** 2 for s in bucket) / len(bucket))
+        peaks.append({"peak": round(min(1.0, peak), 4), "rms": round(min(1.0, rms), 4)})
+    return peaks
 
 
 # ----------------------------------------------------------------------------
@@ -6228,6 +6296,7 @@ def create_cue_list():
         "description": (body.get("description") or "").strip(),
         "duration_ms": duration_ms,
         "cues": cues,
+        "audio_file": (body.get("audio_file") or "").strip() or None,
     }
     data["cue_lists"].append(new_cl)
     _save_cue_lists(data)
@@ -6251,6 +6320,9 @@ def update_cue_list(cl_id_or_name):
 
     if "description" in body:
         cl["description"] = (body.get("description") or "").strip()
+
+    if "audio_file" in body:
+        cl["audio_file"] = (body.get("audio_file") or "").strip() or None
 
     if "cues" in body:
         raw_cues = body["cues"]
@@ -6330,6 +6402,87 @@ def stop_cue_list(cl_id_or_name):
         "success": True,
         "cue_list": {"id": cl["id"], "name": cl["name"]},
         "was_running": was_running,
+    })
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/preview", methods=["POST"])
+def preview_cue_list(cl_id_or_name):
+    """Preview — apply whatever cue would be active at a given point in
+    time, without starting playback or touching any running cue list.
+
+    Body: {"at_ms": 1500}   (also accepts "at" in any _parse_time_ms form)
+
+    Powers "click anywhere on the timeline -> preview this instant".
+    """
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"success": False, "error": "Body must be a JSON object"}), 400
+
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+
+    at_input = body.get("at_ms") if "at_ms" in body else body.get("at")
+    at_ms = _parse_time_ms(at_input)
+    if at_ms is None:
+        return jsonify({"success": False, "error": f"'at_ms' is not parseable: {at_input!r}"}), 400
+
+    cue = _cue_active_at(cl.get("cues", []), at_ms)
+    if cue is None:
+        return jsonify({"success": True, "at_ms": at_ms, "applied": None})
+
+    try:
+        execute_lighting_action(
+            {"action": cue["action"], "parameters": cue["parameters"]},
+            target_groups=cue.get("groups"),
+            source="cue-preview",
+        )
+    except Exception as e:
+        log.warning("cue_preview_failed", cue_list_id=cl["id"], action=cue["action"], error=str(e))
+        return jsonify({"success": False, "error": f"Failed to apply cue: {e}"}), 500
+
+    return jsonify({"success": True, "at_ms": at_ms, "applied": _serialize_cue(cue)})
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/waveform", methods=["GET"])
+def cue_list_waveform(cl_id_or_name):
+    """Return fixed-resolution amplitude peaks for a cue list's associated
+    audio file, for the frontend to render as a static timeline overlay.
+
+    No audio playback — display data only. Returns an empty peaks array
+    (200) when there's no associated audio, rather than an error, since
+    "no audio yet" is a normal state for a cue list.
+    """
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+
+    audio_path = _audio_file_path(cl)
+    if audio_path is None or not audio_path.exists():
+        return jsonify({
+            "success": True,
+            "audio_file": cl.get("audio_file"),
+            "resolution_ms": 50,
+            "peaks": [],
+        })
+
+    try:
+        peaks = _wav_peaks(audio_path, resolution_ms=50)
+    except (wave.Error, EOFError, OSError) as e:
+        log.warning("cue_waveform_decode_failed", cue_list_id=cl["id"], audio_file=cl.get("audio_file"), error=str(e))
+        return jsonify({
+            "success": True,
+            "audio_file": cl.get("audio_file"),
+            "resolution_ms": 50,
+            "peaks": [],
+        })
+
+    return jsonify({
+        "success": True,
+        "audio_file": cl.get("audio_file"),
+        "resolution_ms": 50,
+        "duration_ms": cl.get("duration_ms", 0),
+        "peaks": peaks,
     })
 
 
