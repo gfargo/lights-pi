@@ -4892,6 +4892,26 @@ def _scene_channel_commands(scene_id) -> list:
     return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
 
 
+def _tap_runner_blackout_commands(scene_ids: list) -> list:
+    """CH|<abs>|0 for every channel touched across scene_ids, deduped in first-seen order.
+
+    Used to clear a tap runner's footprint on stop — a surgical blackout that only
+    zeroes channels the runner actually wrote, not the whole rig.
+    """
+    channels = []
+    seen = set()
+    for scene_id in scene_ids:
+        for cmd in _scene_channel_commands(scene_id):
+            parts = cmd.split("|")
+            if len(parts) != 3:
+                continue
+            ch = parts[1]
+            if ch not in seen:
+                seen.add(ch)
+                channels.append(ch)
+    return [f"CH|{ch}|0" for ch in channels]
+
+
 def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
@@ -4900,11 +4920,11 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
     sleeps for state['step_ms'] ms so that BPM changes take effect on the very
     next step.
     """
-    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
+    _stop_tap_runner(chase_id, teardown=False)  # cancel any existing runner for this chase
     if not scene_ids:
         return
     _start_qlc_loop()  # ensure background event loop is running
-    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    state: dict = {"step_ms": float(initial_step_ms), "running": True, "scene_ids": list(scene_ids)}
     _tap_runners[str(chase_id)] = state
     n = len(scene_ids)
 
@@ -4924,13 +4944,26 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
     asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
 
 
-def _stop_tap_runner(chase_id: str) -> bool:
-    """Cancel a running server-side tap runner. Returns True if one was active."""
+def _stop_tap_runner(chase_id: str, teardown: bool = True) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active.
+
+    teardown=True (stop/user-facing) blackouts the runner's channel footprint so
+    the rig doesn't stay lit at the last step's values. teardown=False (internal
+    restart path in _start_tap_runner) skips the blackout so restarting a tap
+    chase doesn't clobber the freshly-started runner's first frame.
+    """
     state = _tap_runners.pop(str(chase_id), None)
-    if state:
-        state["running"] = False
-        return True
-    return False
+    if not state:
+        return False
+    state["running"] = False
+    if teardown:
+        try:
+            commands = _tap_runner_blackout_commands(state.get("scene_ids", []))
+            if commands:
+                _qlc_run(_qlc_send_commands(commands), timeout=5)
+        except Exception:
+            pass
+    return True
 
 
 def _engine_functions(engine):

@@ -206,3 +206,117 @@ class TestUpdateTapRunnerBpm:
         app._tap_runners["1"] = {"step_ms": 500.0, "running": True}
         assert app._update_tap_runner_bpm("2", 400.0) is False
         assert app._tap_runners["1"]["step_ms"] == 500.0
+
+
+class TestTapRunnerBlackoutCommands:
+    """OSS-888: stopping a tap chase must clear the channels it last wrote,
+    not leave the rig lit at the final step's values."""
+
+    def test_empty_scene_list_yields_no_commands(self):
+        assert app._tap_runner_blackout_commands([]) == []
+
+    def test_unknown_scene_yields_no_commands(self, monkeypatch):
+        monkeypatch.setattr(app, "_scene_channel_commands", lambda scene_id: [])
+        assert app._tap_runner_blackout_commands([999]) == []
+
+    def test_single_scene_zeroes_its_channels(self, monkeypatch):
+        monkeypatch.setattr(
+            app, "_scene_channel_commands",
+            lambda scene_id: ["CH|1|255", "CH|2|128"],
+        )
+        assert app._tap_runner_blackout_commands([1]) == ["CH|1|0", "CH|2|0"]
+
+    def test_dedupes_channels_across_steps_in_first_seen_order(self, monkeypatch):
+        by_scene = {1: ["CH|1|255", "CH|2|100"], 6: ["CH|2|0", "CH|3|200"]}
+        monkeypatch.setattr(app, "_scene_channel_commands", lambda scene_id: by_scene[scene_id])
+        assert app._tap_runner_blackout_commands([1, 6]) == ["CH|1|0", "CH|2|0", "CH|3|0"]
+
+
+class TestStopTapRunnerTeardown:
+    def setup_method(self):
+        app._tap_runners.clear()
+
+    def teardown_method(self):
+        app._tap_runners.clear()
+
+    def test_no_runner_returns_false_without_dispatch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "_qlc_run", lambda coro, timeout=10: calls.append(coro))
+        assert app._stop_tap_runner("42") is False
+        assert calls == []
+
+    def test_teardown_false_pops_state_without_dispatch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "_qlc_run", lambda coro, timeout=10: calls.append(coro))
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": [1, 6]}
+        assert app._stop_tap_runner("7", teardown=False) is True
+        assert "7" not in app._tap_runners
+        assert calls == []
+
+    def test_teardown_true_dispatches_blackout_for_scene_footprint(self, monkeypatch):
+        dispatched = []
+
+        def _fake_qlc_run(coro, timeout=10):
+            dispatched.append(coro)
+            coro.close()  # avoid "coroutine was never awaited" — real _qlc_run consumes it
+
+        monkeypatch.setattr(app, "_qlc_run", _fake_qlc_run)
+        monkeypatch.setattr(
+            app, "_tap_runner_blackout_commands",
+            lambda scene_ids: [f"CH|{sid}|0" for sid in scene_ids],
+        )
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": [1, 6]}
+        assert app._stop_tap_runner("7", teardown=True) is True
+        assert "7" not in app._tap_runners
+        assert len(dispatched) == 1  # a single _qlc_send_commands(...) coroutine was submitted
+
+    def test_teardown_true_with_no_footprint_skips_dispatch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "_qlc_run", lambda coro, timeout=10: calls.append(coro))
+        monkeypatch.setattr(app, "_tap_runner_blackout_commands", lambda scene_ids: [])
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": []}
+        assert app._stop_tap_runner("7", teardown=True) is True
+        assert calls == []
+
+    def test_teardown_dispatch_failure_is_swallowed(self, monkeypatch):
+        def _raise(coro, timeout=10):
+            coro.close()  # avoid "coroutine was never awaited" — real _qlc_run consumes it
+            raise RuntimeError("qlc unreachable")
+
+        monkeypatch.setattr(app, "_qlc_run", _raise)
+        monkeypatch.setattr(app, "_tap_runner_blackout_commands", lambda scene_ids: ["CH|1|0"])
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": [1]}
+        # Must not raise — stop_chase can never 500 because QLC+ is unreachable.
+        assert app._stop_tap_runner("7", teardown=True) is True
+
+
+class TestStartTapRunnerRestart:
+    """A restart (start while already running) must not blackout the new runner."""
+
+    def setup_method(self):
+        app._tap_runners.clear()
+
+    def teardown_method(self):
+        app._tap_runners.clear()
+
+    def test_internal_stop_call_skips_teardown(self, monkeypatch):
+        teardown_flags = []
+        monkeypatch.setattr(
+            app, "_stop_tap_runner",
+            lambda chase_id, teardown=True: teardown_flags.append(teardown) or False,
+        )
+        monkeypatch.setattr(app, "_start_qlc_loop", lambda: None)
+        monkeypatch.setattr(app.asyncio, "run_coroutine_threadsafe", lambda coro, loop: coro.close())
+
+        app._start_tap_runner("7", [1, 6], 500.0)
+
+        assert teardown_flags == [False]
+
+    def test_scene_ids_recorded_for_teardown(self, monkeypatch):
+        monkeypatch.setattr(app, "_stop_tap_runner", lambda chase_id, teardown=True: False)
+        monkeypatch.setattr(app, "_start_qlc_loop", lambda: None)
+        monkeypatch.setattr(app.asyncio, "run_coroutine_threadsafe", lambda coro, loop: coro.close())
+
+        app._start_tap_runner("7", [1, 6], 500.0)
+
+        assert app._tap_runners["7"]["scene_ids"] == [1, 6]

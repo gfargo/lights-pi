@@ -387,6 +387,24 @@ class TestFlaskMockIntegration:
         time.sleep(0.3)
         assert mock_client.get("/debug/dmx-state").get_json() == after_stop
 
+    def test_tap_stop_blackouts_previous_step(self, mock_client):
+        """Stopping a tap chase must zero the channels it last wrote (OSS-888) —
+        the rig must not stay lit at the last step's values after stop."""
+        import time
+
+        mock_dmx.reset()
+        r = mock_client.post("/api/chases/102/start")
+        assert r.status_code == 200
+        time.sleep(0.3)
+        state = mock_client.get("/debug/dmx-state").get_json()
+        assert any(v != 0 for v in state.values()), "expected the runner to light something up"
+
+        mock_client.post("/api/chases/102/stop")
+        time.sleep(0.2)  # let any in-flight step write settle before asserting
+
+        after_stop = mock_client.get("/debug/dmx-state").get_json()
+        assert all(v == 0 for v in after_stop.values()), "tap runner left channels lit after stop"
+
 
 class TestDebugEndpointNotMounted:
     """Verify /debug/dmx-state returns 404 when not in mock mode."""
