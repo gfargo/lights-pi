@@ -210,6 +210,8 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | POST | `/api/groups/<name>/fixtures` | Append fixtures to a group |
 | DELETE | `/api/groups/<name>/fixtures` | Remove fixtures from a group |
 | POST | `/api/groups/<name>/template` | Apply template to a group |
+| GET | `/api/stage_layout` | Get stored room dimensions + fixture positions (positions returned as-is, no workspace cross-check) |
+| POST | `/api/stage_layout` | Save room dimensions + fixture positions |
 | GET | `/api/fixtures` | List fixtures with `channel_info` |
 | GET | `/api/fixture_channels/<id>` | Per-fixture channel breakdown |
 | POST | `/api/fixtures/<id>/identify` | Pulse a fixture so the operator can locate it |

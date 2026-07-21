@@ -387,6 +387,17 @@ class TestFlaskMockIntegration:
         time.sleep(0.3)
         assert mock_client.get("/debug/dmx-state").get_json() == after_stop
 
+    def test_start_empty_tap_chase_reports_failure(self, mock_client):
+        """Chase 103 is tap-source with zero steps; starting it must return a
+        4xx failure and must not register a tap runner (issue #64)."""
+        import app as _app_module
+
+        r = mock_client.post("/api/chases/103/start")
+        assert r.status_code == 400
+        data = r.get_json()
+        assert data["success"] is False
+        assert "103" not in _app_module._tap_runners
+
     def test_tap_stop_blackouts_previous_step(self, mock_client):
         """Stopping a tap chase must zero the channels it last wrote (OSS-888) —
         the rig must not stay lit at the last step's values after stop."""
