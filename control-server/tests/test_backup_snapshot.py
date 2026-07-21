@@ -28,6 +28,12 @@ def _make_home(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("BACKUP_REMOTE=\n")
+    # create_snapshot only tars .config/qlcplus, .qlcplus, control-server,
+    # and (opt-in via BACKUP_INCLUDE_ENV) .env — a bare .env alone leaves
+    # `dirs` empty and create_snapshot bails out with "nothing to back up".
+    qlcplus_dir = home / ".qlcplus"
+    qlcplus_dir.mkdir()
+    (qlcplus_dir / "studio.qxw").write_text("<Workspace/>\n")
     return home
 
 
