@@ -8,6 +8,7 @@ name: Trigger lights-pi-www deploy
 on:
   release:
     types: [published]
+  workflow_dispatch: {}
 
 jobs:
   trigger-www-deploy:
