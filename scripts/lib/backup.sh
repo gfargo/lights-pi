@@ -199,6 +199,8 @@ EOF
   echo "  Runs daily at 04:00 Pi local time"
   echo "  Snapshots stored in ~/lights-pi-backups/ on the Pi"
   echo "  Set BACKUP_REMOTE in ~/.env on the Pi for remote push"
+  echo "  Snapshots exclude ~/.env by default — set BACKUP_INCLUDE_ENV=1 in"
+  echo "  ~/.env to include it (secrets then travel unencrypted to BACKUP_REMOTE)"
   echo ""
   echo "  Status:  ./lightsctl.sh backup-timer-status"
   echo "  Logs:    ./lightsctl.sh backup-timer-logs"
