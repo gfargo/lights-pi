@@ -4892,17 +4892,20 @@ def _scene_channel_commands(scene_id) -> list:
     return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
 
 
-def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
+def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> bool:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
     Each iteration resolves the next step's scene to channel values and emits
     CH|abs|val frames (same replace-per-step behaviour as _mock_chase_run), then
     sleeps for state['step_ms'] ms so that BPM changes take effect on the very
     next step.
+
+    Returns False without touching any existing runner if there are no playable
+    steps, so a failed start never silently kills a runner already in progress.
     """
-    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
     if not scene_ids:
-        return
+        return False
+    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
     _start_qlc_loop()  # ensure background event loop is running
     state: dict = {"step_ms": float(initial_step_ms), "running": True}
     _tap_runners[str(chase_id)] = state
@@ -4922,6 +4925,7 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
             idx = (idx + 1) % n
 
     asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
+    return True
 
 
 def _stop_tap_runner(chase_id: str) -> bool:
@@ -5532,7 +5536,14 @@ def start_chase(chase_id):
         scene_ids = _chase_step_scene_ids(chase)
         speed = next(iter(_find_children(chase, "Speed")), None)
         initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
-        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        started = _start_tap_runner(fid, scene_ids, initial_step_ms)
+        if not started:
+            return jsonify({
+                "success": False,
+                "chase": {"id": int(fid), "name": chase.get("Name")},
+                "response": "",
+                "error": "chase has no playable steps",
+            }), 400
         return jsonify({
             "success": True,
             "chase": {"id": int(fid), "name": chase.get("Name")},
@@ -5588,7 +5599,7 @@ def set_chase_tempo(chase_id):
             bpm = float(bpm_raw)
         except (TypeError, ValueError):
             return jsonify({"success": False, "error": "bpm must be a number"}), 400
-        if bpm < 40 or bpm > 240:
+        if not math.isfinite(bpm) or bpm < 40 or bpm > 240:
             return jsonify({
                 "success": False,
                 "error": f"BPM must be between 40 and 240, got {bpm}",
