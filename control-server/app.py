@@ -266,6 +266,7 @@ AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
 _active_audio_chases: dict[str, dict] = {}
 _active_audio_chases_lock = threading.Lock()
 
+RF_SETTINGS_FILE = Path.home() / ".qlcplus" / "rf_settings.json"
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
 CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
 
@@ -4738,11 +4739,64 @@ def diagnostics_system():
 # Wireless DMX transmitters (D-Fi Hub and similar) share the 2.4 GHz ISM
 # band with WiFi. We can survey what the Pi's own WiFi radio hears there,
 # but the transmitter itself is broadcast-only — there's no software
-# readback of its channel or of what the receiver actually sees. So this
-# only ever reports the WiFi side and leaves cross-referencing against the
-# transmitter's own channel/DIP-switch table to the operator.
+# readback of its channel or of what the receiver actually sees. QLC+ has
+# no visibility into this either: it only knows DMX universe/channel
+# addressing (which fixture gets which DMX slot), a completely separate
+# layer from the transmitter's own RF channel, which lives entirely in the
+# transmitter's own firmware/display. So the operator has to tell us what
+# their transmitter is set to (from its own display) if they want a
+# concrete overlap check — see _load_rf_settings / rf_settings routes.
 
 _WIFI_NONOVERLAPPING_CHANNELS = (1, 6, 11)
+
+# Chauvet's D-Fi Hub / Hub 2 manuals document 16 selectable channels
+# (CH01-CH16) and an operating range of 2.412-2.484 GHz, but don't publish
+# which frequency each channel number maps to. This assumes even spacing
+# across that documented range — an ESTIMATE, not a verified table.
+_DFI_CHANNEL_COUNT = 16
+_DFI_FREQ_RANGE_MHZ = (2412.0, 2484.0)
+
+
+def _dfi_channel_to_freq_mhz(channel):
+    """Estimate a D-Fi-style transmitter's RF frequency for channel 1-16.
+    See the module note above — this is a linear-spacing estimate, not a
+    Chauvet-published mapping."""
+    if channel is None or not (1 <= channel <= _DFI_CHANNEL_COUNT):
+        return None
+    lo, hi = _DFI_FREQ_RANGE_MHZ
+    return lo + (channel - 1) * (hi - lo) / (_DFI_CHANNEL_COUNT - 1)
+
+
+def _loudest_signal_near_freq(access_points, freq_mhz, half_width_mhz=20):
+    """Loudest signal (dBm) among access points within ±half_width_mhz of
+    freq_mhz, or None if nothing's nearby. Frequency-domain counterpart to
+    the channel-index bleed model in _analyze_rf_channels."""
+    if freq_mhz is None:
+        return None
+    candidates = [
+        ap["signal_dbm"] for ap in access_points
+        if ap.get("freq_mhz") is not None and ap.get("signal_dbm") is not None
+        and abs(ap["freq_mhz"] - freq_mhz) <= half_width_mhz
+    ]
+    return max(candidates) if candidates else None
+
+
+def _load_rf_settings() -> dict:
+    """Return saved wireless-DMX-transmitter settings ({} if never set).
+    This is operator-entered (from the transmitter's own display) — there's
+    no software readback of the transmitter's actual channel."""
+    if not RF_SETTINGS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(RF_SETTINGS_FILE.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_rf_settings(settings: dict) -> None:
+    RF_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RF_SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
 
 
 def _wifi_channel_from_freq(freq_mhz):
@@ -4805,10 +4859,17 @@ def _parse_iw_scan_output(raw: str) -> list[dict]:
     return access_points
 
 
-def _analyze_rf_channels(access_points: list[dict]) -> dict:
+def _analyze_rf_channels(access_points: list[dict], transmitter: dict = None) -> dict:
     """Summarize 2.4 GHz occupancy: per-channel congestion (accounting for
     the ~4-channel bleed of adjacent 20 MHz-wide WiFi channels), the
-    quietest 3-channel window, and plain-language suggestions."""
+    quietest 3-channel window, and plain-language suggestions.
+
+    `transmitter`, if given, is the operator-entered wireless-DMX-transmitter
+    settings from _load_rf_settings(): {"mode": "auto"|"manual"|"unknown",
+    "channel": 1-16 or None}. When mode is "manual" with a channel set, this
+    adds a concrete overlap check against that channel's estimated
+    frequency; "auto" adds a note that channel-avoidance matters less.
+    """
     heard = [ap for ap in access_points if ap.get("channel") and 1 <= ap["channel"] <= 11
              and ap.get("signal_dbm") is not None]
 
@@ -4854,11 +4915,50 @@ def _analyze_rf_channels(access_points: list[dict]) -> dict:
                 "If it's a network you control, moving it to channel 1, 6, or 11 frees up more of the band."
             )
 
+    # Concrete cross-reference against what the operator told us their
+    # transmitter is set to (see _load_rf_settings — no software readback).
+    transmitter = transmitter or {}
+    t_mode = transmitter.get("mode")
+    t_channel = transmitter.get("channel")
+    transmitter_note = None
+    if t_mode == "auto":
+        transmitter_note = (
+            "Your transmitter is set to Auto — it already re-scans and picks its own clear "
+            "channel, so this WiFi survey matters less for channel choice. If flicker persists "
+            "in Auto mode, channel congestion is a less likely cause."
+        )
+    elif t_mode == "manual" and t_channel:
+        est_freq = _dfi_channel_to_freq_mhz(t_channel)
+        nearby_dbm = _loudest_signal_near_freq(access_points, est_freq) if est_freq else None
+        if est_freq is not None:
+            if nearby_dbm is None:
+                transmitter_note = (
+                    f"Transmitter channel {t_channel} (~{est_freq:.0f} MHz, estimated — Chauvet "
+                    "doesn't publish an exact channel table) looks clear right now."
+                )
+            else:
+                band = "loud" if nearby_dbm >= -55 else "moderate" if nearby_dbm >= -70 else "quiet"
+                est_wifi_ch = _wifi_channel_from_freq(est_freq)
+                already_in_quiet_window = est_wifi_ch is not None and quiet_window[0] <= est_wifi_ch <= quiet_window[1]
+                if band == "quiet":
+                    verdict = "Looks fine."
+                elif already_in_quiet_window:
+                    verdict = "That's already about as clear as this WiFi environment gets right now."
+                else:
+                    verdict = "Consider moving it toward the quiet window below."
+                transmitter_note = (
+                    f"Transmitter channel {t_channel} (~{est_freq:.0f} MHz, estimated) is sitting near "
+                    f"{band} WiFi traffic ({nearby_dbm:.0f} dBm). {verdict}"
+                )
+    if transmitter_note:
+        suggestions.insert(0, transmitter_note)
+
     return {
         "per_channel_congestion_dbm": congestion,
         "quiet_window": quiet_window,
         "nonoverlapping_channels": list(_WIFI_NONOVERLAPPING_CHANNELS),
         "suggestions": suggestions,
+        "transmitter": transmitter or None,
     }
 
 
@@ -4885,7 +4985,7 @@ def diagnostics_rf_scan():
         }), 500
 
     access_points = _parse_iw_scan_output(result["output"])
-    analysis = _analyze_rf_channels(access_points)
+    analysis = _analyze_rf_channels(access_points, transmitter=_load_rf_settings())
 
     return jsonify({
         "success": True,
@@ -4893,6 +4993,44 @@ def diagnostics_rf_scan():
         "access_points": access_points,
         "analysis": analysis,
     })
+
+
+@app.route("/api/diagnostics/rf_settings", methods=["GET"])
+def get_rf_settings():
+    """Return the operator-entered wireless-DMX-transmitter settings, if any
+    have been saved. There's no software readback of the transmitter's
+    actual channel — this is only ever what the operator told us."""
+    return jsonify({"success": True, "transmitter": _load_rf_settings() or None})
+
+
+@app.route("/api/diagnostics/rf_settings", methods=["POST"])
+def set_rf_settings():
+    """Save what the operator says their wireless DMX transmitter is set to
+    (read off the transmitter's own display), so rf_scan can cross-check a
+    live WiFi survey against it.
+
+    Body: { "mode": "auto"|"manual"|"unknown", "channel": 1-16 or null }
+    "channel" is only meaningful (and required) when mode is "manual".
+    """
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode")
+    if mode not in ("auto", "manual", "unknown"):
+        return jsonify({"success": False, "error": "mode must be 'auto', 'manual', or 'unknown'"}), 400
+
+    channel = body.get("channel")
+    if mode == "manual":
+        try:
+            channel = int(channel)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "channel must be an integer 1-16 when mode is 'manual'"}), 400
+        if not (1 <= channel <= 16):
+            return jsonify({"success": False, "error": "channel must be between 1 and 16"}), 400
+    else:
+        channel = None
+
+    settings = {"mode": mode, "channel": channel}
+    _save_rf_settings(settings)
+    return jsonify({"success": True, "transmitter": settings})
 
 
 # =============================================================================
@@ -5029,17 +5167,20 @@ def _tap_runner_blackout_commands(scene_ids: list) -> list:
     return [f"CH|{ch}|0" for ch in channels]
 
 
-def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
+def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> bool:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
     Each iteration resolves the next step's scene to channel values and emits
     CH|abs|val frames (same replace-per-step behaviour as _mock_chase_run), then
     sleeps for state['step_ms'] ms so that BPM changes take effect on the very
     next step.
+
+    Returns False without touching any existing runner if there are no playable
+    steps, so a failed start never silently kills a runner already in progress.
     """
-    _stop_tap_runner(chase_id, teardown=False)  # cancel any existing runner for this chase
     if not scene_ids:
-        return
+        return False
+    _stop_tap_runner(chase_id, teardown=False)  # cancel any existing runner for this chase
     _start_qlc_loop()  # ensure background event loop is running
     state: dict = {"step_ms": float(initial_step_ms), "running": True, "scene_ids": list(scene_ids)}
     _tap_runners[str(chase_id)] = state
@@ -5059,6 +5200,7 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
             idx = (idx + 1) % n
 
     asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
+    return True
 
 
 def _stop_tap_runner(chase_id: str, teardown: bool = True) -> bool:
@@ -5682,7 +5824,14 @@ def _start_chase_by_ref(chase_id):
         scene_ids = _chase_step_scene_ids(chase)
         speed = next(iter(_find_children(chase, "Speed")), None)
         initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
-        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        started = _start_tap_runner(fid, scene_ids, initial_step_ms)
+        if not started:
+            return {
+                "success": False,
+                "chase": {"id": int(fid), "name": name},
+                "response": "",
+                "error": "chase has no playable steps",
+            }, 400
         _emit("chase_started", {"chase_id": int(fid), "chase_name": name})
         return {
             "success": True,
@@ -5757,7 +5906,7 @@ def set_chase_tempo(chase_id):
             bpm = float(bpm_raw)
         except (TypeError, ValueError):
             return jsonify({"success": False, "error": "bpm must be a number"}), 400
-        if bpm < 40 or bpm > 240:
+        if not math.isfinite(bpm) or bpm < 40 or bpm > 240:
             return jsonify({
                 "success": False,
                 "error": f"BPM must be between 40 and 240, got {bpm}",

@@ -28,13 +28,13 @@ def _make_home(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("BACKUP_REMOTE=\n")
-    # create_snapshot() only archives dirs it finds under HOME
-    # (.config/qlcplus, .qlcplus, control-server) — without at least one
-    # present it hits the "nothing to back up" early-return and no
-    # snapshot is written, which every test here assumes exists.
+    # create_snapshot only archives .config/qlcplus, .qlcplus, and
+    # control-server (not .env, which is opt-in via BACKUP_INCLUDE_ENV) — it
+    # needs at least one of those present or it bails out early with
+    # "nothing to back up" and never writes a snapshot.
     qlcplus_dir = home / ".config" / "qlcplus"
     qlcplus_dir.mkdir(parents=True)
-    (qlcplus_dir / "workspace.qxw").write_text("<workspace/>")
+    (qlcplus_dir / "workspace.qxw").write_text("<Workspace/>\n")
     return home
 
 

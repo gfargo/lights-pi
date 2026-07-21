@@ -208,6 +208,25 @@ class TestUpdateTapRunnerBpm:
         assert app._tap_runners["1"]["step_ms"] == 500.0
 
 
+class TestStartTapRunnerEmptySteps:
+    def setup_method(self):
+        app._tap_runners.clear()
+
+    def teardown_method(self):
+        app._tap_runners.clear()
+
+    def test_returns_false_and_registers_nothing(self):
+        assert app._start_tap_runner("99", [], 500.0) is False
+        assert "99" not in app._tap_runners
+
+    def test_does_not_kill_existing_runner_for_same_id(self):
+        # A failed start (empty steps) must not silently stop a runner that
+        # was already active for this chase id.
+        app._tap_runners["7"] = {"step_ms": 500.0, "running": True}
+        assert app._start_tap_runner("7", [], 500.0) is False
+        assert app._tap_runners["7"]["running"] is True
+
+
 class TestTapRunnerBlackoutCommands:
     """OSS-888: stopping a tap chase must clear the channels it last wrote,
     not leave the rig lit at the final step's values."""
