@@ -15,6 +15,7 @@ import math
 import os
 import queue
 import random
+import re
 import shutil
 import socket
 import subprocess
@@ -37,12 +38,14 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     send_from_directory,
     session,
     stream_with_context,
 )
 from flask_cors import CORS
 from flask_socketio import SocketIO
+from werkzeug.utils import secure_filename
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -259,8 +262,10 @@ if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
 else:
     WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(_default_ws)))
 
-GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
-CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+WORKSPACE_DIR = WORKSPACE_PATH.parent  # ~/.qlcplus/
+_WORKSPACE_POINTER = WORKSPACE_DIR / "current_workspace"  # stores active workspace stem
+GROUPS_FILE = WORKSPACE_DIR / "fixture_groups.json"
+CUE_LISTS_FILE = WORKSPACE_DIR / "cue_lists.json"
 AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
 CUE_AUDIO_DIR = Path.home() / ".qlcplus" / "audio"
 STAGE_LAYOUT_FILE = Path.home() / ".qlcplus" / "stage_layout.json"
@@ -557,7 +562,7 @@ async def _qlc_reader(ws):
                     _qlc_pending_responses.pop(key, None)
                     break
     except Exception as e:
-        log.warning("qlc_ws_reader_exited", error_type=type(e).__name__, error=str(e))
+        print(f"QLC+ WebSocket reader exited: {type(e).__name__}: {e}")
     finally:
         # Drop the global reference so the next caller reconnects, and
         # explicitly close the underlying connection so the OS frees the FD
@@ -582,7 +587,6 @@ async def _qlc_send_commands(commands):
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
-            log.debug("dmx_frame", command=command)
             await ws.send(command)
     _last_dmx_write_ts = time.time()
 
@@ -635,7 +639,7 @@ async def send_qlc_command(command):
         await _qlc_send_commands([command])
         return True
     except Exception as e:
-        log.error("qlc_command_failed", error=str(e))
+        print(f"send_qlc_command error: {e}")
         return False
 
 
@@ -661,7 +665,7 @@ async def send_qlc_commands(commands):
         await _qlc_send_commands(commands)
         return True
     except Exception as e:
-        log.error("qlc_commands_failed", error=str(e))
+        print(f"send_qlc_commands error: {e}")
         return False
 
 
@@ -694,7 +698,7 @@ def set_channel_values(channel_values):
         })
         return True
     except Exception as e:
-        log.error("set_channel_values_failed", error=str(e))
+        print(f"set_channel_values error: {e}")
         return False
 
 
@@ -743,6 +747,33 @@ def _engine_element(root):
     return root.find("Engine")
 
 
+def get_workspace_scenes(root=None):
+    """Return real Engine scene functions, excluding Virtual Console references."""
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
+    engine = _engine_element(root)
+    if engine is None:
+        return []
+
+    ns = "http://www.qlcplus.org/Workspace"
+    scenes = []
+    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+        if func.get("Type") != "Scene":
+            continue
+        fid = func.get("ID")
+        if not fid or not fid.isdigit():
+            continue
+        scenes.append({
+            "id": int(fid),
+            "name": func.get("Name", f"Scene {fid}"),
+            "path": func.get("Path", ""),
+            "fixture_values": len(_find_children(func, "FixtureVal")),
+        })
+    return scenes
+
+
 def _iter_scene_functions(engine):
     """Yield (id, element) for each real Engine scene function."""
     ns = "http://www.qlcplus.org/Workspace"
@@ -755,33 +786,108 @@ def _iter_scene_functions(engine):
         yield int(fid), func
 
 
-def get_workspace_scenes(root=None):
-    """Return real Engine scene functions, excluding Virtual Console references."""
-    if root is None:
-        if not WORKSPACE_PATH.exists():
-            return []
-        root = _workspace_root()
-    engine = _engine_element(root)
-    if engine is None:
-        return []
-
-    return [
-        {
-            "id": fid,
-            "name": func.get("Name", f"Scene {fid}"),
-            "path": func.get("Path", ""),
-            "fixture_values": len(_find_children(func, "FixtureVal")),
-        }
-        for fid, func in _iter_scene_functions(engine)
-    ]
-
-
 def get_next_scene_id():
     """Return next available scene/function ID from Engine functions only."""
     scenes = get_workspace_scenes()
     if not scenes:
         return 0
     return max(scene["id"] for scene in scenes) + 1
+
+
+# ---------------------------------------------------------------------------
+# Workspace management helpers
+# ---------------------------------------------------------------------------
+
+_SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+\.qxw$')
+_RESERVED_WS = {"default.qxw", "autostart.qxw"}
+
+
+def _safe_workspace_name(name: str) -> str | None:
+    """Validate a workspace filename. Returns the name or None if invalid."""
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    if not _SAFE_NAME_RE.match(name):
+        return None
+    if name in _RESERVED_WS:
+        return None
+    if ".." in name or "/" in name or "\\" in name:
+        return None
+    return name
+
+
+def _list_workspace_files() -> list[dict]:
+    """Return .qxw files in WORKSPACE_DIR, excluding reserved aliases."""
+    if not WORKSPACE_DIR.exists():
+        return []
+    active = _active_workspace_name()
+    results = []
+    for p in sorted(WORKSPACE_DIR.glob("*.qxw")):
+        if p.name in _RESERVED_WS:
+            continue
+        results.append({
+            "name": p.stem,
+            "filename": p.name,
+            "active": p.stem == active,
+            "size_bytes": p.stat().st_size,
+        })
+    return results
+
+
+def _active_workspace_name() -> str:
+    """Return the stem (no .qxw) of the currently active workspace.
+
+    Reads ~/.qlcplus/current_workspace if present; falls back to 'default'.
+    """
+    if _WORKSPACE_POINTER.exists():
+        try:
+            val = _WORKSPACE_POINTER.read_text().strip()
+            if val:
+                return val
+        except OSError:
+            pass
+    return "default"
+
+
+def _set_active_workspace_name(stem: str) -> None:
+    WORKSPACE_POINTER_PARENT = _WORKSPACE_POINTER.parent
+    WORKSPACE_POINTER_PARENT.mkdir(parents=True, exist_ok=True)
+    _WORKSPACE_POINTER.write_text(stem)
+
+
+def _validate_qxw(path: Path) -> bool:
+    """Return True only if path is parseable QLC+ XML with the right namespace."""
+    try:
+        tree = ET.parse(path)
+        root = tree.getroot()
+        return "qlcplus.org/Workspace" in (root.tag or "")
+    except Exception:
+        return False
+
+
+def _groups_file() -> Path:
+    """Return per-workspace fixture-groups path, falling back to global file."""
+    active = _active_workspace_name()
+    per_ws = WORKSPACE_DIR / f"fixture_groups.{active}.json"
+    if per_ws.exists():
+        return per_ws
+    # Migrate: if global file exists but no per-workspace file, keep using global
+    # until the user switches workspaces (migration happens lazily on first save
+    # after a load).
+    return GROUPS_FILE
+
+
+def _bust_scene_swatch_cache() -> None:
+    global _scene_swatch_cache, _scene_swatch_cache_mtime
+    _scene_swatch_cache.clear()
+    _scene_swatch_cache_mtime = 0.0
+
+
+def _restart_qlc() -> dict:
+    """Restart the qlcplus-web.service; only works when IS_LOCAL."""
+    if not IS_LOCAL:
+        return {"success": False, "error": "not local — restart manually"}
+    return execute_command("sudo systemctl restart qlcplus-web.service")
 
 
 def _find_children(element, tag):
@@ -926,7 +1032,7 @@ async def _fetch_channel_values(max_ch):
             timeout=2.0,
         )
     except (TimeoutError, Exception) as e:
-        log.warning("channel_values_fetch_failed", error=str(e))
+        print(f"channel_values fetch error: {e}")
         return values
 
     parts = msg.split("|")
@@ -948,7 +1054,7 @@ def get_current_channel_values(max_ch=None):
     try:
         return _qlc_run(_fetch_channel_values(max_ch), timeout=4)
     except Exception as e:
-        log.warning("channel_values_fetch_failed", error=str(e))
+        print(f"channel_values fetch error: {e}")
         return {}
 
 
@@ -1013,9 +1119,32 @@ def _should_restore_look(uptime_s, current_values, saved_values) -> bool:
     return not any(current_values.values())
 
 
+def _last_look_file() -> Path:
+    """Return the per-workspace last-look snapshot path.
+
+    Different workspaces can have entirely different fixture patches and
+    channel counts, so a saved look must not leak across a workspace switch
+    — unlike fixture groups (_groups_file), which are safe to share via a
+    global fallback, replaying another venue's raw channel values onto a
+    fresh patch is exactly the bug this scoping prevents (load_workspace
+    restarts qlcplus-web, and the restart-triggered restore would otherwise
+    blast the *previous* workspace's snapshot onto the newly loaded one).
+    Falls back to the pre-workspace-switching global file only for the
+    default workspace, so upgrading installs don't lose crash-recovery on
+    their first restart.
+    """
+    active = _active_workspace_name()
+    per_ws = WORKSPACE_DIR / f"last_look.{active}.json"
+    if per_ws.exists():
+        return per_ws
+    if active == "default" and LAST_LOOK_FILE.exists():
+        return LAST_LOOK_FILE
+    return per_ws
+
+
 def _load_last_look() -> dict[int, int]:
     try:
-        return _parse_last_look(LAST_LOOK_FILE.read_text())
+        return _parse_last_look(_last_look_file().read_text())
     except OSError:
         return {}
 
@@ -1086,8 +1215,9 @@ def _last_look_saver_loop():
             snap = {str(k): int(v) for k, v in sorted(values.items())}
             if snap == last_written:
                 continue
-            LAST_LOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
-            LAST_LOOK_FILE.write_text(json.dumps({
+            last_look_file = _last_look_file()
+            last_look_file.parent.mkdir(parents=True, exist_ok=True)
+            last_look_file.write_text(json.dumps({
                 "values": snap,
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }))
@@ -2037,7 +2167,7 @@ async def _fade_brightness_async(channels, target_value, seconds, steps):
                 await asyncio.sleep(seconds / steps)
         return True
     except Exception as e:
-        log.error("fade_ws_failed", error=str(e))
+        print(f"Fade WebSocket error: {e}")
         return False
 
 
@@ -2064,7 +2194,7 @@ def fade_brightness_live(target, duration, target_groups=None):
             timeout=seconds + 5,
         )
     except Exception as e:
-        log.error("fade_failed", error=str(e))
+        print(f"fade error: {e}")
         success = False
 
     return {
@@ -2219,8 +2349,9 @@ Output: {"action": "activate_scene", "parameters": {"scene": "Red"},
 
         return json.loads(response)
     except json.JSONDecodeError:
-        # Log server-side only — don't leak AI response to the client (audit item #33)
-        log.warning("ai_response_parse_failed", response_preview=response[:200])
+        # Log the full response server-side for debugging, but don't leak it to the client
+        # (audit item #33 — prevents AI response/system prompt disclosure)
+        print(f"[interpret_command] Failed to parse AI response: {response[:200]}")
         return {
             "action": "error",
             "parameters": {},
@@ -2313,7 +2444,7 @@ def call_ollama(system_prompt, user_prompt):
         raise Exception(f"Ollama API error: {str(e)}") from e
 
 
-def execute_lighting_action(action_data, target_groups=None, source="web"):
+def execute_lighting_action(action_data, target_groups=None):
     """Execute the interpreted lighting action.
 
     When running locally on the Pi (IS_LOCAL=True), generated scenes are
@@ -2473,10 +2604,7 @@ def execute_lighting_action(action_data, target_groups=None, source="web"):
 
     elif action == "activate_scene":
         scene = params.get("scene") or params.get("name") or params.get("id")
-        result = apply_existing_scene_live(scene)
-        if result["success"]:
-            log.info("scene_activated", scene=scene, source=source)
-        return result
+        return apply_existing_scene_live(scene)
 
     elif action == "start_chase":
         # Dispatch through the same helper the /api/chases/<id>/start endpoint uses.
@@ -2491,8 +2619,6 @@ def execute_lighting_action(action_data, target_groups=None, source="web"):
         if not (fid and fid.isdigit()):
             return {"success": False, "output": "", "error": f"Chase has no numeric ID: {chase.get('Name')}"}
         ok, raw = set_function_status(int(fid), running=True)
-        if ok:
-            log.info("chase_started", chase=chase.get("Name"), chase_id=fid, source=source)
         return {
             "success": ok,
             "output": f"Started chase '{chase.get('Name')}'" if ok else "",
@@ -2510,8 +2636,6 @@ def execute_lighting_action(action_data, target_groups=None, source="web"):
         if not (fid and fid.isdigit()):
             return {"success": False, "output": "", "error": f"Chase has no numeric ID: {chase.get('Name')}"}
         ok, raw = set_function_status(int(fid), running=False)
-        if ok:
-            log.info("chase_stopped", chase=chase.get("Name"), chase_id=fid, source=source)
         return {
             "success": ok,
             "output": f"Stopped chase '{chase.get('Name')}'" if ok else "",
@@ -3030,6 +3154,8 @@ def get_status():
         "ok": overall_ok,
         "services": services,
         "is_local": IS_LOCAL,
+        "active_workspace": _active_workspace_name(),
+        "workspace_count": len(_list_workspace_files()),
     })
 
 
@@ -3263,7 +3389,7 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
             root = tree.getroot()
             engine = _engine_element(root)
             if engine is None:
-                log.error("workspace_missing_engine")
+                print("Error: No Engine element in workspace")
                 return False
 
             # Parse the scene XML
@@ -3280,7 +3406,7 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
             _atomic_write_tree(tree)
         return True
     except Exception as e:
-        log.error("scene_inject_failed", error=str(e))
+        print(f"Error injecting scene: {e}")
         return False
 
 
@@ -3522,10 +3648,11 @@ def _load_groups() -> dict:
     Tolerates the legacy unwrapped format. Returns an empty dict if the file
     doesn't exist yet.
     """
-    if not GROUPS_FILE.exists():
+    gf = _groups_file()
+    if not gf.exists():
         return {}
     try:
-        data = json.loads(GROUPS_FILE.read_text())
+        data = json.loads(gf.read_text())
     except json.JSONDecodeError:
         return {}
     if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], dict):
@@ -3535,8 +3662,9 @@ def _load_groups() -> dict:
 
 def _save_groups(groups: dict) -> None:
     """Persist the groups dict in the canonical wrapped format."""
-    GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    GROUPS_FILE.write_text(json.dumps({"groups": groups}, indent=2))
+    gf = _groups_file()
+    gf.parent.mkdir(parents=True, exist_ok=True)
+    gf.write_text(json.dumps({"groups": groups}, indent=2))
 
 
 def _existing_fixture_ids() -> set:
@@ -3742,6 +3870,218 @@ def remove_fixtures_from_group(group_name):
 
 
 # ----------------------------------------------------------------------------
+# Workspace management — list / current / create / load / delete / import / export
+# ----------------------------------------------------------------------------
+
+@app.route("/api/workspaces", methods=["GET"])
+def list_workspaces():
+    """List .qxw files in ~/.qlcplus/, excluding reserved aliases."""
+    return jsonify({"success": True, "workspaces": _list_workspace_files()})
+
+
+@app.route("/api/workspaces/current", methods=["GET"])
+def get_current_workspace():
+    """Return the active workspace name and path."""
+    active = _active_workspace_name()
+    ws_path = WORKSPACE_DIR / f"{active}.qxw"
+    return jsonify({
+        "success": True,
+        "name": active,
+        "filename": f"{active}.qxw",
+        "path": str(ws_path),
+        "exists": ws_path.exists(),
+    })
+
+
+@app.route("/api/workspaces", methods=["POST"])
+def create_workspace():
+    """Create a new empty workspace (or copy from an existing one).
+
+    Body: { "name": "venue-a", "copy_from": "studio" }
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    data = request.get_json(silent=True) or {}
+    raw_name = (data.get("name") or "").strip()
+    if not raw_name.endswith(".qxw"):
+        raw_name = raw_name + ".qxw"
+    name = _safe_workspace_name(raw_name)
+    if not name:
+        return jsonify({"success": False, "error": "invalid workspace name — use [A-Za-z0-9._-] + .qxw suffix"}), 400
+
+    dest = WORKSPACE_DIR / name
+    if dest.exists():
+        return jsonify({"success": False, "error": f"Workspace '{name}' already exists"}), 409
+
+    copy_from = (data.get("copy_from") or "").strip()
+    if copy_from:
+        if not copy_from.endswith(".qxw"):
+            copy_from = copy_from + ".qxw"
+        safe_copy_from = _safe_workspace_name(copy_from)
+        if not safe_copy_from:
+            return jsonify({"success": False, "error": "invalid source workspace name"}), 400
+        src = WORKSPACE_DIR / safe_copy_from
+        if not src.exists():
+            return jsonify({"success": False, "error": f"Source workspace '{safe_copy_from}' not found"}), 404
+        shutil.copy2(src, dest)
+    else:
+        _QXW_SKELETON = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE Workspace>\n'
+            '<Workspace xmlns="http://www.qlcplus.org/Workspace" '
+            'CurrentWindow="VirtualConsole">\n'
+            ' <Engine>\n'
+            ' </Engine>\n'
+            ' <VirtualConsole>\n'
+            '  <Frame/>\n'
+            ' </VirtualConsole>\n'
+            '</Workspace>\n'
+        )
+        dest.write_text(_QXW_SKELETON)
+
+    return jsonify({
+        "success": True,
+        "name": dest.stem,
+        "filename": name,
+        "path": str(dest),
+    }), 201
+
+
+@app.route("/api/workspaces/<name>/load", methods=["POST"])
+def load_workspace(name):
+    """Switch the active workspace.
+
+    Copies <name>.qxw → default.qxw and autostart.qxw, updates the pointer
+    file, busts the scene swatch cache, then attempts a QLC+ service restart.
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    src = WORKSPACE_DIR / safe
+    if not src.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    active = _active_workspace_name()
+    if src.stem == active:
+        return jsonify({"success": True, "message": "already active", "name": active}), 200
+
+    # Swap default.qxw and autostart.qxw
+    default_path = WORKSPACE_DIR / "default.qxw"
+    autostart_path = WORKSPACE_DIR / "autostart.qxw"
+    shutil.copy2(src, default_path)
+    shutil.copy2(src, autostart_path)
+
+    _set_active_workspace_name(src.stem)
+    _bust_scene_swatch_cache()
+
+    restart_result = _restart_qlc()
+    return jsonify({
+        "success": True,
+        "name": src.stem,
+        "restarted": restart_result.get("success", False),
+        "needs_manual_restart": not restart_result.get("success", False),
+        "restart_error": restart_result.get("error") if not restart_result.get("success") else None,
+    })
+
+
+@app.route("/api/workspaces/<name>", methods=["DELETE"])
+def delete_workspace(name):
+    """Delete a named workspace. Refuses to delete the active workspace."""
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    ws_path = WORKSPACE_DIR / safe
+    if not ws_path.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    if ws_path.stem == _active_workspace_name():
+        return jsonify({"success": False, "error": "cannot delete the active workspace"}), 409
+
+    ws_path.unlink()
+    return jsonify({"success": True, "name": ws_path.stem})
+
+
+@app.route("/api/workspaces/<name>/export", methods=["GET"])
+def export_workspace(name):
+    """Download a workspace file as .qxw."""
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    ws_path = WORKSPACE_DIR / safe
+    if not ws_path.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    return send_file(ws_path, as_attachment=True, download_name=safe)
+
+
+@app.route("/api/workspaces/import", methods=["POST"])
+def import_workspace():
+    """Upload a .qxw file as a new named workspace.
+
+    Multipart form: file field 'workspace', optional 'name' field (derived
+    from filename when absent).
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if "workspace" not in request.files:
+        return jsonify({"success": False, "error": "no 'workspace' file in request"}), 400
+
+    f = request.files["workspace"]
+    filename = secure_filename(f.filename or "")
+    if not filename.endswith(".qxw"):
+        return jsonify({"success": False, "error": "file must have a .qxw extension"}), 400
+
+    # Allow caller to override the stored name
+    custom_name = (request.form.get("name") or "").strip()
+    if custom_name:
+        if not custom_name.endswith(".qxw"):
+            custom_name = custom_name + ".qxw"
+        filename = custom_name
+
+    safe = _safe_workspace_name(filename)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    dest = WORKSPACE_DIR / safe
+    if dest.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' already exists"}), 409
+
+    # Write to temp file first so we can validate before persisting
+    with tempfile.NamedTemporaryFile(suffix=".qxw", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        f.save(tmp_path)
+
+    if not _validate_qxw(tmp_path):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": "file is not a valid QLC+ workspace XML"}), 422
+
+    shutil.move(str(tmp_path), dest)
+    return jsonify({
+        "success": True,
+        "name": dest.stem,
+        "filename": safe,
+        "path": str(dest),
+    }), 201
+
+
+# ----------------------------------------------------------------------------
 # Stage layout — fixture-position persistence
 # ----------------------------------------------------------------------------
 # Storage: ~/.qlcplus/stage_layout.json, same tolerant load/save pattern as
@@ -3840,9 +4180,9 @@ def _scene_value_breakdown(scene_root, fixtures=None) -> list:
 
     The channel name comes from the .qxf parser when available.
     """
-    fixtures_by_id = {
-        str(f["id"]): f for f in (fixtures if fixtures is not None else get_workspace_fixtures())
-    }
+    if fixtures is None:
+        fixtures = get_workspace_fixtures()
+    fixtures_by_id = {str(f["id"]): f for f in fixtures}
     out = []
     for fixture_val in _find_children(scene_root, "FixtureVal"):
         fid = fixture_val.get("ID")
@@ -4121,7 +4461,7 @@ async def _identify_fixture_async(fixture, duration=2.0, pulses=4):
                 await ws.send(cmd)
         return True
     except Exception as e:
-        log.error("identify_fixture_failed", error=str(e))
+        print(f"identify_fixture error: {e}")
         return False
 
 
@@ -4409,7 +4749,7 @@ async def _test_dmx_async(fixtures, duration=5.0):
         await _send_frame(restore_commands)
         return True
     except Exception as e:
-        log.error("test_dmx_failed", error=str(e))
+        print(f"test_dmx error: {e}")
         return False
 
 
@@ -5513,7 +5853,7 @@ def _inject_chase_into_workspace(chase_xml: str) -> bool:
             _atomic_write_tree(tree)
         return True
     except Exception as e:
-        log.error("chase_inject_failed", error=str(e))
+        print(f"_inject_chase_into_workspace error: {e}")
         return False
 
 
@@ -6408,15 +6748,15 @@ async def _run_cue_list_async(
                 # internally for channel writes; it's safe to call from
                 # this async context (it'll just submit further work to the
                 # same event loop without re-entering).
-                execute_lighting_action(action_data, target_groups=cue.get("groups"), source="cue")
+                execute_lighting_action(action_data, target_groups=cue.get("groups"))
             except Exception as e:
-                log.warning("cue_step_failed", cue_list_id=cue_list_id, cue_idx=idx, action=cue["action"], error=str(e))
+                print(f"[cue-list {cue_list_id}] cue #{idx} ({cue['action']}) failed: {e}")
             fired_indexes.append(idx)
     except asyncio.CancelledError:
         # Normal path for stop_cue_list — just exit cleanly
         raise
     except Exception as e:
-        log.error("cue_list_playback_failed", cue_list_id=cue_list_id, error=str(e))
+        print(f"[cue-list {cue_list_id}] playback engine error: {e}")
     finally:
         with _active_cue_lists_lock:
             _active_cue_lists.pop(cue_list_id, None)
@@ -8530,7 +8870,7 @@ class _OscActions:
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():
-        log.error("lightsctl_not_found", path=str(LIGHTSCTL))
+        print(f"Error: lightsctl.sh not found at {LIGHTSCTL}")
         sys.exit(1)
 
     # Start the dedicated QLC+ WebSocket loop in a background thread.
@@ -8540,7 +8880,7 @@ if __name__ == "__main__":
         try:
             _qlc_run(_ensure_qlc_ws(), timeout=5)
         except Exception as e:
-            log.warning("initial_qlc_connect_failed", error=str(e))
+            print(f"Warning: initial QLC+ connect failed (will retry on demand): {e}")
 
     # Boot-time look restore + rolling last-look snapshot (see the
     # boot-restore block near set_channel_values for the rules).

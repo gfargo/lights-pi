@@ -81,6 +81,16 @@ def _post(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return r.json()
 
 
+def _delete(path: str) -> dict[str, Any]:
+    r = _http().delete(path)
+    if r.status_code >= 400:
+        try:
+            return {"success": False, "status_code": r.status_code, **r.json()}
+        except Exception:
+            return {"success": False, "status_code": r.status_code, "error": r.text}
+    return r.json()
+
+
 # ---------------------------------------------------------------------------
 # Discovery tools — read-only, safe to call freely
 # ---------------------------------------------------------------------------
@@ -129,6 +139,62 @@ def list_templates() -> dict:
 def get_channel_values() -> dict:
     """Return the current live DMX channel values from QLC+ as a {channel: value} map."""
     return _get("/api/channel_values")
+
+
+# ---------------------------------------------------------------------------
+# Workspace tools — list, switch, create, and delete .qxw workspaces
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_workspaces() -> dict:
+    """List all .qxw workspace files available on the Pi, with the active one flagged."""
+    return _get("/api/workspaces")
+
+
+@mcp.tool()
+def get_current_workspace() -> dict:
+    """Return the name and path of the currently active workspace."""
+    return _get("/api/workspaces/current")
+
+
+@mcp.tool()
+def load_workspace(name: str) -> dict:
+    """Switch the active workspace.
+
+    Copies the named .qxw to default.qxw, updates the pointer, busts the
+    scene-swatch cache, and restarts QLC+ (or returns needs_manual_restart
+    when the sudoers config is absent).
+
+    Args:
+        name: Workspace stem or filename (e.g. 'venue-a' or 'venue-a.qxw').
+    """
+    safe = name if name.endswith(".qxw") else name + ".qxw"
+    return _post(f"/api/workspaces/{safe}/load")
+
+
+@mcp.tool()
+def create_workspace(name: str, copy_from: str | None = None) -> dict:
+    """Create a new workspace (empty skeleton or copied from an existing one).
+
+    Args:
+        name:      New workspace name (stem or .qxw filename).
+        copy_from: Optional existing workspace to copy from.
+    """
+    payload: dict[str, Any] = {"name": name}
+    if copy_from:
+        payload["copy_from"] = copy_from
+    return _post("/api/workspaces", payload)
+
+
+@mcp.tool()
+def delete_workspace(name: str) -> dict:
+    """Delete a workspace. Refuses to delete the currently active workspace.
+
+    Args:
+        name: Workspace stem or filename (e.g. 'old-venue' or 'old-venue.qxw').
+    """
+    safe = name if name.endswith(".qxw") else name + ".qxw"
+    return _delete(f"/api/workspaces/{safe}")
 
 
 # ---------------------------------------------------------------------------
