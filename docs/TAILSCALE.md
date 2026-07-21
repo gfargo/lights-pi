@@ -124,7 +124,9 @@ sudo tailscale funnel --remove 5000
 ```
 
 > ⚠️ **Security**: Funnel exposes your service to the internet. Only use it
-> temporarily and for non-sensitive services.
+> temporarily and for non-sensitive services. Set `LIGHTS_PASSWORD` in `.env`
+> before funneling — without it the control server is wide open to anyone
+> with the URL. See [README.md — Authentication](../README.md#authentication).
 
 ---
 

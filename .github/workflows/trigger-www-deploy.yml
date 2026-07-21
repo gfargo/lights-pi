@@ -1,0 +1,24 @@
+name: Trigger lights-pi-www deploy
+
+# lights-pi-www (the marketing site at lights.griffen.codes) deploys via its
+# own Vercel Git integration, so this doesn't build or push anything itself
+# — it just pings a Vercel Deploy Hook to redeploy it whenever this repo
+# cuts a release, so the site's release-history/version references stay
+# current even when lights-pi-www's own source hasn't changed.
+on:
+  release:
+    types: [published]
+
+jobs:
+  trigger-www-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel deploy hook
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.VERCEL_WWW_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK_URL" ]; then
+            echo "::error::VERCEL_WWW_DEPLOY_HOOK secret is not set. Create a Deploy Hook in the lights-pi-www Vercel project (Settings > Git > Deploy Hooks, branch: main) and add its URL as a repo secret named VERCEL_WWW_DEPLOY_HOOK."
+            exit 1
+          fi
+          curl -fsS -X POST "$DEPLOY_HOOK_URL"

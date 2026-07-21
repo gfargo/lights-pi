@@ -1015,6 +1015,7 @@
             font-size: 0.8rem; color: #ccc; padding: 0.45rem 0.6rem; line-height: 1.4;
             background: #0a0a0a; border-left: 2px solid var(--amber-tungsten);
         }
+        .rf-suggestion.transmitter { border-left-color: var(--arc-cyan); color: #f0f0f0; }
         .rf-ap-list { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.2rem; }
         .rf-ap-row {
             display: grid; grid-template-columns: 1fr auto auto; gap: 0.6rem; align-items: baseline;
@@ -1831,7 +1832,19 @@
                 </div>
                 <div class="field-hint" style="margin-bottom:0.5rem;">
                     Surveys WiFi traffic sharing the band with your wireless DMX transmitter. Receiver-side
-                    signal isn't observable — this only reports what the Pi's own radio hears.
+                    signal isn't observable — this only reports what the Pi's own radio hears. QLC+ has no
+                    visibility into this either — DMX addressing and the transmitter's RF channel are
+                    separate layers, so tell us what the transmitter's own display shows for a concrete check.
+                </div>
+                <div class="tool-actions" style="margin-bottom:0.6rem;">
+                    <select id="rfTransmitterMode" class="field-input" style="flex:0 0 auto;" onchange="onRfTransmitterModeChange()">
+                        <option value="unknown">Transmitter channel: not set</option>
+                        <option value="auto">Auto (transmitter picks its own channel)</option>
+                        <option value="manual">Manual — channel:</option>
+                    </select>
+                    <select id="rfTransmitterChannel" class="field-input" style="flex:0 0 90px;display:none;"></select>
+                    <button class="btn-secondary btn-tiny" onclick="saveRfSettings()">Save</button>
+                    <span id="rfSettingsSaved" class="field-hint"></span>
                 </div>
                 <div id="rfScanResult" class="result-bar">Click Scan to survey the band.</div>
                 <div id="rfSpectrum"></div>
@@ -2062,7 +2075,7 @@
             else if (tabName === 'chases') loadChases();
             else if (tabName === 'audio')  initAudio();
             else if (tabName === 'tools') populateToolsGroupSelects();
-            else if (tabName === 'diag')  { loadSystemInfo(); loadWorkspaces(); }
+            else if (tabName === 'diag')  { loadSystemInfo(); loadRfSettings(); loadWorkspaces(); }
             else if (tabName === 'chat')  { renderChatHistory(); loadConversations(); }
 
             // Persist the active tab in the URL so refresh / share-link works.
@@ -2363,7 +2376,7 @@
                 const grid = document.getElementById('sceneGrid');
                 allScenesData = data.scenes || [];
                 grid.innerHTML = allScenesData.map(s => {
-                    const swatchStyle = s.swatch ? ` style="background-image:url('${s.swatch}')"` : '';
+                    const swatchStyle = s.swatch ? ` style="background-image:url('${escHtml(s.swatch)}')"` : '';
                     return `
                     <div class="scene-btn-wrap">
                         <span class="scene-swatch"${swatchStyle}></span>
@@ -2425,8 +2438,8 @@
                           }))
                         : getChannelNames(f).map(n => ({ name: n, role: null }));
                     const sliders = channels.map((ch, i) => {
-                        const roleAttr = ch.role ? ` data-role="${ch.role}"` : '';
-                        const titleAttr = ch.role ? ` title="${ch.role}"` : '';
+                        const roleAttr = ch.role ? ` data-role="${escHtml(ch.role)}"` : '';
+                        const titleAttr = ch.role ? ` title="${escHtml(ch.role)}"` : '';
                         return `
                         <div class="channel-control"${roleAttr}>
                             <div class="channel-label"${titleAttr}>${escHtml(ch.name)}</div>
@@ -3477,6 +3490,55 @@
         /* ══════════════════════════════════════
            Diagnostics
            ══════════════════════════════════════ */
+
+        // Populate the D-Fi-style channel dropdown once (1-16 — see
+        // _dfi_channel_to_freq_mhz for why we don't offer an exact MHz value).
+        (function populateRfChannelSelect() {
+            const sel = document.getElementById('rfTransmitterChannel');
+            if (!sel) return;
+            sel.innerHTML = Array.from({ length: 16 }, (_, i) => i + 1)
+                .map(ch => `<option value="${ch}">CH${String(ch).padStart(2, '0')}</option>`).join('');
+        })();
+
+        function onRfTransmitterModeChange() {
+            const mode = document.getElementById('rfTransmitterMode').value;
+            document.getElementById('rfTransmitterChannel').style.display = mode === 'manual' ? '' : 'none';
+        }
+
+        async function loadRfSettings() {
+            try {
+                const r = await fetch('/api/diagnostics/rf_settings');
+                const data = await r.json();
+                const t = data.transmitter;
+                const modeSel = document.getElementById('rfTransmitterMode');
+                const chSel = document.getElementById('rfTransmitterChannel');
+                modeSel.value = (t && t.mode) || 'unknown';
+                if (t && t.mode === 'manual' && t.channel) chSel.value = String(t.channel);
+                onRfTransmitterModeChange();
+            } catch (e) {
+                // Non-fatal — form just stays at defaults.
+            }
+        }
+
+        async function saveRfSettings() {
+            const mode = document.getElementById('rfTransmitterMode').value;
+            const channel = mode === 'manual' ? parseInt(document.getElementById('rfTransmitterChannel').value) : null;
+            const savedEl = document.getElementById('rfSettingsSaved');
+            savedEl.textContent = 'Saving…';
+            try {
+                const r = await fetch('/api/diagnostics/rf_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode, channel })
+                });
+                const data = await r.json();
+                savedEl.textContent = data.success ? '✓ saved' : `✗ ${data.error || 'failed'}`;
+            } catch (e) {
+                savedEl.textContent = `✗ ${e.message}`;
+            }
+            setTimeout(() => { savedEl.textContent = ''; }, 2500);
+        }
+
         async function loadSystemInfo() {
             const grid = document.getElementById('systemInfoGrid');
             grid.innerHTML = '<p class="empty-state">Loading…</p>';
@@ -3584,8 +3646,9 @@
                     <span><span class="swatch" style="border:1px dashed var(--arc-cyan);background:transparent;"></span>quietest window</span>
                 </div>`;
 
+            const hasTransmitterNote = !!(analysis.transmitter && analysis.transmitter.mode && analysis.transmitter.mode !== 'unknown');
             suggestionsEl.innerHTML = (analysis.suggestions || [])
-                .map(s => `<div class="rf-suggestion">${escHtml(s)}</div>`).join('');
+                .map((s, i) => `<div class="rf-suggestion${i === 0 && hasTransmitterNote ? ' transmitter' : ''}">${escHtml(s)}</div>`).join('');
 
             apListEl.innerHTML = aps.map(ap => {
                 const band = rfSignalBand(ap.signal_dbm);
