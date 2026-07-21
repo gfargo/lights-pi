@@ -87,8 +87,13 @@ studio.qxw              Canonical studio workspace used by default.
 
 Sibling repos (not in this tree):
 
-- **`lights-pi-www`** — public marketing site. Deployed to lightspi.com.
-  Work directly on `main`, no PR ceremony.
+- **`lights-pi-www`** — public marketing site. Deployed to
+  [lights.griffen.codes](https://lights.griffen.codes/) via Vercel.
+  Work directly on `main`, no PR ceremony. A GitHub release published on
+  this repo (`.github/workflows/trigger-www-deploy.yml`) hits a Vercel
+  Deploy Hook to redeploy it — useful when the site references
+  lights-pi's release history/version even though its own source hasn't
+  changed.
 - **`lights-pi.wiki`** — GitHub wiki for long-form docs.
 
 ---
