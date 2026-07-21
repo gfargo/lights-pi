@@ -8,6 +8,7 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 import asyncio
 import concurrent.futures
 import contextlib
+import hmac
 import json
 import logging
 import math
@@ -22,6 +23,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+from datetime import timedelta
 from pathlib import Path
 
 import structlog
@@ -31,9 +33,11 @@ from flask import (
     Response,
     abort,
     jsonify,
+    redirect,
     render_template,
     request,
     send_from_directory,
+    session,
     stream_with_context,
 )
 from flask_cors import CORS
@@ -123,7 +127,10 @@ socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS)
 
 @socketio.on("connect")
 def _on_socket_connect():
-    """Send current audio engine state to a newly connected browser."""
+    """Reject the handshake if a password is configured and the session isn't
+    authenticated; otherwise send current audio engine state to the browser."""
+    if LIGHTS_PASSWORD is not None and not session.get("authed"):
+        return False
     socketio.emit("audio_state", _audio_engine.get_state())
 
 
@@ -135,6 +142,59 @@ app.config["SECRET_KEY"] = os.getenv(
 
 # 3. Limit request body size to 1MB (audit item #8)
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB
+
+# 4. Shared-password auth (issue #25). Unset LIGHTS_PASSWORD == open mode,
+# preserving backwards compat for existing rigs that don't opt in.
+LIGHTS_PASSWORD = os.getenv("LIGHTS_PASSWORD", "").strip() or None
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_S = 60
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+
+_AUTH_EXEMPT_PATHS = {"/login", "/healthz", "/manifest.json", "/icon.svg", "/sw.js", "/logo"}
+
+
+def _verify_password(supplied: str, expected: str | None) -> bool:
+    """Constant-time password compare. False if no password is configured."""
+    if not expected:
+        return False
+    return hmac.compare_digest(supplied, expected)
+
+
+def _login_rate_check(state: dict, ip: str, now: float) -> tuple[bool, int]:
+    """Pure rate limiter: 5 failed attempts per IP within 60s locks it out.
+
+    *state* is a dict mapping ip -> list of failure timestamps; the caller
+    appends a new timestamp on each failed attempt. Returns
+    (allowed, retry_after_s).
+    """
+    attempts = [t for t in state.get(ip, []) if now - t < _LOGIN_LOCKOUT_S]
+    if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+        retry_after = int(_LOGIN_LOCKOUT_S - (now - attempts[0]))
+        return False, max(retry_after, 1)
+    return True, 0
+
+
+def _is_auth_exempt(path: str) -> bool:
+    """Routes reachable without a session — login itself, static assets, and
+    /healthz so the systemd watchdog keeps working."""
+    return path in _AUTH_EXEMPT_PATHS or path.startswith("/static/")
+
+
+@app.before_request
+def _require_auth():
+    """Gate every non-exempt route behind the session cookie when a shared
+    password is configured. No-op entirely in open mode (LIGHTS_PASSWORD unset)."""
+    if LIGHTS_PASSWORD is None:
+        return None
+    if _is_auth_exempt(request.path) or session.get("authed"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "unauthorized"}), 401
+    return redirect("/login")
 
 
 @app.after_request
@@ -2453,6 +2513,46 @@ def execute_lighting_action(action_data, target_groups=None, source="web"):
 def index():
     """Serve the control interface"""
     return render_template("index.html")
+
+
+# ----------------------------------------------------------------------------
+# Auth — shared password + signed session cookie (issue #25)
+# ----------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Login form. In open mode (no LIGHTS_PASSWORD) just bounce to /."""
+    if LIGHTS_PASSWORD is None:
+        return redirect("/")
+
+    if request.method == "GET":
+        return render_template("login.html", error=None)
+
+    ip = request.remote_addr or "unknown"
+    now = time.time()
+    allowed, retry_after = _login_rate_check(_LOGIN_ATTEMPTS, ip, now)
+    if not allowed:
+        return render_template(
+            "login.html",
+            error=f"Too many attempts. Try again in {retry_after}s.",
+        ), 429
+
+    password = request.form.get("password", "")
+    if _verify_password(password, LIGHTS_PASSWORD):
+        _LOGIN_ATTEMPTS.pop(ip, None)
+        session["authed"] = True
+        session.permanent = bool(request.form.get("remember"))
+        return redirect("/")
+
+    _LOGIN_ATTEMPTS.setdefault(ip, []).append(now)
+    return render_template("login.html", error="Incorrect password"), 401
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    """Clear the session cookie and send the user back to the login form."""
+    session.clear()
+    return redirect("/login")
 
 
 # ----------------------------------------------------------------------------

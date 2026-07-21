@@ -11,7 +11,8 @@ safe to restart.
 
 - **Streamable HTTP** at `http://lights.local:5001/mcp` (default)
 - LAN-only by default; bind via `MCP_HOST` / `MCP_PORT` env vars
-- Bearer token gate available via `MCP_BEARER_TOKEN` (scaffolded, not yet enforced)
+- Bearer token gate enforced when `LIGHTS_PASSWORD` (or the legacy
+  `MCP_BEARER_TOKEN`) is set — see [Auth](../docs/MCP_SERVER.md#auth)
 
 ## Architecture
 
@@ -129,5 +130,6 @@ mcp dev server.py
 | `MCP_HOST`         | `0.0.0.0`               | Bind address                                |
 | `MCP_PORT`         | `5001`                  | Listen port                                 |
 | `MCP_PATH`         | `/mcp`                  | URL path mounted by Streamable HTTP         |
-| `MCP_BEARER_TOKEN` | _(unset)_               | Reserved for auth — not yet enforced        |
+| `LIGHTS_PASSWORD`  | _(unset)_               | Bearer token required on `/mcp` when set — same value as the control server's login |
+| `MCP_BEARER_TOKEN` | _(unset)_               | Legacy fallback bearer token, used only if `LIGHTS_PASSWORD` is unset |
 | `MCP_HTTP_TIMEOUT` | `30`                    | Seconds for upstream Flask calls            |
