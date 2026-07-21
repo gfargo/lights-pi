@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 import chat_store
 import fixture_definitions
+import midi_engine
 from audio_engine import _engine as _audio_engine
 from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
@@ -253,6 +254,7 @@ else:
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
+MIDI_MAPPINGS_FILE = Path.home() / ".qlcplus" / "midi_mappings.json"
 
 # Registry of audio-BPM-driven chases currently running.
 # Shape: { chase_key: { 'task': concurrent.futures.Future, 'react_to': str } }
@@ -6623,6 +6625,211 @@ def list_audio_chases():
 
 
 # =============================================================================
+# MIDI controller input (OSS-1143)
+# =============================================================================
+#
+# Backend-only slice of #26: a python-rtmidi listener thread (mirrors the
+# _qlc_loop background-thread pattern above) feeds parsed messages through
+# midi_engine.dispatch_midi_message(), which triggers the SAME call paths
+# the web UI / MCP tools already use — set_channel_values(), scene
+# activation, chase start/stop. No new lighting logic, just new triggers.
+#
+# Storage: ~/.qlcplus/midi_mappings.json, same {"mappings": [...]} sidecar
+# pattern as fixture_groups.json / audio_chases.json.
+#
+# The hardware-dependent bits (rtmidi port discovery/hot-plug) live in
+# midi_engine.MidiListener and are gated behind `.available`, so this
+# section — and the server as a whole — imports and runs cleanly on a
+# headless Pi with python-rtmidi absent or no controller plugged in.
+
+_midi_mappings_lock = threading.Lock()
+_midi_last_values: dict = {}   # mapping_id -> last raw MIDI value (0-127)
+_midi_chase_state: dict = {}   # mapping_id -> bool (chase_toggle running state)
+
+
+def _load_midi_mappings() -> list:
+    if not MIDI_MAPPINGS_FILE.exists():
+        return []
+    try:
+        data = json.loads(MIDI_MAPPINGS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    mappings = data.get("mappings") if isinstance(data, dict) else None
+    return mappings if isinstance(mappings, list) else []
+
+
+def _save_midi_mappings(mappings: list) -> None:
+    MIDI_MAPPINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MIDI_MAPPINGS_FILE.write_text(json.dumps({"mappings": mappings}, indent=2))
+
+
+def _midi_resolve_channel(fixture_id, channel_offset):
+    """fixture_id/channel_offset -> absolute DMX channel, or None if the
+    fixture doesn't exist in the current workspace (e.g. a stale mapping)."""
+    for fixture in get_workspace_fixtures():
+        if fixture.get("id") == fixture_id:
+            return _absolute_channel(fixture, channel_offset)
+    return None
+
+
+def _midi_start_chase(chase_id) -> bool:
+    """Start chase playback for MIDI dispatch — same primitives as the
+    /api/chases/<id>/start route, without the Flask request/response wrapping
+    (the dispatch runs on the listener thread, outside a request context)."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return False
+    fid = chase.get("ID")
+    if not (fid and fid.isdigit()):
+        return False
+    if chase.get("TempoSource", "fixed") == "tap":
+        scene_ids = _chase_step_scene_ids(chase)
+        speed = next(iter(_find_children(chase, "Speed")), None)
+        initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
+        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        return True
+    ok, _raw = set_function_status(int(fid), running=True)
+    return ok
+
+
+def _midi_stop_chase(chase_id) -> bool:
+    """Stop chase playback for MIDI dispatch — mirrors /api/chases/<id>/stop."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return False
+    fid = chase.get("ID")
+    if not (fid and fid.isdigit()):
+        return False
+    tap_was_running = _stop_tap_runner(fid)
+    ok, _raw = set_function_status(int(fid), running=False)
+    return ok or tap_was_running
+
+
+def _midi_actions() -> dict:
+    return {
+        "set_channel_values": set_channel_values,
+        "resolve_channel": _midi_resolve_channel,
+        "activate_scene": apply_existing_scene_live,
+        "start_chase": _midi_start_chase,
+        "stop_chase": _midi_stop_chase,
+    }
+
+
+def _on_midi_message(port_name: str, raw_message: list) -> None:
+    """MidiListener callback — runs on the listener thread. Never raises:
+    a malformed message or a mapping referencing missing fixtures/scenes/
+    chases is dropped, not fatal, so one bad controller can't take down the
+    listener thread."""
+    try:
+        parsed = midi_engine.parse_midi_message(raw_message)
+        if parsed is None:
+            return
+        with _midi_mappings_lock:
+            mappings = _load_midi_mappings()
+            result = midi_engine.dispatch_midi_message(
+                parsed, mappings, _midi_actions(), _midi_chase_state
+            )
+            if result.get("matched") and result.get("mapping_id"):
+                _midi_last_values[result["mapping_id"]] = parsed["value"]
+        if result.get("matched"):
+            _emit("midi_dispatch", {
+                "port": port_name,
+                "mapping_id": result.get("mapping_id"),
+                "action": result.get("action"),
+            })
+    except Exception as exc:
+        log.error("midi_dispatch_failed", error=str(exc))
+
+
+_midi_listener = midi_engine.MidiListener(dispatch_fn=_on_midi_message)
+
+
+@app.route("/api/midi/devices", methods=["GET"])
+def midi_devices():
+    """List connected MIDI input devices. Always returns 200 with an empty
+    list when python-rtmidi isn't installed or nothing is plugged in."""
+    return jsonify({
+        "devices": _midi_listener.list_device_names(),
+        "available": _midi_listener.available,
+    })
+
+
+@app.route("/api/midi/mappings", methods=["GET"])
+def list_midi_mappings():
+    return jsonify({"mappings": _load_midi_mappings()})
+
+
+@app.route("/api/midi/mappings", methods=["POST"])
+def create_midi_mapping():
+    """Create a MIDI mapping.
+
+    Body:
+        {
+          "name": "Fixture 0 master",           # optional label
+          "input": {"type": "cc", "channel": null, "number": 21},
+          "action": {"type": "channel", "fixture_id": 0, "channel_offset": 0,
+                     "out_min": 0, "out_max": 255, "curve": "linear"}
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    mapping, error = midi_engine.build_mapping(data)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    with _midi_mappings_lock:
+        mappings = _load_midi_mappings()
+        mappings.append(mapping)
+        _save_midi_mappings(mappings)
+    _emit("midi_mapping_modified", {"mapping_id": mapping["id"], "action": "created"})
+    return jsonify({"success": True, "mapping": mapping})
+
+
+@app.route("/api/midi/mappings/<mapping_id>", methods=["PATCH"])
+def update_midi_mapping(mapping_id):
+    """Replace an existing mapping's input/action/name. Body shape matches POST."""
+    data = request.get_json(silent=True) or {}
+    with _midi_mappings_lock:
+        mappings = _load_midi_mappings()
+        existing = next((m for m in mappings if m.get("id") == mapping_id), None)
+        if existing is None:
+            return jsonify({"success": False, "error": f"Mapping '{mapping_id}' not found"}), 404
+
+        merged = {
+            "name": data.get("name", existing.get("name")),
+            "input": data.get("input", existing.get("input")),
+            "action": data.get("action", existing.get("action")),
+        }
+        mapping, error = midi_engine.build_mapping(merged, mapping_id=mapping_id)
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+
+        mappings = [mapping if m.get("id") == mapping_id else m for m in mappings]
+        _save_midi_mappings(mappings)
+    _emit("midi_mapping_modified", {"mapping_id": mapping_id, "action": "updated"})
+    return jsonify({"success": True, "mapping": mapping})
+
+
+@app.route("/api/midi/mappings/<mapping_id>", methods=["DELETE"])
+def delete_midi_mapping(mapping_id):
+    with _midi_mappings_lock:
+        mappings = _load_midi_mappings()
+        remaining = [m for m in mappings if m.get("id") != mapping_id]
+        if len(remaining) == len(mappings):
+            return jsonify({"success": False, "error": f"Mapping '{mapping_id}' not found"}), 404
+        _save_midi_mappings(remaining)
+        _midi_last_values.pop(mapping_id, None)
+        _midi_chase_state.pop(mapping_id, None)
+    _emit("midi_mapping_modified", {"mapping_id": mapping_id, "action": "deleted"})
+    return jsonify({"success": True})
+
+
+@app.route("/api/midi/state", methods=["GET"])
+def midi_state():
+    """Last CC value (0-127) seen per mapping, for the future UI tab to poll."""
+    with _midi_mappings_lock:
+        return jsonify({"state": dict(_midi_last_values)})
+
+
+# =============================================================================
 # Agentic chat (issue: agent-driven web UI experience)
 # =============================================================================
 #
@@ -7870,6 +8077,14 @@ if __name__ == "__main__":
         print("✓ Audio engine ready (aubio + sounddevice found)")
     else:
         print("⚠ Audio engine unavailable — aubio/sounddevice not installed")
+
+    # Start the MIDI listener thread — device auto-discovery + reconnect on
+    # hot-plug. No-op (never opens a port) when python-rtmidi isn't installed.
+    _midi_listener.start()
+    if _midi_listener.available:
+        print("✓ MIDI engine ready (python-rtmidi found)")
+    else:
+        print("⚠ MIDI engine unavailable — python-rtmidi not installed")
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #

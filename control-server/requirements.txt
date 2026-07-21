@@ -13,3 +13,7 @@ aubio>=0.4.9
 # control_server.sh's CFLAGS workaround for the compile-time half of this).
 numpy>=1.24,<2
 sounddevice>=0.4.6
+# MIDI controller input (OSS-1143) — optional: server starts without it but
+# /api/midi/devices reports available:false and the listener thread never
+# opens a port until python-rtmidi is installed on the Pi.
+python-rtmidi>=1.5.8
