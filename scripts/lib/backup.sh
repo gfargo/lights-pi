@@ -168,7 +168,8 @@ function backup_timer_install() {
   run_sudo tee /etc/systemd/system/lighting-backup.service >/dev/null <<EOF
 [Unit]
 Description=Lighting controller — daily config backup
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -207,14 +208,22 @@ EOF
 
 function backup_timer_status() {
   echo "=== Backup Timer Status ==="
-  run_sudo systemctl status lighting-backup.timer --no-pager 2>/dev/null || echo "Timer not installed"
+  if run_sudo systemctl cat lighting-backup.timer &>/dev/null; then
+    run_sudo systemctl status lighting-backup.timer --no-pager || true
+  else
+    echo "Timer not installed"
+  fi
   echo ""
   echo "--- Last run ---"
-  run_sudo systemctl status lighting-backup.service --no-pager 2>/dev/null || echo "Service not installed"
+  if run_sudo systemctl cat lighting-backup.service &>/dev/null; then
+    run_sudo systemctl status lighting-backup.service --no-pager || true
+  else
+    echo "Service not installed"
+  fi
 }
 
 function backup_timer_logs() {
-  run_sudo journalctl -t lighting-backup -n 50 --no-pager
+  run_sudo journalctl -u lighting-backup.service -n 50 --no-pager
 }
 
 function backup_timer_uninstall() {
