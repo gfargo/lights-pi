@@ -261,6 +261,7 @@ else:
 GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
 CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
 AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
+STAGE_LAYOUT_FILE = Path.home() / ".qlcplus" / "stage_layout.json"
 MIDI_MAPPINGS_FILE = Path.home() / ".qlcplus" / "midi_mappings.json"
 
 # Registry of audio-BPM-driven chases currently running.
@@ -3736,6 +3737,92 @@ def remove_fixtures_from_group(group_name):
             "description": groups[group_name].get("description", ""),
         },
     })
+
+
+# ----------------------------------------------------------------------------
+# Stage layout — fixture-position persistence
+# ----------------------------------------------------------------------------
+# Storage: ~/.qlcplus/stage_layout.json, same tolerant load/save pattern as
+#     GROUPS_FILE / CUE_LISTS_FILE. Shape:
+#     {"room": {"width": <num>, "height": <num>}, "positions": {"<fixture_id>": {"x": <num>, "y": <num>}}}
+# Fixture IDs are stored as string keys in the "positions" dict (unlike
+# groups, which store fixture IDs as an int list) since JSON object keys are
+# always strings.
+
+def _load_stage_layout() -> dict:
+    """Return the stage layout dict with "room" and "positions" keys.
+
+    Returns the default empty shape if the file is missing, unreadable, or
+    not a JSON object. Positions are returned as stored, with no check
+    against the current workspace's fixture list — a position for a fixture
+    ID that no longer exists is returned unchanged rather than dropped.
+    """
+    if not STAGE_LAYOUT_FILE.exists():
+        return {"room": {}, "positions": {}}
+    try:
+        data = json.loads(STAGE_LAYOUT_FILE.read_text())
+    except json.JSONDecodeError:
+        return {"room": {}, "positions": {}}
+    if not isinstance(data, dict):
+        return {"room": {}, "positions": {}}
+    data.setdefault("room", {})
+    data.setdefault("positions", {})
+    return data
+
+
+def _save_stage_layout(layout: dict) -> None:
+    """Persist the stage layout dict."""
+    STAGE_LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STAGE_LAYOUT_FILE.write_text(json.dumps(layout, indent=2))
+
+
+@app.route("/api/stage_layout", methods=["GET"])
+def get_stage_layout():
+    """Return the stored stage layout (room dimensions + fixture positions).
+
+    Positions are returned exactly as stored, even for fixture IDs that are
+    no longer present in the current workspace — this endpoint never
+    cross-checks against the workspace fixture list, so it can't crash on a
+    stale position entry.
+    """
+    return jsonify(_load_stage_layout())
+
+
+@app.route("/api/stage_layout", methods=["POST"])
+def save_stage_layout():
+    """Save room dimensions and fixture positions.
+
+    Body:
+        {
+          "room": {"width": 20, "height": 12},
+          "positions": {"0": {"x": 1.2, "y": 3.4}, "3": {"x": 5.0, "y": 2.0}}
+        }
+
+    Both fields are optional and default to {}. Entries in "positions" whose
+    value isn't a dict with numeric "x"/"y" are dropped rather than failing
+    the whole request. Fixture IDs are not validated against the current
+    workspace — a position may be saved for a fixture that doesn't exist
+    (yet, or anymore).
+    """
+    data = request.get_json(silent=True) or {}
+
+    room = data.get("room")
+    room = room if isinstance(room, dict) else {}
+
+    positions = {}
+    for fid, pos in (data.get("positions") or {}).items():
+        if not isinstance(pos, dict):
+            continue
+        try:
+            x = float(pos["x"])
+            y = float(pos["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        positions[str(fid)] = {"x": x, "y": y}
+
+    layout = {"room": room, "positions": positions}
+    _save_stage_layout(layout)
+    return jsonify({"success": True, **layout})
 
 
 # ----------------------------------------------------------------------------
