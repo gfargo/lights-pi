@@ -1,2 +1,6 @@
 mcp[cli]>=1.2.0
 httpx>=0.27.0
+# Explicit pins: streamable-http bearer auth (server.py) needs both directly,
+# not just transitively via mcp[cli].
+starlette>=0.37.0
+uvicorn>=0.27.0

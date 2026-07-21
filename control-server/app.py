@@ -8,6 +8,7 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 import asyncio
 import concurrent.futures
 import contextlib
+import hmac
 import json
 import logging
 import math
@@ -22,6 +23,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+from datetime import timedelta
 from pathlib import Path
 
 import structlog
@@ -31,9 +33,11 @@ from flask import (
     Response,
     abort,
     jsonify,
+    redirect,
     render_template,
     request,
     send_from_directory,
+    session,
     stream_with_context,
 )
 from flask_cors import CORS
@@ -123,7 +127,10 @@ socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS)
 
 @socketio.on("connect")
 def _on_socket_connect():
-    """Send current audio engine state to a newly connected browser."""
+    """Reject the handshake if a password is configured and the session isn't
+    authenticated; otherwise send current audio engine state to the browser."""
+    if LIGHTS_PASSWORD is not None and not session.get("authed"):
+        return False
     socketio.emit("audio_state", _audio_engine.get_state())
 
 
@@ -135,6 +142,59 @@ app.config["SECRET_KEY"] = os.getenv(
 
 # 3. Limit request body size to 1MB (audit item #8)
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB
+
+# 4. Shared-password auth (issue #25). Unset LIGHTS_PASSWORD == open mode,
+# preserving backwards compat for existing rigs that don't opt in.
+LIGHTS_PASSWORD = os.getenv("LIGHTS_PASSWORD", "").strip() or None
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_S = 60
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+
+_AUTH_EXEMPT_PATHS = {"/login", "/healthz", "/manifest.json", "/icon.svg", "/sw.js", "/logo"}
+
+
+def _verify_password(supplied: str, expected: str | None) -> bool:
+    """Constant-time password compare. False if no password is configured."""
+    if not expected:
+        return False
+    return hmac.compare_digest(supplied, expected)
+
+
+def _login_rate_check(state: dict, ip: str, now: float) -> tuple[bool, int]:
+    """Pure rate limiter: 5 failed attempts per IP within 60s locks it out.
+
+    *state* is a dict mapping ip -> list of failure timestamps; the caller
+    appends a new timestamp on each failed attempt. Returns
+    (allowed, retry_after_s).
+    """
+    attempts = [t for t in state.get(ip, []) if now - t < _LOGIN_LOCKOUT_S]
+    if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+        retry_after = int(_LOGIN_LOCKOUT_S - (now - attempts[0]))
+        return False, max(retry_after, 1)
+    return True, 0
+
+
+def _is_auth_exempt(path: str) -> bool:
+    """Routes reachable without a session — login itself, static assets, and
+    /healthz so the systemd watchdog keeps working."""
+    return path in _AUTH_EXEMPT_PATHS or path.startswith("/static/")
+
+
+@app.before_request
+def _require_auth():
+    """Gate every non-exempt route behind the session cookie when a shared
+    password is configured. No-op entirely in open mode (LIGHTS_PASSWORD unset)."""
+    if LIGHTS_PASSWORD is None:
+        return None
+    if _is_auth_exempt(request.path) or session.get("authed"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "unauthorized"}), 401
+    return redirect("/login")
 
 
 @app.after_request
@@ -2453,6 +2513,46 @@ def execute_lighting_action(action_data, target_groups=None, source="web"):
 def index():
     """Serve the control interface"""
     return render_template("index.html")
+
+
+# ----------------------------------------------------------------------------
+# Auth — shared password + signed session cookie (issue #25)
+# ----------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Login form. In open mode (no LIGHTS_PASSWORD) just bounce to /."""
+    if LIGHTS_PASSWORD is None:
+        return redirect("/")
+
+    if request.method == "GET":
+        return render_template("login.html", error=None)
+
+    ip = request.remote_addr or "unknown"
+    now = time.time()
+    allowed, retry_after = _login_rate_check(_LOGIN_ATTEMPTS, ip, now)
+    if not allowed:
+        return render_template(
+            "login.html",
+            error=f"Too many attempts. Try again in {retry_after}s.",
+        ), 429
+
+    password = request.form.get("password", "")
+    if _verify_password(password, LIGHTS_PASSWORD):
+        _LOGIN_ATTEMPTS.pop(ip, None)
+        session["authed"] = True
+        session.permanent = bool(request.form.get("remember"))
+        return redirect("/")
+
+    _LOGIN_ATTEMPTS.setdefault(ip, []).append(now)
+    return render_template("login.html", error="Incorrect password"), 401
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    """Clear the session cookie and send the user back to the login form."""
+    session.clear()
+    return redirect("/login")
 
 
 # ----------------------------------------------------------------------------
@@ -4892,6 +4992,26 @@ def _scene_channel_commands(scene_id) -> list:
     return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
 
 
+def _tap_runner_blackout_commands(scene_ids: list) -> list:
+    """CH|<abs>|0 for every channel touched across scene_ids, deduped in first-seen order.
+
+    Used to clear a tap runner's footprint on stop — a surgical blackout that only
+    zeroes channels the runner actually wrote, not the whole rig.
+    """
+    channels = []
+    seen = set()
+    for scene_id in scene_ids:
+        for cmd in _scene_channel_commands(scene_id):
+            parts = cmd.split("|")
+            if len(parts) != 3:
+                continue
+            ch = parts[1]
+            if ch not in seen:
+                seen.add(ch)
+                channels.append(ch)
+    return [f"CH|{ch}|0" for ch in channels]
+
+
 def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> bool:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
@@ -4905,9 +5025,9 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
     """
     if not scene_ids:
         return False
-    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
+    _stop_tap_runner(chase_id, teardown=False)  # cancel any existing runner for this chase
     _start_qlc_loop()  # ensure background event loop is running
-    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    state: dict = {"step_ms": float(initial_step_ms), "running": True, "scene_ids": list(scene_ids)}
     _tap_runners[str(chase_id)] = state
     n = len(scene_ids)
 
@@ -4928,13 +5048,26 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
     return True
 
 
-def _stop_tap_runner(chase_id: str) -> bool:
-    """Cancel a running server-side tap runner. Returns True if one was active."""
+def _stop_tap_runner(chase_id: str, teardown: bool = True) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active.
+
+    teardown=True (stop/user-facing) blackouts the runner's channel footprint so
+    the rig doesn't stay lit at the last step's values. teardown=False (internal
+    restart path in _start_tap_runner) skips the blackout so restarting a tap
+    chase doesn't clobber the freshly-started runner's first frame.
+    """
     state = _tap_runners.pop(str(chase_id), None)
-    if state:
-        state["running"] = False
-        return True
-    return False
+    if not state:
+        return False
+    state["running"] = False
+    if teardown:
+        try:
+            commands = _tap_runner_blackout_commands(state.get("scene_ids", []))
+            if commands:
+                _qlc_run(_qlc_send_commands(commands), timeout=5)
+        except Exception:
+            pass
+    return True
 
 
 def _engine_functions(engine):

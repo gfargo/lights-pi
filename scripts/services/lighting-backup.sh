@@ -3,12 +3,19 @@
 # Creates a daily snapshot of QLC+ + control-server config, prunes old
 # snapshots (7 daily / 4 weekly / 6 monthly), and optionally pushes to a
 # remote (s3://, user@host:/path, or rclone:remote/path).
+# Exit 75 (EX_TEMPFAIL) means the local snapshot succeeded but the remote
+# push failed — distinct from a hard local failure.
 set -euo pipefail
 
 LOG_TAG="lighting-backup"
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/lights-pi-backups}"
 BACKUP_REMOTE="${BACKUP_REMOTE:-}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+# .env holds production secrets (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...). Local
+# snapshots on the Pi are the same trust domain, but BACKUP_REMOTE may point at
+# an S3 bucket, NAS share, or rclone remote with broader access — so .env only
+# joins the archive when explicitly opted in.
+BACKUP_INCLUDE_ENV="${BACKUP_INCLUDE_ENV:-0}"
 
 log() { logger -t "$LOG_TAG" "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" >&2; }
 
@@ -28,17 +35,26 @@ create_snapshot() {
     [[ -e "${HOME}/${d}" ]] && dirs+=("${d}")
   done
   # Control-server config (scenes / groups / cue lists live here)
-  for d in "control-server" ".env"; do
-    [[ -e "${HOME}/${d}" ]] && dirs+=("${d}")
-  done
+  [[ -e "${HOME}/control-server" ]] && dirs+=("control-server")
+
+  # .env holds production secrets — only archived when explicitly opted in.
+  if [[ "$BACKUP_INCLUDE_ENV" == "1" && -e "${HOME}/.env" ]]; then
+    dirs+=(".env")
+    if [[ -n "$BACKUP_REMOTE" ]]; then
+      log "WARN: BACKUP_INCLUDE_ENV=1 and BACKUP_REMOTE is set — this snapshot's .env (production secrets) will be pushed unencrypted to ${BACKUP_REMOTE}"
+    fi
+  fi
 
   if [[ ${#dirs[@]} -eq 0 ]]; then
     log "WARN: nothing to back up under ${HOME}"
     return 0
   fi
 
+  local tmp="${snapshot}.tmp"
   log "INFO: creating snapshot ${snapshot}"
-  tar -czf "${snapshot}" -C "${HOME}" "${dirs[@]}"
+  tar -czf "${tmp}" -C "${HOME}" "${dirs[@]}"
+  gzip -t "${tmp}"
+  mv -f "${tmp}" "${snapshot}"
   log "INFO: snapshot created ($(du -sh "${snapshot}" | cut -f1))"
   echo "${snapshot}"
 }
@@ -139,12 +155,18 @@ push_remote() {
 
   log "INFO: pushing $(basename "${snapshot}") to ${BACKUP_REMOTE}"
 
+  # push_remote is invoked from `if ! push_remote ...` in main(), and bash's
+  # `set -e` does not propagate out of a function called in a conditional
+  # context — so a failing transfer command below would otherwise be
+  # swallowed and this function would still return 0. Check each command's
+  # exit status explicitly instead of relying on -e.
+  local rc=0
   if [[ "$BACKUP_REMOTE" == s3://* ]]; then
     if ! command -v aws >/dev/null 2>&1; then
       log "ERROR: 'aws' CLI not found — install awscli on the Pi to use S3 remote"
       return 1
     fi
-    aws s3 cp "${snapshot}" "${BACKUP_REMOTE%/}/$(basename "${snapshot}")"
+    aws s3 cp "${snapshot}" "${BACKUP_REMOTE%/}/$(basename "${snapshot}")" || rc=$?
 
   elif [[ "$BACKUP_REMOTE" == rclone:* ]]; then
     if ! command -v rclone >/dev/null 2>&1; then
@@ -152,7 +174,7 @@ push_remote() {
       return 1
     fi
     local remote_path="${BACKUP_REMOTE#rclone:}"
-    rclone copy "${snapshot}" "${remote_path}"
+    rclone copy "${snapshot}" "${remote_path}" || rc=$?
 
   else
     # scp-style: user@host:/path
@@ -160,7 +182,13 @@ push_remote() {
       log "ERROR: 'scp' not found"
       return 1
     fi
-    scp "${snapshot}" "${BACKUP_REMOTE%/}/$(basename "${snapshot}")"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "${snapshot}" "${BACKUP_REMOTE%/}/$(basename "${snapshot}")" || rc=$?
+  fi
+
+  if [[ "$rc" != 0 ]]; then
+    log "ERROR: remote push failed (exit ${rc})"
+    return "$rc"
   fi
 
   log "INFO: remote push complete"
@@ -176,9 +204,22 @@ main() {
   snapshot="$(create_snapshot)"
 
   [[ -n "$snapshot" ]] && prune_retention
-  [[ -n "$snapshot" ]] && push_remote "$snapshot"
+
+  local push_failed=0
+  if [[ -n "$snapshot" ]]; then
+    if ! push_remote "$snapshot"; then
+      log "WARN: remote push failed — local snapshot retained at ${snapshot}"
+      push_failed=1
+    fi
+  fi
 
   log "INFO: backup complete"
+  # Exit 75 (EX_TEMPFAIL) when the local snapshot succeeded but the remote
+  # push failed, so systemd/journal failure state is distinguishable from a
+  # hard local failure — the backup itself is not lost.
+  if [[ "$push_failed" == 1 ]]; then
+    exit 75
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
