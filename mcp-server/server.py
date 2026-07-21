@@ -13,12 +13,14 @@ Tools are thin wrappers around REST endpoints — the Flask app owns the
 persistent QLC+ WebSocket and remains the single writer.
 """
 
+import hmac
 import os
 import sys
 from typing import Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 CONTROL_URL = os.getenv("CONTROL_URL", "http://localhost:5000").rstrip("/")
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
@@ -26,7 +28,14 @@ MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 MCP_PATH = os.getenv("MCP_PATH", "/mcp")
 
 # Bearer token gate — disabled when unset (LAN-only deployments).
-MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip() or None
+# LIGHTS_PASSWORD is the primary source (same shared secret as the control
+# server's web login, issue #25); MCP_BEARER_TOKEN is kept as a fallback so
+# existing MCP-only installs that never set LIGHTS_PASSWORD keep working.
+MCP_BEARER_TOKEN = (
+    os.getenv("LIGHTS_PASSWORD", "").strip()
+    or os.getenv("MCP_BEARER_TOKEN", "").strip()
+    or None
+)
 
 HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30"))
 
@@ -963,23 +972,51 @@ def _safe_get(path: str) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _bearer_ok(header: str | None, token: str) -> bool:
+    """Constant-time check of an `Authorization: Bearer <token>` header."""
+    if not header or not header.startswith("Bearer "):
+        return False
+    supplied = header[len("Bearer "):]
+    return hmac.compare_digest(supplied, token)
+
+
+class _BearerAuthMiddleware:
+    """ASGI middleware rejecting requests without a valid bearer token."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        headers = dict(scope.get("headers") or [])
+        auth_header = headers.get(b"authorization", b"").decode("latin-1") or None
+        if not _bearer_ok(auth_header, self.token):
+            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    if MCP_BEARER_TOKEN:
-        # Reserved for future use — wire bearer-token auth here when needed.
-        # FastMCP supports an OAuth/auth provider; a simple bearer-check ASGI
-        # middleware can be attached to mcp.streamable_http_app() instead.
-        print(
-            f"[mcp] bearer token configured (length={len(MCP_BEARER_TOKEN)}) — auth enforcement not yet wired",
-            file=sys.stderr,
-        )
-
     print(f"[mcp] backend: {CONTROL_URL}", file=sys.stderr)
     print(f"[mcp] listening: http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}", file=sys.stderr)
-    mcp.run(transport="streamable-http")
+
+    if MCP_BEARER_TOKEN:
+        print("[mcp] bearer token auth enabled on /mcp", file=sys.stderr)
+        import uvicorn
+
+        http_app = mcp.streamable_http_app()
+        http_app.add_middleware(_BearerAuthMiddleware, token=MCP_BEARER_TOKEN)
+        uvicorn.run(http_app, host=MCP_HOST, port=MCP_PORT)
+    else:
+        mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
