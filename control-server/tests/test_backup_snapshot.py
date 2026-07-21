@@ -13,7 +13,6 @@ Regression coverage for gfargo/lights-pi#72:
 4. Remote push failures must be non-fatal (local snapshot retained, distinct
    exit code) and scp must be non-interactive.
 """
-import os
 import stat
 import subprocess
 from pathlib import Path
