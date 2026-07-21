@@ -28,6 +28,12 @@ def _make_home(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("BACKUP_REMOTE=\n")
+    # create_snapshot only archives .env when BACKUP_INCLUDE_ENV=1, so these
+    # tests need a real backup-worthy directory present to exercise the
+    # tar/gzip path (regression for gfargo/lights-pi#96).
+    control_server = home / "control-server"
+    control_server.mkdir()
+    (control_server / "scenes.json").write_text("{}")
     return home
 
 
