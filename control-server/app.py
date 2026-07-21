@@ -53,6 +53,13 @@ import fixture_definitions
 from audio_engine import _engine as _audio_engine
 from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
+from osc_backend import (
+    OscConfig,
+    OscStateEmitter,
+    build_udp_client,
+    drain_event_bus,
+    start_listener,
+)
 
 # ---------------------------------------------------------------------------
 # Structured logging
@@ -1292,6 +1299,10 @@ def apply_brightness_live(value, target_groups=None):
             absolute = _absolute_channel(fixture, offset)
             updates.append((absolute, _parse_level(value, current.get(absolute), default=200)))
     success = set_channel_values(updates)
+    if success and target_groups is None and updates:
+        # Un-grouped brightness change = "master" — notify OSC/SSE clients
+        # so live feedback works regardless of which source drove the change.
+        _emit("master_changed", {"value": updates[0][1]})
     return {
         "success": success,
         "output": f"Applied brightness to {len(updates)} channels live via WebSocket",
@@ -4068,18 +4079,13 @@ def identify_fixture(fixture_id):
 # blackout — instant zero on all (or grouped) fixtures
 # ----------------------------------------------------------------------------
 
-@app.route("/api/blackout", methods=["POST"])
-def blackout():
+def _do_blackout(target_groups=None):
     """Instantly drive every channel of the targeted fixtures to 0.
-
-    Body (optional): { "groups": ["key-lights"] }  # defaults to all fixtures
 
     Distinct from fade(target:0, duration:0) because it writes EVERY channel
     on the fixture (not just brightness-role channels), so any active strobe,
     macro, or color state is also cleared. Use for "kill it all" moments.
     """
-    data = request.get_json(silent=True) or {}
-    target_groups = data.get("groups") or None
     fixtures = _target_fixtures(target_groups)
 
     updates = []
@@ -4088,12 +4094,23 @@ def blackout():
             updates.append((_absolute_channel(fixture, offset), 0))
 
     success = set_channel_values(updates) if updates else True
-    return jsonify({
+    return {
         "success": success,
         "fixtures": len(fixtures),
         "channels_zeroed": len(updates),
         "groups": target_groups,
-    })
+    }
+
+
+@app.route("/api/blackout", methods=["POST"])
+def blackout():
+    """Instantly drive every channel of the targeted fixtures to 0.
+
+    Body (optional): { "groups": ["key-lights"] }  # defaults to all fixtures
+    """
+    data = request.get_json(silent=True) or {}
+    target_groups = data.get("groups") or None
+    return jsonify(_do_blackout(target_groups))
 
 
 # ----------------------------------------------------------------------------
@@ -5788,9 +5805,8 @@ def delete_chase(chase_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/chases/<chase_id>/start", methods=["POST"])
-def start_chase(chase_id):
-    """Start chase playback.
+def _start_chase_by_ref(chase_id):
+    """Start chase playback. Returns (result_dict, http_status).
 
     For tap-source chases the server drives the step loop so that BPM changes
     take effect immediately without touching QLC+'s in-memory timing.
@@ -5798,10 +5814,11 @@ def start_chase(chase_id):
     """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
-        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+        return {"success": False, "error": f"Chase not found: {chase_id}"}, 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
-        return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+        return {"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}, 500
+    name = chase.get("Name")
 
     if chase.get("TempoSource", "fixed") == "tap":
         scene_ids = _chase_step_scene_ids(chase)
@@ -5809,49 +5826,68 @@ def start_chase(chase_id):
         initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
         started = _start_tap_runner(fid, scene_ids, initial_step_ms)
         if not started:
-            return jsonify({
+            return {
                 "success": False,
-                "chase": {"id": int(fid), "name": chase.get("Name")},
+                "chase": {"id": int(fid), "name": name},
                 "response": "",
                 "error": "chase has no playable steps",
-            }), 400
-        return jsonify({
+            }, 400
+        _emit("chase_started", {"chase_id": int(fid), "chase_name": name})
+        return {
             "success": True,
-            "chase": {"id": int(fid), "name": chase.get("Name")},
+            "chase": {"id": int(fid), "name": name},
             "response": "tap runner started",
             "error": "",
-        })
+        }, 200
 
     ok, raw = set_function_status(int(fid), running=True)
-    return jsonify({
+    if ok:
+        _emit("chase_started", {"chase_id": int(fid), "chase_name": name})
+    return {
         "success": ok,
-        "chase": {"id": int(fid), "name": chase.get("Name")},
+        "chase": {"id": int(fid), "name": name},
         "response": raw,
         "error": "" if ok else raw,
-    })
+    }, 200
 
 
-@app.route("/api/chases/<chase_id>/stop", methods=["POST"])
-def stop_chase(chase_id):
-    """Stop chase playback.
+def _stop_chase_by_ref(chase_id):
+    """Stop chase playback. Returns (result_dict, http_status).
 
     Cancels the server-side tap runner if active, and also sends a
     setFunctionStatus stop to QLC+ (harmless if the chaser wasn't running there).
     """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
-        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+        return {"success": False, "error": f"Chase not found: {chase_id}"}, 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
-        return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+        return {"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}, 500
+    name = chase.get("Name")
     tap_was_running = _stop_tap_runner(fid)
     ok, raw = set_function_status(int(fid), running=False)
-    return jsonify({
+    if ok or tap_was_running:
+        _emit("chase_stopped", {"chase_id": int(fid), "chase_name": name})
+    return {
         "success": ok or tap_was_running,
-        "chase": {"id": int(fid), "name": chase.get("Name")},
+        "chase": {"id": int(fid), "name": name},
         "response": "tap runner stopped" if tap_was_running else raw,
         "error": "" if (ok or tap_was_running) else raw,
-    })
+    }, 200
+
+
+@app.route("/api/chases/<chase_id>/start", methods=["POST"])
+def start_chase(chase_id):
+    """Start chase playback."""
+    result, status = _start_chase_by_ref(chase_id)
+    return jsonify(result), status
+
+
+@app.route("/api/chases/<chase_id>/stop", methods=["POST"])
+def stop_chase(chase_id):
+    """Stop chase playback."""
+    result, status = _stop_chase_by_ref(chase_id)
+    return jsonify(result), status
 
 
 @app.route("/api/chases/<chase_id>/tempo", methods=["POST"])
@@ -7989,6 +8025,61 @@ def handle_chat():
     })
 
 
+# ----------------------------------------------------------------------------
+# OSC backend — adapter binding OSC router verbs to the in-process helpers
+# above. Kept in app.py (rather than osc_backend.py) because it closes over
+# Flask-app internals; osc_backend.py itself stays a pure, dependency-light
+# module the tests can import without touching app.py's startup side effects.
+# ----------------------------------------------------------------------------
+
+class _OscActions:
+    def activate_scene(self, name):
+        apply_existing_scene_live(name)
+
+    def start_chase(self, name):
+        _start_chase_by_ref(name)
+
+    def set_channel(self, fixture_id, channel, value):
+        fixtures = {str(f["id"]): f for f in get_workspace_fixtures()}
+        fixture = fixtures.get(str(fixture_id))
+        if fixture is None:
+            log.warning("osc_set_channel_unknown_fixture", fixture_id=fixture_id)
+            return
+        set_channel_values([(_absolute_channel(fixture, channel), value)])
+
+    def set_master(self, value):
+        apply_brightness_live(value, target_groups=None)
+
+    def blackout(self):
+        _do_blackout(None)
+
+    def cue_go(self, ref):
+        cl = self._resolve_cue_list(ref)
+        if cl and cl.get("cues"):
+            _go_cue_list(cl)
+
+    def cue_stop(self, ref):
+        cl = self._resolve_cue_list(ref)
+        if cl:
+            _stop_cue_list(cl["id"])
+
+    def cue_pause(self, ref):
+        # Cue lists only support go/stop today — no pause primitive exists to
+        # map onto (see parent #27). Log and no-op rather than guessing.
+        log.info("osc_cue_pause_unsupported", ref=ref)
+
+    def _resolve_cue_list(self, ref):
+        if ref is not None:
+            _, cl = _find_cue_list(ref)
+            return cl
+        data = _load_cue_lists()
+        cue_lists = data["cue_lists"]
+        if len(cue_lists) == 1:
+            return cue_lists[0]
+        log.warning("osc_cue_ref_missing_and_ambiguous", cue_list_count=len(cue_lists))
+        return None
+
+
 if __name__ == "__main__":
     # Check if lightsctl exists
     if not LIGHTSCTL.exists():
@@ -8019,6 +8110,21 @@ if __name__ == "__main__":
         print("✓ Audio engine ready (aubio + sounddevice found)")
     else:
         print("⚠ Audio engine unavailable — aubio/sounddevice not installed")
+
+    # OSC backend — inbound UDP listener + outbound /state/* feedback.
+    # Fails soft: a busy port or missing python-osc logs a warning, never
+    # blocks boot (the QLC+ single-writer path never depends on this).
+    _osc_config = OscConfig.from_env()
+    if _osc_config.enabled:
+        try:
+            start_listener(_osc_config, _OscActions())
+            _osc_emitter = OscStateEmitter(build_udp_client(_osc_config))
+            threading.Thread(
+                target=drain_event_bus, args=(EVENT_BUS, _osc_emitter),
+                daemon=True, name="osc-state-emitter",
+            ).start()
+        except Exception as e:
+            log.warning("osc_backend_start_failed", error=str(e))
 
     # Run server with SocketIO (debug=False to avoid stat reloader doubling connections).
     #
