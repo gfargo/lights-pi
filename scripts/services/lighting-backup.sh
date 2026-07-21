@@ -9,6 +9,11 @@ LOG_TAG="lighting-backup"
 BACKUP_DIR="${BACKUP_DIR:-${HOME}/lights-pi-backups}"
 BACKUP_REMOTE="${BACKUP_REMOTE:-}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+# .env holds production secrets (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...). Local
+# snapshots on the Pi are the same trust domain, but BACKUP_REMOTE may point at
+# an S3 bucket, NAS share, or rclone remote with broader access — so .env only
+# joins the archive when explicitly opted in.
+BACKUP_INCLUDE_ENV="${BACKUP_INCLUDE_ENV:-0}"
 
 log() { logger -t "$LOG_TAG" "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" >&2; }
 
@@ -28,9 +33,15 @@ create_snapshot() {
     [[ -e "${HOME}/${d}" ]] && dirs+=("${d}")
   done
   # Control-server config (scenes / groups / cue lists live here)
-  for d in "control-server" ".env"; do
-    [[ -e "${HOME}/${d}" ]] && dirs+=("${d}")
-  done
+  [[ -e "${HOME}/control-server" ]] && dirs+=("control-server")
+
+  # .env holds production secrets — only archived when explicitly opted in.
+  if [[ "$BACKUP_INCLUDE_ENV" == "1" && -e "${HOME}/.env" ]]; then
+    dirs+=(".env")
+    if [[ -n "$BACKUP_REMOTE" ]]; then
+      log "WARN: BACKUP_INCLUDE_ENV=1 and BACKUP_REMOTE is set — this snapshot's .env (production secrets) will be pushed unencrypted to ${BACKUP_REMOTE}"
+    fi
+  fi
 
   if [[ ${#dirs[@]} -eq 0 ]]; then
     log "WARN: nothing to back up under ${HOME}"
