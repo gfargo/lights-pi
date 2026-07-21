@@ -44,7 +44,7 @@ class TestCueOrdering:
         fired_actions = []
         monkeypatch.setattr(
             app_module, "execute_lighting_action",
-            lambda action_data, target_groups=None: fired_actions.append(action_data["action"]),
+            lambda action_data, target_groups=None, source=None: fired_actions.append(action_data["action"]),
         )
 
         fake_now, fake_sleep, _ = _make_fake_clock()
@@ -68,7 +68,7 @@ class TestCueOrdering:
 
         fake_now, fake_sleep, virtual = _make_fake_clock()
 
-        def record_execute(action_data, target_groups=None):
+        def record_execute(action_data, target_groups=None, source=None):
             fired_at.append((action_data["action"], round(virtual[0] * 1000)))
 
         monkeypatch.setattr(app_module, "execute_lighting_action", record_execute)
@@ -102,7 +102,7 @@ class TestCueOrdering:
 
         monkeypatch.setattr(
             app_module, "execute_lighting_action",
-            lambda action_data, target_groups=None: fired_actions.append(action_data["action"]),
+            lambda action_data, target_groups=None, source=None: fired_actions.append(action_data["action"]),
         )
 
         cues = [{"at_ms": 0, "action": "instant", "parameters": {}}]
@@ -126,7 +126,7 @@ class TestFaultTolerance:
 
         fired_actions: list[str] = []
 
-        def selective_execute(action_data, target_groups=None):
+        def selective_execute(action_data, target_groups=None, source=None):
             if action_data["action"] == "bad":
                 raise RuntimeError("simulated cue failure")
             fired_actions.append(action_data["action"])
@@ -153,7 +153,7 @@ class TestFaultTolerance:
         fired_actions: list[str] = []
         call_count = [0]
 
-        def first_raises(action_data, target_groups=None):
+        def first_raises(action_data, target_groups=None, source=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ValueError("first cue boom")

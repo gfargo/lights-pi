@@ -79,6 +79,65 @@ WebSocket is currently open. It does **not** open a fresh TCP probe — under
 load QLC+ may not accept new TCP connections within a tight timeout even
 though the existing WebSocket is functioning fine.
 
+## Observability
+
+### Structured Logging
+
+The server uses [`structlog`](https://www.structlog.org/) for structured
+logging. Two environment variables control output:
+
+| Variable | Default | Values |
+|---|---|---|
+| `LOG_FORMAT` | `json` | `json` — JSON lines for journald/prod; `console` — human-readable for local dev |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+Standard fields on log events:
+
+- `event` — the log event name (e.g. `scene_activated`, `chase_started`, `qlc_ws_connected`)
+- `source` — origin of the action: `web` (HTTP routes), `cue` (cue-list playback)
+- `scene` / `chase` / `chase_id` — for scene/chase events
+- `timestamp` — ISO-8601, added automatically by structlog
+
+In production, `journalctl -u lighting-control -f` emits JSON lines parseable
+by any log aggregator. Set `LOG_FORMAT=console` in `.env` for dev.
+
+Per-frame DMX sends are logged at `DEBUG` level (`event: dmx_frame`). Enable
+with `LOG_LEVEL=DEBUG` — expect high volume on any scene with animation.
+
+### Deep Health Endpoint
+
+`GET /healthz` checks every critical subsystem and returns JSON:
+
+```json
+{
+  "flask": true,
+  "qlc_ws": true,
+  "dmx_device": "/dev/ttyUSB0",
+  "last_dmx_write_age_s": 3.2,
+  "workspace_loaded": true
+}
+```
+
+HTTP 200 if all critical checks pass; **503** if any are red.
+
+| Field | Green condition |
+|---|---|
+| `flask` | Always `true` — if the response arrives, Flask is up |
+| `qlc_ws` | Persistent WebSocket to QLC+ is open and not closed |
+| `dmx_device` | A `/dev/ttyUSB*` or `/dev/ttyACM*` device is present **and readable** |
+| `last_dmx_write_age_s` | Seconds since the last DMX frame; `null` if no writes yet |
+| `workspace_loaded` | Workspace `.qxw` file exists and parses as valid XML |
+
+`dmx_device` and `last_dmx_write_age_s` are informational only — they do not
+affect the HTTP status code. `qlc_ws` and `workspace_loaded` are the critical
+checks that drive the 200/503 response.
+
+Use with external monitors (Uptime Kuma, Healthchecks.io):
+
+```
+curl -sf http://lights.local:5000/healthz | jq
+```
+
 ## Fixture Definition Parsing
 
 `control-server/fixture_definitions.py` reads `.qxf` files from

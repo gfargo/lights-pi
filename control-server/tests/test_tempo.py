@@ -9,7 +9,6 @@ from app import (
     _chase_step_scene_ids,
     _normalize_tempo_source,
     _tap_intervals_to_bpm,
-    _update_tap_runner_bpm,
 )
 
 
@@ -166,11 +165,12 @@ class TestChaseStepSceneIds:
 
 
 class TestUpdateTapRunnerBpm:
-    # _tap_runners is accessed as app._tap_runners (attribute lookup, not a
-    # from-import): test_mock_dmx.py reloads the app module, which rebinds
-    # app._tap_runners to a fresh dict — a from-imported reference would go
-    # stale and these tests would mutate a dict the app no longer reads.
-
+    # Access _tap_runners / _update_tap_runner_bpm via the `app` module (not
+    # bound names imported at collection time): tests in test_mock_dmx.py use
+    # importlib.reload(app) to exercise MOCK_DMX, which rebinds app's module
+    # globals to fresh objects. A name imported earlier via `from app import
+    # _tap_runners` would keep pointing at the pre-reload dict, going out of
+    # sync with the reloaded `_update_tap_runner_bpm`'s view of the state.
     def setup_method(self):
         app._tap_runners.clear()
 
@@ -178,11 +178,11 @@ class TestUpdateTapRunnerBpm:
         app._tap_runners.clear()
 
     def test_returns_false_when_no_runner(self):
-        assert _update_tap_runner_bpm("42", 500.0) is False
+        assert app._update_tap_runner_bpm("42", 500.0) is False
 
     def test_returns_true_and_updates_when_runner_exists(self):
         app._tap_runners["7"] = {"step_ms": 500.0, "running": True}
-        result = _update_tap_runner_bpm("7", 667.0)
+        result = app._update_tap_runner_bpm("7", 667.0)
         assert result is True
         assert app._tap_runners["7"]["step_ms"] == 667.0
 
@@ -190,19 +190,133 @@ class TestUpdateTapRunnerBpm:
         # Simulate what set_chase_tempo does: write new BPM, update live runner
         app._tap_runners["5"] = {"step_ms": 500.0, "running": True}
         new_step_ms = _bpm_to_step_ms(90)  # 667 ms
-        _update_tap_runner_bpm("5", new_step_ms)
+        app._update_tap_runner_bpm("5", new_step_ms)
         assert app._tap_runners["5"]["step_ms"] == 667
 
     def test_coerces_to_float(self):
         app._tap_runners["3"] = {"step_ms": 500.0, "running": True}
-        _update_tap_runner_bpm("3", 250)  # int input
+        app._update_tap_runner_bpm("3", 250)  # int input
         assert isinstance(app._tap_runners["3"]["step_ms"], float)
 
     def test_string_chase_id_matches(self):
         app._tap_runners["9"] = {"step_ms": 500.0, "running": True}
-        assert _update_tap_runner_bpm("9", 400.0) is True
+        assert app._update_tap_runner_bpm("9", 400.0) is True
 
     def test_no_runner_for_different_id(self):
         app._tap_runners["1"] = {"step_ms": 500.0, "running": True}
-        assert _update_tap_runner_bpm("2", 400.0) is False
+        assert app._update_tap_runner_bpm("2", 400.0) is False
         assert app._tap_runners["1"]["step_ms"] == 500.0
+
+
+class TestTapRunnerBlackoutCommands:
+    """OSS-888: stopping a tap chase must clear the channels it last wrote,
+    not leave the rig lit at the final step's values."""
+
+    def test_empty_scene_list_yields_no_commands(self):
+        assert app._tap_runner_blackout_commands([]) == []
+
+    def test_unknown_scene_yields_no_commands(self, monkeypatch):
+        monkeypatch.setattr(app, "_scene_channel_commands", lambda scene_id: [])
+        assert app._tap_runner_blackout_commands([999]) == []
+
+    def test_single_scene_zeroes_its_channels(self, monkeypatch):
+        monkeypatch.setattr(
+            app, "_scene_channel_commands",
+            lambda scene_id: ["CH|1|255", "CH|2|128"],
+        )
+        assert app._tap_runner_blackout_commands([1]) == ["CH|1|0", "CH|2|0"]
+
+    def test_dedupes_channels_across_steps_in_first_seen_order(self, monkeypatch):
+        by_scene = {1: ["CH|1|255", "CH|2|100"], 6: ["CH|2|0", "CH|3|200"]}
+        monkeypatch.setattr(app, "_scene_channel_commands", lambda scene_id: by_scene[scene_id])
+        assert app._tap_runner_blackout_commands([1, 6]) == ["CH|1|0", "CH|2|0", "CH|3|0"]
+
+
+class TestStopTapRunnerTeardown:
+    def setup_method(self):
+        app._tap_runners.clear()
+
+    def teardown_method(self):
+        app._tap_runners.clear()
+
+    def test_no_runner_returns_false_without_dispatch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "_qlc_run", lambda coro, timeout=10: calls.append(coro))
+        assert app._stop_tap_runner("42") is False
+        assert calls == []
+
+    def test_teardown_false_pops_state_without_dispatch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "_qlc_run", lambda coro, timeout=10: calls.append(coro))
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": [1, 6]}
+        assert app._stop_tap_runner("7", teardown=False) is True
+        assert "7" not in app._tap_runners
+        assert calls == []
+
+    def test_teardown_true_dispatches_blackout_for_scene_footprint(self, monkeypatch):
+        dispatched = []
+
+        def _fake_qlc_run(coro, timeout=10):
+            dispatched.append(coro)
+            coro.close()  # avoid "coroutine was never awaited" — real _qlc_run consumes it
+
+        monkeypatch.setattr(app, "_qlc_run", _fake_qlc_run)
+        monkeypatch.setattr(
+            app, "_tap_runner_blackout_commands",
+            lambda scene_ids: [f"CH|{sid}|0" for sid in scene_ids],
+        )
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": [1, 6]}
+        assert app._stop_tap_runner("7", teardown=True) is True
+        assert "7" not in app._tap_runners
+        assert len(dispatched) == 1  # a single _qlc_send_commands(...) coroutine was submitted
+
+    def test_teardown_true_with_no_footprint_skips_dispatch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "_qlc_run", lambda coro, timeout=10: calls.append(coro))
+        monkeypatch.setattr(app, "_tap_runner_blackout_commands", lambda scene_ids: [])
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": []}
+        assert app._stop_tap_runner("7", teardown=True) is True
+        assert calls == []
+
+    def test_teardown_dispatch_failure_is_swallowed(self, monkeypatch):
+        def _raise(coro, timeout=10):
+            coro.close()  # avoid "coroutine was never awaited" — real _qlc_run consumes it
+            raise RuntimeError("qlc unreachable")
+
+        monkeypatch.setattr(app, "_qlc_run", _raise)
+        monkeypatch.setattr(app, "_tap_runner_blackout_commands", lambda scene_ids: ["CH|1|0"])
+        app._tap_runners["7"] = {"running": True, "step_ms": 500.0, "scene_ids": [1]}
+        # Must not raise — stop_chase can never 500 because QLC+ is unreachable.
+        assert app._stop_tap_runner("7", teardown=True) is True
+
+
+class TestStartTapRunnerRestart:
+    """A restart (start while already running) must not blackout the new runner."""
+
+    def setup_method(self):
+        app._tap_runners.clear()
+
+    def teardown_method(self):
+        app._tap_runners.clear()
+
+    def test_internal_stop_call_skips_teardown(self, monkeypatch):
+        teardown_flags = []
+        monkeypatch.setattr(
+            app, "_stop_tap_runner",
+            lambda chase_id, teardown=True: teardown_flags.append(teardown) or False,
+        )
+        monkeypatch.setattr(app, "_start_qlc_loop", lambda: None)
+        monkeypatch.setattr(app.asyncio, "run_coroutine_threadsafe", lambda coro, loop: coro.close())
+
+        app._start_tap_runner("7", [1, 6], 500.0)
+
+        assert teardown_flags == [False]
+
+    def test_scene_ids_recorded_for_teardown(self, monkeypatch):
+        monkeypatch.setattr(app, "_stop_tap_runner", lambda chase_id, teardown=True: False)
+        monkeypatch.setattr(app, "_start_qlc_loop", lambda: None)
+        monkeypatch.setattr(app.asyncio, "run_coroutine_threadsafe", lambda coro, loop: coro.close())
+
+        app._start_tap_runner("7", [1, 6], 500.0)
+
+        assert app._tap_runners["7"]["scene_ids"] == [1, 6]
