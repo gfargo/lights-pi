@@ -63,10 +63,10 @@ class TestNativeThreadingModule:
     def test_returns_original_when_eventlet_active(self, monkeypatch):
         monkeypatch.setattr(app, "_eventlet_active", lambda: True)
         native = app._native_threading_module()
-        # eventlet.patcher.original() always hands back a distinct module
-        # object even when nothing is actually monkey-patched yet -- the
-        # point under test is that _native_threading_module() defers to it
-        # instead of the (possibly-patched) `threading` import in app.py.
+        # eventlet.patcher.original() caches its result, so a second call
+        # returns the same module object -- the point under test is that
+        # _native_threading_module() defers to it instead of the
+        # (possibly-patched) `threading` import in app.py.
         import eventlet.patcher
         assert native is eventlet.patcher.original("threading")
         # And it must still be a real, usable threading module.
