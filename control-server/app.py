@@ -8,12 +8,14 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 import asyncio
 import concurrent.futures
 import contextlib
+import hmac
 import json
 import logging
 import math
 import os
 import queue
 import random
+import re
 import shutil
 import socket
 import subprocess
@@ -21,13 +23,29 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 import xml.etree.ElementTree as ET
+from datetime import timedelta
 from pathlib import Path
 
+import structlog
 import websockets
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    send_from_directory,
+    session,
+    stream_with_context,
+)
 from flask_cors import CORS
 from flask_socketio import SocketIO
+from werkzeug.utils import secure_filename
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -36,9 +54,46 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 import chat_store
 import fixture_definitions
+import midi_engine
 from audio_engine import _engine as _audio_engine
 from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
+from osc_backend import (
+    OscConfig,
+    OscStateEmitter,
+    build_udp_client,
+    drain_event_bus,
+    start_listener,
+)
+
+# ---------------------------------------------------------------------------
+# Structured logging
+# LOG_FORMAT=json (default) → JSON lines for journald/prod
+# LOG_FORMAT=console        → human-readable for local dev
+# LOG_LEVEL=DEBUG|INFO|WARNING|ERROR (default INFO)
+# ---------------------------------------------------------------------------
+_LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
+_LOG_FORMAT = os.getenv("LOG_FORMAT", "json").lower()
+_LOG_LEVEL_INT = getattr(logging, _LOG_LEVEL_STR, logging.INFO)
+
+logging.basicConfig(format="%(message)s", stream=sys.stdout, level=_LOG_LEVEL_INT)
+
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.dev.ConsoleRenderer()
+        if _LOG_FORMAT == "console"
+        else structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(_LOG_LEVEL_INT),
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+log = structlog.get_logger("lights")
 
 app = Flask(__name__)
 
@@ -87,7 +142,10 @@ socketio = SocketIO(app, cors_allowed_origins=_ALLOWED_ORIGINS, async_mode="even
 
 @socketio.on("connect")
 def _on_socket_connect():
-    """Send current audio engine state to a newly connected browser."""
+    """Reject the handshake if a password is configured and the session isn't
+    authenticated; otherwise send current audio engine state to the browser."""
+    if LIGHTS_PASSWORD is not None and not session.get("authed"):
+        return False
     socketio.emit("audio_state", _audio_engine.get_state())
 
 
@@ -99,6 +157,59 @@ app.config["SECRET_KEY"] = os.getenv(
 
 # 3. Limit request body size to 1MB (audit item #8)
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB
+
+# 4. Shared-password auth (issue #25). Unset LIGHTS_PASSWORD == open mode,
+# preserving backwards compat for existing rigs that don't opt in.
+LIGHTS_PASSWORD = os.getenv("LIGHTS_PASSWORD", "").strip() or None
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_S = 60
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+
+_AUTH_EXEMPT_PATHS = {"/login", "/healthz", "/manifest.json", "/icon.svg", "/sw.js", "/logo"}
+
+
+def _verify_password(supplied: str, expected: str | None) -> bool:
+    """Constant-time password compare. False if no password is configured."""
+    if not expected:
+        return False
+    return hmac.compare_digest(supplied, expected)
+
+
+def _login_rate_check(state: dict, ip: str, now: float) -> tuple[bool, int]:
+    """Pure rate limiter: 5 failed attempts per IP within 60s locks it out.
+
+    *state* is a dict mapping ip -> list of failure timestamps; the caller
+    appends a new timestamp on each failed attempt. Returns
+    (allowed, retry_after_s).
+    """
+    attempts = [t for t in state.get(ip, []) if now - t < _LOGIN_LOCKOUT_S]
+    if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+        retry_after = int(_LOGIN_LOCKOUT_S - (now - attempts[0]))
+        return False, max(retry_after, 1)
+    return True, 0
+
+
+def _is_auth_exempt(path: str) -> bool:
+    """Routes reachable without a session — login itself, static assets, and
+    /healthz so the systemd watchdog keeps working."""
+    return path in _AUTH_EXEMPT_PATHS or path.startswith("/static/")
+
+
+@app.before_request
+def _require_auth():
+    """Gate every non-exempt route behind the session cookie when a shared
+    password is configured. No-op entirely in open mode (LIGHTS_PASSWORD unset)."""
+    if LIGHTS_PASSWORD is None:
+        return None
+    if _is_auth_exempt(request.path) or session.get("authed"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "unauthorized"}), 401
+    return redirect("/login")
 
 
 @app.after_request
@@ -154,15 +265,21 @@ if MOCK_DMX and not _default_ws.exists() and not os.getenv("QLC_WORKSPACE"):
 else:
     WORKSPACE_PATH = Path(os.getenv("QLC_WORKSPACE", str(_default_ws)))
 
-GROUPS_FILE = Path.home() / ".qlcplus" / "fixture_groups.json"
-CUE_LISTS_FILE = Path.home() / ".qlcplus" / "cue_lists.json"
+WORKSPACE_DIR = WORKSPACE_PATH.parent  # ~/.qlcplus/
+_WORKSPACE_POINTER = WORKSPACE_DIR / "current_workspace"  # stores active workspace stem
+GROUPS_FILE = WORKSPACE_DIR / "fixture_groups.json"
+CUE_LISTS_FILE = WORKSPACE_DIR / "cue_lists.json"
 AUDIO_CHASES_FILE = Path.home() / ".qlcplus" / "audio_chases.json"
+CUE_AUDIO_DIR = Path.home() / ".qlcplus" / "audio"
+STAGE_LAYOUT_FILE = Path.home() / ".qlcplus" / "stage_layout.json"
+MIDI_MAPPINGS_FILE = Path.home() / ".qlcplus" / "midi_mappings.json"
 
 # Registry of audio-BPM-driven chases currently running.
 # Shape: { chase_key: { 'task': concurrent.futures.Future, 'react_to': str } }
 _active_audio_chases: dict[str, dict] = {}
 _active_audio_chases_lock = threading.Lock()
 
+RF_SETTINGS_FILE = Path.home() / ".qlcplus" / "rf_settings.json"
 CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", str(Path.home() / ".qlcplus" / "chat_history.db")))
 CHAT_SUMMARIZE_EVERY = int(os.getenv("CHAT_SUMMARIZE_EVERY", "20"))
 
@@ -359,6 +476,8 @@ _qlc_loop_thread: threading.Thread = None  # type: ignore
 _qlc_ws = None  # the actual websocket connection (lives on _qlc_loop)
 _qlc_ws_lock: asyncio.Lock = None  # type: ignore
 _qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
+_last_dmx_write_ts: float = None  # type: ignore  # set after each successful send
+_ws_reconnect_count: int = 0  # monotonic count of successful (re)connections
 
 
 def _eventlet_active() -> bool:
@@ -448,7 +567,7 @@ def _qlc_run(coro, timeout=10):
 
 async def _ensure_qlc_ws():
     """Open the persistent WebSocket if needed. Lock-protected."""
-    global _qlc_ws
+    global _qlc_ws, _ws_reconnect_count
     # In mock mode, return a MockQLCWebSocket immediately (no real connection).
     if MOCK_DMX:
         if _qlc_ws is None:
@@ -487,11 +606,12 @@ async def _ensure_qlc_ws():
                 )
                 # Start a background reader so QLC+ pushes don't fill the recv buffer
                 asyncio.create_task(_qlc_reader(_qlc_ws))
-                print(f"✓ QLC+ WebSocket connected at {QLC_WS_URL}")
+                _ws_reconnect_count += 1
+                log.info("qlc_ws_connected", url=QLC_WS_URL, reconnect_count=_ws_reconnect_count)
                 _emit("qlc_reconnect", {"url": QLC_WS_URL})
             except Exception as e:
                 _qlc_ws = None
-                print(f"✗ QLC+ WebSocket connect failed: {type(e).__name__}: {e}")
+                log.error("qlc_ws_connect_failed", error_type=type(e).__name__, error=str(e))
                 raise
         return _qlc_ws
 
@@ -530,13 +650,16 @@ async def _qlc_reader(ws):
 
 async def _qlc_send_commands(commands):
     """Send one or more raw QLC+ commands over the persistent WebSocket."""
+    global _last_dmx_write_ts
     if MOCK_DMX:
         _mock_dmx.apply_commands(commands)
+        _last_dmx_write_ts = time.time()
         return
     ws = await _ensure_qlc_ws()
     async with _qlc_ws_lock:
         for command in commands:
             await ws.send(command)
+    _last_dmx_write_ts = time.time()
 
 
 async def _qlc_request_reply(command, response_marker, timeout=2.0):
@@ -678,11 +801,12 @@ def _fixture_to_dict(fixture):
     }
 
 
-def get_workspace_fixtures():
+def get_workspace_fixtures(root=None):
     """Return fixture metadata from the configured workspace."""
-    if not WORKSPACE_PATH.exists():
-        return []
-    root = _workspace_root()
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
     return [_fixture_to_dict(f) for f in _fixture_elements(root)]
 
 
@@ -694,11 +818,12 @@ def _engine_element(root):
     return root.find("Engine")
 
 
-def get_workspace_scenes():
+def get_workspace_scenes(root=None):
     """Return real Engine scene functions, excluding Virtual Console references."""
-    if not WORKSPACE_PATH.exists():
-        return []
-    root = _workspace_root()
+    if root is None:
+        if not WORKSPACE_PATH.exists():
+            return []
+        root = _workspace_root()
     engine = _engine_element(root)
     if engine is None:
         return []
@@ -720,12 +845,120 @@ def get_workspace_scenes():
     return scenes
 
 
+def _iter_scene_functions(engine):
+    """Yield (id, element) for each real Engine scene function."""
+    ns = "http://www.qlcplus.org/Workspace"
+    for func in engine.findall(f"{{{ns}}}Function") + engine.findall("Function"):
+        if func.get("Type") != "Scene":
+            continue
+        fid = func.get("ID")
+        if not fid or not fid.isdigit():
+            continue
+        yield int(fid), func
+
+
 def get_next_scene_id():
     """Return next available scene/function ID from Engine functions only."""
     scenes = get_workspace_scenes()
     if not scenes:
         return 0
     return max(scene["id"] for scene in scenes) + 1
+
+
+# ---------------------------------------------------------------------------
+# Workspace management helpers
+# ---------------------------------------------------------------------------
+
+_SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+\.qxw$')
+_RESERVED_WS = {"default.qxw", "autostart.qxw"}
+
+
+def _safe_workspace_name(name: str) -> str | None:
+    """Validate a workspace filename. Returns the name or None if invalid."""
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    if not _SAFE_NAME_RE.match(name):
+        return None
+    if name in _RESERVED_WS:
+        return None
+    if ".." in name or "/" in name or "\\" in name:
+        return None
+    return name
+
+
+def _list_workspace_files() -> list[dict]:
+    """Return .qxw files in WORKSPACE_DIR, excluding reserved aliases."""
+    if not WORKSPACE_DIR.exists():
+        return []
+    active = _active_workspace_name()
+    results = []
+    for p in sorted(WORKSPACE_DIR.glob("*.qxw")):
+        if p.name in _RESERVED_WS:
+            continue
+        results.append({
+            "name": p.stem,
+            "filename": p.name,
+            "active": p.stem == active,
+            "size_bytes": p.stat().st_size,
+        })
+    return results
+
+
+def _active_workspace_name() -> str:
+    """Return the stem (no .qxw) of the currently active workspace.
+
+    Reads ~/.qlcplus/current_workspace if present; falls back to 'default'.
+    """
+    if _WORKSPACE_POINTER.exists():
+        try:
+            val = _WORKSPACE_POINTER.read_text().strip()
+            if val:
+                return val
+        except OSError:
+            pass
+    return "default"
+
+
+def _set_active_workspace_name(stem: str) -> None:
+    WORKSPACE_POINTER_PARENT = _WORKSPACE_POINTER.parent
+    WORKSPACE_POINTER_PARENT.mkdir(parents=True, exist_ok=True)
+    _WORKSPACE_POINTER.write_text(stem)
+
+
+def _validate_qxw(path: Path) -> bool:
+    """Return True only if path is parseable QLC+ XML with the right namespace."""
+    try:
+        tree = ET.parse(path)
+        root = tree.getroot()
+        return "qlcplus.org/Workspace" in (root.tag or "")
+    except Exception:
+        return False
+
+
+def _groups_file() -> Path:
+    """Return per-workspace fixture-groups path, falling back to global file."""
+    active = _active_workspace_name()
+    per_ws = WORKSPACE_DIR / f"fixture_groups.{active}.json"
+    if per_ws.exists():
+        return per_ws
+    # Migrate: if global file exists but no per-workspace file, keep using global
+    # until the user switches workspaces (migration happens lazily on first save
+    # after a load).
+    return GROUPS_FILE
+
+
+def _bust_scene_swatch_cache() -> None:
+    global _scene_swatch_cache, _scene_swatch_cache_mtime
+    _scene_swatch_cache.clear()
+    _scene_swatch_cache_mtime = 0.0
+
+
+def _restart_qlc() -> dict:
+    """Restart the qlcplus-web.service; only works when IS_LOCAL."""
+    if not IS_LOCAL:
+        return {"success": False, "error": "not local — restart manually"}
+    return execute_command("sudo systemctl restart qlcplus-web.service")
 
 
 def _find_children(element, tag):
@@ -757,13 +990,34 @@ def _scene_root_from_xml(scene_xml):
     return ET.fromstring(scene_xml)
 
 
-def scene_to_channel_values(scene_root):
-    """Convert a QLC+ scene Function element to absolute channel/value pairs.
+def _decode_fixture_val_pairs(pairs, channel_count):
+    """Decode raw FixtureVal (channel, value) pairs into 0-based offsets.
 
-    Existing QLC+ workspace scenes use zero-based FixtureVal channels, while
-    generated scenes in this project use one-based channels. Detect either form
-    per fixture by checking whether channel 0 appears.
+    QLC+ stores FixtureVal channels 0-based natively, but some historical
+    hand-authored scenes in this project used 1-based channels. The base
+    can't be reliably guessed per-scene from sparse data alone, so we anchor
+    the decision in facts knowable from the fixture definition:
+
+    - Any channel == 0 can only occur in 0-based data (1-based data never
+      contains 0) -> 0-based.
+    - Else, any channel == channel_count can only occur in 1-based data (a
+      0-based offset's max is channel_count - 1) -> 1-based.
+    - Otherwise the data is ambiguous; default to 0-based, matching QLC+'s
+      native format and the scenes this heuristic most commonly sees.
     """
+    if any(channel == 0 for channel, _ in pairs):
+        one_based = False
+    elif channel_count and any(channel == channel_count for channel, _ in pairs):
+        one_based = True
+    else:
+        one_based = False
+
+    shift = 1 if one_based else 0
+    return [(channel - shift, value) for channel, value in pairs]
+
+
+def scene_to_channel_values(scene_root):
+    """Convert a QLC+ scene Function element to absolute channel/value pairs."""
     fixtures = {str(f["id"]): f for f in get_workspace_fixtures()}
     updates = []
 
@@ -783,9 +1037,7 @@ def scene_to_channel_values(scene_root):
         if not pairs:
             continue
 
-        zero_based = any(channel == 0 for channel, _ in pairs)
-        for channel, value in pairs:
-            offset = channel if zero_based else channel - 1
+        for offset, value in _decode_fixture_val_pairs(pairs, fixture["channels"]):
             if offset < 0 or offset >= fixture["channels"]:
                 continue
             absolute_channel = fixture["universe"] * 512 + fixture["address"] + offset + 1
@@ -938,9 +1190,32 @@ def _should_restore_look(uptime_s, current_values, saved_values) -> bool:
     return not any(current_values.values())
 
 
+def _last_look_file() -> Path:
+    """Return the per-workspace last-look snapshot path.
+
+    Different workspaces can have entirely different fixture patches and
+    channel counts, so a saved look must not leak across a workspace switch
+    — unlike fixture groups (_groups_file), which are safe to share via a
+    global fallback, replaying another venue's raw channel values onto a
+    fresh patch is exactly the bug this scoping prevents (load_workspace
+    restarts qlcplus-web, and the restart-triggered restore would otherwise
+    blast the *previous* workspace's snapshot onto the newly loaded one).
+    Falls back to the pre-workspace-switching global file only for the
+    default workspace, so upgrading installs don't lose crash-recovery on
+    their first restart.
+    """
+    active = _active_workspace_name()
+    per_ws = WORKSPACE_DIR / f"last_look.{active}.json"
+    if per_ws.exists():
+        return per_ws
+    if active == "default" and LAST_LOOK_FILE.exists():
+        return LAST_LOOK_FILE
+    return per_ws
+
+
 def _load_last_look() -> dict[int, int]:
     try:
-        return _parse_last_look(LAST_LOOK_FILE.read_text())
+        return _parse_last_look(_last_look_file().read_text())
     except OSError:
         return {}
 
@@ -1011,8 +1286,9 @@ def _last_look_saver_loop():
             snap = {str(k): int(v) for k, v in sorted(values.items())}
             if snap == last_written:
                 continue
-            LAST_LOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
-            LAST_LOOK_FILE.write_text(json.dumps({
+            last_look_file = _last_look_file()
+            last_look_file.parent.mkdir(parents=True, exist_ok=True)
+            last_look_file.write_text(json.dumps({
                 "values": snap,
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }))
@@ -1229,6 +1505,10 @@ def apply_brightness_live(value, target_groups=None):
             absolute = _absolute_channel(fixture, offset)
             updates.append((absolute, _parse_level(value, current.get(absolute), default=200)))
     success = set_channel_values(updates)
+    if success and target_groups is None and updates:
+        # Un-grouped brightness change = "master" — notify OSC/SSE clients
+        # so live feedback works regardless of which source drove the change.
+        _emit("master_changed", {"value": updates[0][1]})
     return {
         "success": success,
         "output": f"Applied brightness to {len(updates)} channels live via WebSocket",
@@ -2448,6 +2728,46 @@ def index():
 
 
 # ----------------------------------------------------------------------------
+# Auth — shared password + signed session cookie (issue #25)
+# ----------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Login form. In open mode (no LIGHTS_PASSWORD) just bounce to /."""
+    if LIGHTS_PASSWORD is None:
+        return redirect("/")
+
+    if request.method == "GET":
+        return render_template("login.html", error=None)
+
+    ip = request.remote_addr or "unknown"
+    now = time.time()
+    allowed, retry_after = _login_rate_check(_LOGIN_ATTEMPTS, ip, now)
+    if not allowed:
+        return render_template(
+            "login.html",
+            error=f"Too many attempts. Try again in {retry_after}s.",
+        ), 429
+
+    password = request.form.get("password", "")
+    if _verify_password(password, LIGHTS_PASSWORD):
+        _LOGIN_ATTEMPTS.pop(ip, None)
+        session["authed"] = True
+        session.permanent = bool(request.form.get("remember"))
+        return redirect("/")
+
+    _LOGIN_ATTEMPTS.setdefault(ip, []).append(now)
+    return render_template("login.html", error="Incorrect password"), 401
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    """Clear the session cookie and send the user back to the login form."""
+    session.clear()
+    return redirect("/login")
+
+
+# ----------------------------------------------------------------------------
 # PWA support — manifest + service worker so the web UI installs as a phone app
 # ----------------------------------------------------------------------------
 
@@ -2519,7 +2839,6 @@ def serve_logo():
     Returns 404 if no logo file is present (the template falls back to the
     built-in SVG icon).
     """
-    from flask import abort, send_from_directory
     static_dir = Path(__file__).parent / "static"
     for ext in ("webp", "png", "svg", "jpg", "jpeg", "gif"):
         logo_file = static_dir / f"logo.{ext}"
@@ -2664,6 +2983,90 @@ def handle_action():
             "is_local": IS_LOCAL,
         }
     })
+
+
+_HEALTHZ_UNSET = object()
+
+
+def _dmx_device_readable(dev):
+    return os.access(dev, os.R_OK)
+
+
+def _healthz_status(
+    qlc_ws=_HEALTHZ_UNSET,
+    last_dmx_ts=_HEALTHZ_UNSET,
+    workspace_path=None,
+    dmx_device_glob=None,
+    dmx_readable_fn=None,
+    now=None,
+):
+    """Aggregate health of all subsystems. Returns (payload_dict, all_critical_ok).
+
+    All parameters are injectable for unit testing; defaults pull from live globals.
+    dmx_readable_fn: optional callable(path) -> bool; defaults to os.access(path, os.R_OK).
+    """
+    import glob as _glob
+
+    if qlc_ws is _HEALTHZ_UNSET:
+        qlc_ws = _qlc_ws
+    if last_dmx_ts is _HEALTHZ_UNSET:
+        last_dmx_ts = _last_dmx_write_ts
+    if workspace_path is None:
+        workspace_path = WORKSPACE_PATH
+    if now is None:
+        now = time.time()
+    if dmx_readable_fn is None:
+        dmx_readable_fn = _dmx_device_readable
+
+    ws_ok = False
+    try:
+        if qlc_ws is not None and not getattr(qlc_ws, "closed", False):
+            ws_ok = True
+    except Exception:
+        pass
+
+    dmx_device = None
+    try:
+        devices = (
+            dmx_device_glob
+            if dmx_device_glob is not None
+            else _glob.glob("/dev/ttyUSB*") + _glob.glob("/dev/ttyACM*")
+        )
+        if devices:
+            dev = devices[0]
+            dmx_device = dev if dmx_readable_fn(dev) else None
+    except Exception:
+        pass
+
+    dmx_age = None
+    if last_dmx_ts is not None:
+        dmx_age = round(now - last_dmx_ts, 1)
+
+    workspace_ok = False
+    try:
+        if workspace_path.exists():
+            ET.parse(str(workspace_path))
+            workspace_ok = True
+    except Exception:
+        pass
+
+    payload = {
+        "flask": True,
+        "qlc_ws": ws_ok,
+        "dmx_device": dmx_device or False,
+        "last_dmx_write_age_s": dmx_age,
+        "workspace_loaded": workspace_ok,
+    }
+
+    all_ok = ws_ok and workspace_ok
+    return payload, all_ok
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Deep health endpoint. 200 = all critical checks green, 503 = any red."""
+    payload, all_ok = _healthz_status()
+    return jsonify(payload), 200 if all_ok else 503
 
 
 @app.route("/api/events", methods=["GET"])
@@ -2822,6 +3225,8 @@ def get_status():
         "ok": overall_ok,
         "services": services,
         "is_local": IS_LOCAL,
+        "active_workspace": _active_workspace_name(),
+        "workspace_count": len(_list_workspace_files()),
     })
 
 
@@ -2845,15 +3250,21 @@ def list_templates():
 def list_scenes():
     """List existing scene functions from the loaded workspace, each with a swatch URI."""
     try:
-        scenes = get_workspace_scenes()
+        root = _workspace_root() if WORKSPACE_PATH.exists() else None
+        scenes = get_workspace_scenes(root=root)
+        fixtures = get_workspace_fixtures(root=root) if root is not None else []
         try:
             mtime = WORKSPACE_PATH.stat().st_mtime
         except OSError:
             mtime = 0.0
+
+        engine = _engine_element(root) if root is not None else None
+        elems_by_id = dict(_iter_scene_functions(engine)) if engine is not None else {}
+
         for s in scenes:
             try:
-                elem = _find_scene_element(s["id"])
-                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime) if elem is not None else None
+                elem = elems_by_id.get(s["id"])
+                s["swatch"] = _get_scene_swatch(s["id"], elem, mtime, fixtures=fixtures) if elem is not None else None
             except Exception:
                 s["swatch"] = None
         return jsonify({"scenes": scenes})
@@ -3308,10 +3719,11 @@ def _load_groups() -> dict:
     Tolerates the legacy unwrapped format. Returns an empty dict if the file
     doesn't exist yet.
     """
-    if not GROUPS_FILE.exists():
+    gf = _groups_file()
+    if not gf.exists():
         return {}
     try:
-        data = json.loads(GROUPS_FILE.read_text())
+        data = json.loads(gf.read_text())
     except json.JSONDecodeError:
         return {}
     if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], dict):
@@ -3321,8 +3733,9 @@ def _load_groups() -> dict:
 
 def _save_groups(groups: dict) -> None:
     """Persist the groups dict in the canonical wrapped format."""
-    GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    GROUPS_FILE.write_text(json.dumps({"groups": groups}, indent=2))
+    gf = _groups_file()
+    gf.parent.mkdir(parents=True, exist_ok=True)
+    gf.write_text(json.dumps({"groups": groups}, indent=2))
 
 
 def _existing_fixture_ids() -> set:
@@ -3528,10 +3941,308 @@ def remove_fixtures_from_group(group_name):
 
 
 # ----------------------------------------------------------------------------
+# Workspace management — list / current / create / load / delete / import / export
+# ----------------------------------------------------------------------------
+
+@app.route("/api/workspaces", methods=["GET"])
+def list_workspaces():
+    """List .qxw files in ~/.qlcplus/, excluding reserved aliases."""
+    return jsonify({"success": True, "workspaces": _list_workspace_files()})
+
+
+@app.route("/api/workspaces/current", methods=["GET"])
+def get_current_workspace():
+    """Return the active workspace name and path."""
+    active = _active_workspace_name()
+    ws_path = WORKSPACE_DIR / f"{active}.qxw"
+    return jsonify({
+        "success": True,
+        "name": active,
+        "filename": f"{active}.qxw",
+        "path": str(ws_path),
+        "exists": ws_path.exists(),
+    })
+
+
+@app.route("/api/workspaces", methods=["POST"])
+def create_workspace():
+    """Create a new empty workspace (or copy from an existing one).
+
+    Body: { "name": "venue-a", "copy_from": "studio" }
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    data = request.get_json(silent=True) or {}
+    raw_name = (data.get("name") or "").strip()
+    if not raw_name.endswith(".qxw"):
+        raw_name = raw_name + ".qxw"
+    name = _safe_workspace_name(raw_name)
+    if not name:
+        return jsonify({"success": False, "error": "invalid workspace name — use [A-Za-z0-9._-] + .qxw suffix"}), 400
+
+    dest = WORKSPACE_DIR / name
+    if dest.exists():
+        return jsonify({"success": False, "error": f"Workspace '{name}' already exists"}), 409
+
+    copy_from = (data.get("copy_from") or "").strip()
+    if copy_from:
+        if not copy_from.endswith(".qxw"):
+            copy_from = copy_from + ".qxw"
+        safe_copy_from = _safe_workspace_name(copy_from)
+        if not safe_copy_from:
+            return jsonify({"success": False, "error": "invalid source workspace name"}), 400
+        src = WORKSPACE_DIR / safe_copy_from
+        if not src.exists():
+            return jsonify({"success": False, "error": f"Source workspace '{safe_copy_from}' not found"}), 404
+        shutil.copy2(src, dest)
+    else:
+        _QXW_SKELETON = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE Workspace>\n'
+            '<Workspace xmlns="http://www.qlcplus.org/Workspace" '
+            'CurrentWindow="VirtualConsole">\n'
+            ' <Engine>\n'
+            ' </Engine>\n'
+            ' <VirtualConsole>\n'
+            '  <Frame/>\n'
+            ' </VirtualConsole>\n'
+            '</Workspace>\n'
+        )
+        dest.write_text(_QXW_SKELETON)
+
+    return jsonify({
+        "success": True,
+        "name": dest.stem,
+        "filename": name,
+        "path": str(dest),
+    }), 201
+
+
+@app.route("/api/workspaces/<name>/load", methods=["POST"])
+def load_workspace(name):
+    """Switch the active workspace.
+
+    Copies <name>.qxw → default.qxw and autostart.qxw, updates the pointer
+    file, busts the scene swatch cache, then attempts a QLC+ service restart.
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    src = WORKSPACE_DIR / safe
+    if not src.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    active = _active_workspace_name()
+    if src.stem == active:
+        return jsonify({"success": True, "message": "already active", "name": active}), 200
+
+    # Swap default.qxw and autostart.qxw
+    default_path = WORKSPACE_DIR / "default.qxw"
+    autostart_path = WORKSPACE_DIR / "autostart.qxw"
+    shutil.copy2(src, default_path)
+    shutil.copy2(src, autostart_path)
+
+    _set_active_workspace_name(src.stem)
+    _bust_scene_swatch_cache()
+
+    restart_result = _restart_qlc()
+    return jsonify({
+        "success": True,
+        "name": src.stem,
+        "restarted": restart_result.get("success", False),
+        "needs_manual_restart": not restart_result.get("success", False),
+        "restart_error": restart_result.get("error") if not restart_result.get("success") else None,
+    })
+
+
+@app.route("/api/workspaces/<name>", methods=["DELETE"])
+def delete_workspace(name):
+    """Delete a named workspace. Refuses to delete the active workspace."""
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    ws_path = WORKSPACE_DIR / safe
+    if not ws_path.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    if ws_path.stem == _active_workspace_name():
+        return jsonify({"success": False, "error": "cannot delete the active workspace"}), 409
+
+    ws_path.unlink()
+    return jsonify({"success": True, "name": ws_path.stem})
+
+
+@app.route("/api/workspaces/<name>/export", methods=["GET"])
+def export_workspace(name):
+    """Download a workspace file as .qxw."""
+    if not name.endswith(".qxw"):
+        name = name + ".qxw"
+    safe = _safe_workspace_name(name)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    ws_path = WORKSPACE_DIR / safe
+    if not ws_path.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' not found"}), 404
+
+    return send_file(ws_path, as_attachment=True, download_name=safe)
+
+
+@app.route("/api/workspaces/import", methods=["POST"])
+def import_workspace():
+    """Upload a .qxw file as a new named workspace.
+
+    Multipart form: file field 'workspace', optional 'name' field (derived
+    from filename when absent).
+    """
+    if not IS_LOCAL:
+        return jsonify({"success": False, "error": "workspace ops require local mode"}), 503
+
+    if "workspace" not in request.files:
+        return jsonify({"success": False, "error": "no 'workspace' file in request"}), 400
+
+    f = request.files["workspace"]
+    filename = secure_filename(f.filename or "")
+    if not filename.endswith(".qxw"):
+        return jsonify({"success": False, "error": "file must have a .qxw extension"}), 400
+
+    # Allow caller to override the stored name
+    custom_name = (request.form.get("name") or "").strip()
+    if custom_name:
+        if not custom_name.endswith(".qxw"):
+            custom_name = custom_name + ".qxw"
+        filename = custom_name
+
+    safe = _safe_workspace_name(filename)
+    if not safe:
+        return jsonify({"success": False, "error": "invalid workspace name"}), 400
+
+    dest = WORKSPACE_DIR / safe
+    if dest.exists():
+        return jsonify({"success": False, "error": f"Workspace '{safe}' already exists"}), 409
+
+    # Write to temp file first so we can validate before persisting
+    with tempfile.NamedTemporaryFile(suffix=".qxw", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        f.save(tmp_path)
+
+    if not _validate_qxw(tmp_path):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": "file is not a valid QLC+ workspace XML"}), 422
+
+    shutil.move(str(tmp_path), dest)
+    return jsonify({
+        "success": True,
+        "name": dest.stem,
+        "filename": safe,
+        "path": str(dest),
+    }), 201
+
+
+# ----------------------------------------------------------------------------
+# Stage layout — fixture-position persistence
+# ----------------------------------------------------------------------------
+# Storage: ~/.qlcplus/stage_layout.json, same tolerant load/save pattern as
+#     GROUPS_FILE / CUE_LISTS_FILE. Shape:
+#     {"room": {"width": <num>, "height": <num>}, "positions": {"<fixture_id>": {"x": <num>, "y": <num>}}}
+# Fixture IDs are stored as string keys in the "positions" dict (unlike
+# groups, which store fixture IDs as an int list) since JSON object keys are
+# always strings.
+
+def _load_stage_layout() -> dict:
+    """Return the stage layout dict with "room" and "positions" keys.
+
+    Returns the default empty shape if the file is missing, unreadable, or
+    not a JSON object. Positions are returned as stored, with no check
+    against the current workspace's fixture list — a position for a fixture
+    ID that no longer exists is returned unchanged rather than dropped.
+    """
+    if not STAGE_LAYOUT_FILE.exists():
+        return {"room": {}, "positions": {}}
+    try:
+        data = json.loads(STAGE_LAYOUT_FILE.read_text())
+    except json.JSONDecodeError:
+        return {"room": {}, "positions": {}}
+    if not isinstance(data, dict):
+        return {"room": {}, "positions": {}}
+    data.setdefault("room", {})
+    data.setdefault("positions", {})
+    return data
+
+
+def _save_stage_layout(layout: dict) -> None:
+    """Persist the stage layout dict."""
+    STAGE_LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STAGE_LAYOUT_FILE.write_text(json.dumps(layout, indent=2))
+
+
+@app.route("/api/stage_layout", methods=["GET"])
+def get_stage_layout():
+    """Return the stored stage layout (room dimensions + fixture positions).
+
+    Positions are returned exactly as stored, even for fixture IDs that are
+    no longer present in the current workspace — this endpoint never
+    cross-checks against the workspace fixture list, so it can't crash on a
+    stale position entry.
+    """
+    return jsonify(_load_stage_layout())
+
+
+@app.route("/api/stage_layout", methods=["POST"])
+def save_stage_layout():
+    """Save room dimensions and fixture positions.
+
+    Body:
+        {
+          "room": {"width": 20, "height": 12},
+          "positions": {"0": {"x": 1.2, "y": 3.4}, "3": {"x": 5.0, "y": 2.0}}
+        }
+
+    Both fields are optional and default to {}. Entries in "positions" whose
+    value isn't a dict with numeric "x"/"y" are dropped rather than failing
+    the whole request. Fixture IDs are not validated against the current
+    workspace — a position may be saved for a fixture that doesn't exist
+    (yet, or anymore).
+    """
+    data = request.get_json(silent=True) or {}
+
+    room = data.get("room")
+    room = room if isinstance(room, dict) else {}
+
+    positions = {}
+    for fid, pos in (data.get("positions") or {}).items():
+        if not isinstance(pos, dict):
+            continue
+        try:
+            x = float(pos["x"])
+            y = float(pos["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        positions[str(fid)] = {"x": x, "y": y}
+
+    layout = {"room": room, "positions": positions}
+    _save_stage_layout(layout)
+    return jsonify({"success": True, **layout})
+
+
+# ----------------------------------------------------------------------------
 # Scene management — describe / delete / rename / duplicate
 # ----------------------------------------------------------------------------
 
-def _scene_value_breakdown(scene_root) -> list:
+def _scene_value_breakdown(scene_root, fixtures=None) -> list:
     """Convert a scene <Function> element to a fixture-keyed value breakdown.
 
     Returns a list of dicts:
@@ -3540,7 +4251,9 @@ def _scene_value_breakdown(scene_root) -> list:
 
     The channel name comes from the .qxf parser when available.
     """
-    fixtures_by_id = {str(f["id"]): f for f in get_workspace_fixtures()}
+    if fixtures is None:
+        fixtures = get_workspace_fixtures()
+    fixtures_by_id = {str(f["id"]): f for f in fixtures}
     out = []
     for fixture_val in _find_children(scene_root, "FixtureVal"):
         fid = fixture_val.get("ID")
@@ -3558,16 +4271,11 @@ def _scene_value_breakdown(scene_root) -> list:
         if not pairs:
             continue
 
-        # Detect 0-based vs 1-based channel numbering (same logic as
-        # scene_to_channel_values) so the offsets we report are 0-based.
-        zero_based = any(channel == 0 for channel, _ in pairs)
-
         channel_info = _fixture_channels_info(fixture)
         info_by_offset = {ci["offset"]: ci for ci in channel_info}
 
         channels = []
-        for raw_ch, value in pairs:
-            offset = raw_ch if zero_based else raw_ch - 1
+        for offset, value in _decode_fixture_val_pairs(pairs, int(fixture.get("channels", 0))):
             ci = info_by_offset.get(offset, {})
             channels.append({
                 "offset": offset,
@@ -3584,12 +4292,12 @@ def _scene_value_breakdown(scene_root) -> list:
     return out
 
 
-def _scene_swatch_svg(scene_root) -> str:
+def _scene_swatch_svg(scene_root, fixtures=None) -> str:
     """Return a data:image/svg+xml URI with one color band per fixture.
 
     Falls back to a dark neutral strip when no color roles are resolvable.
     """
-    breakdown = _scene_value_breakdown(scene_root)
+    breakdown = _scene_value_breakdown(scene_root, fixtures=fixtures)
     if not breakdown:
         return _neutral_swatch_svg()
 
@@ -3623,7 +4331,7 @@ def _neutral_swatch_svg() -> str:
     return f"data:image/svg+xml;charset=utf-8,{encoded}"
 
 
-def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str | None:
+def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float, fixtures=None) -> str | None:
     """Return cached swatch URI for a scene, re-computing when workspace changed."""
     global _scene_swatch_cache, _scene_swatch_cache_mtime
     if workspace_mtime != _scene_swatch_cache_mtime:
@@ -3631,7 +4339,7 @@ def _get_scene_swatch(scene_id: int, scene_elem, workspace_mtime: float) -> str 
         _scene_swatch_cache_mtime = workspace_mtime
     if scene_id not in _scene_swatch_cache:
         try:
-            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem)
+            _scene_swatch_cache[scene_id] = _scene_swatch_svg(scene_elem, fixtures=fixtures)
         except Exception:
             _scene_swatch_cache[scene_id] = None
     return _scene_swatch_cache[scene_id]
@@ -3873,18 +4581,13 @@ def identify_fixture(fixture_id):
 # blackout — instant zero on all (or grouped) fixtures
 # ----------------------------------------------------------------------------
 
-@app.route("/api/blackout", methods=["POST"])
-def blackout():
+def _do_blackout(target_groups=None):
     """Instantly drive every channel of the targeted fixtures to 0.
-
-    Body (optional): { "groups": ["key-lights"] }  # defaults to all fixtures
 
     Distinct from fade(target:0, duration:0) because it writes EVERY channel
     on the fixture (not just brightness-role channels), so any active strobe,
     macro, or color state is also cleared. Use for "kill it all" moments.
     """
-    data = request.get_json(silent=True) or {}
-    target_groups = data.get("groups") or None
     fixtures = _target_fixtures(target_groups)
 
     updates = []
@@ -3893,12 +4596,23 @@ def blackout():
             updates.append((_absolute_channel(fixture, offset), 0))
 
     success = set_channel_values(updates) if updates else True
-    return jsonify({
+    return {
         "success": success,
         "fixtures": len(fixtures),
         "channels_zeroed": len(updates),
         "groups": target_groups,
-    })
+    }
+
+
+@app.route("/api/blackout", methods=["POST"])
+def blackout():
+    """Instantly drive every channel of the targeted fixtures to 0.
+
+    Body (optional): { "groups": ["key-lights"] }  # defaults to all fixtures
+    """
+    data = request.get_json(silent=True) or {}
+    target_groups = data.get("groups") or None
+    return jsonify(_do_blackout(target_groups))
 
 
 # ----------------------------------------------------------------------------
@@ -4527,11 +5241,64 @@ def diagnostics_system():
 # Wireless DMX transmitters (D-Fi Hub and similar) share the 2.4 GHz ISM
 # band with WiFi. We can survey what the Pi's own WiFi radio hears there,
 # but the transmitter itself is broadcast-only — there's no software
-# readback of its channel or of what the receiver actually sees. So this
-# only ever reports the WiFi side and leaves cross-referencing against the
-# transmitter's own channel/DIP-switch table to the operator.
+# readback of its channel or of what the receiver actually sees. QLC+ has
+# no visibility into this either: it only knows DMX universe/channel
+# addressing (which fixture gets which DMX slot), a completely separate
+# layer from the transmitter's own RF channel, which lives entirely in the
+# transmitter's own firmware/display. So the operator has to tell us what
+# their transmitter is set to (from its own display) if they want a
+# concrete overlap check — see _load_rf_settings / rf_settings routes.
 
 _WIFI_NONOVERLAPPING_CHANNELS = (1, 6, 11)
+
+# Chauvet's D-Fi Hub / Hub 2 manuals document 16 selectable channels
+# (CH01-CH16) and an operating range of 2.412-2.484 GHz, but don't publish
+# which frequency each channel number maps to. This assumes even spacing
+# across that documented range — an ESTIMATE, not a verified table.
+_DFI_CHANNEL_COUNT = 16
+_DFI_FREQ_RANGE_MHZ = (2412.0, 2484.0)
+
+
+def _dfi_channel_to_freq_mhz(channel):
+    """Estimate a D-Fi-style transmitter's RF frequency for channel 1-16.
+    See the module note above — this is a linear-spacing estimate, not a
+    Chauvet-published mapping."""
+    if channel is None or not (1 <= channel <= _DFI_CHANNEL_COUNT):
+        return None
+    lo, hi = _DFI_FREQ_RANGE_MHZ
+    return lo + (channel - 1) * (hi - lo) / (_DFI_CHANNEL_COUNT - 1)
+
+
+def _loudest_signal_near_freq(access_points, freq_mhz, half_width_mhz=20):
+    """Loudest signal (dBm) among access points within ±half_width_mhz of
+    freq_mhz, or None if nothing's nearby. Frequency-domain counterpart to
+    the channel-index bleed model in _analyze_rf_channels."""
+    if freq_mhz is None:
+        return None
+    candidates = [
+        ap["signal_dbm"] for ap in access_points
+        if ap.get("freq_mhz") is not None and ap.get("signal_dbm") is not None
+        and abs(ap["freq_mhz"] - freq_mhz) <= half_width_mhz
+    ]
+    return max(candidates) if candidates else None
+
+
+def _load_rf_settings() -> dict:
+    """Return saved wireless-DMX-transmitter settings ({} if never set).
+    This is operator-entered (from the transmitter's own display) — there's
+    no software readback of the transmitter's actual channel."""
+    if not RF_SETTINGS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(RF_SETTINGS_FILE.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_rf_settings(settings: dict) -> None:
+    RF_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RF_SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
 
 
 def _wifi_channel_from_freq(freq_mhz):
@@ -4594,10 +5361,17 @@ def _parse_iw_scan_output(raw: str) -> list[dict]:
     return access_points
 
 
-def _analyze_rf_channels(access_points: list[dict]) -> dict:
+def _analyze_rf_channels(access_points: list[dict], transmitter: dict = None) -> dict:
     """Summarize 2.4 GHz occupancy: per-channel congestion (accounting for
     the ~4-channel bleed of adjacent 20 MHz-wide WiFi channels), the
-    quietest 3-channel window, and plain-language suggestions."""
+    quietest 3-channel window, and plain-language suggestions.
+
+    `transmitter`, if given, is the operator-entered wireless-DMX-transmitter
+    settings from _load_rf_settings(): {"mode": "auto"|"manual"|"unknown",
+    "channel": 1-16 or None}. When mode is "manual" with a channel set, this
+    adds a concrete overlap check against that channel's estimated
+    frequency; "auto" adds a note that channel-avoidance matters less.
+    """
     heard = [ap for ap in access_points if ap.get("channel") and 1 <= ap["channel"] <= 11
              and ap.get("signal_dbm") is not None]
 
@@ -4643,11 +5417,50 @@ def _analyze_rf_channels(access_points: list[dict]) -> dict:
                 "If it's a network you control, moving it to channel 1, 6, or 11 frees up more of the band."
             )
 
+    # Concrete cross-reference against what the operator told us their
+    # transmitter is set to (see _load_rf_settings — no software readback).
+    transmitter = transmitter or {}
+    t_mode = transmitter.get("mode")
+    t_channel = transmitter.get("channel")
+    transmitter_note = None
+    if t_mode == "auto":
+        transmitter_note = (
+            "Your transmitter is set to Auto — it already re-scans and picks its own clear "
+            "channel, so this WiFi survey matters less for channel choice. If flicker persists "
+            "in Auto mode, channel congestion is a less likely cause."
+        )
+    elif t_mode == "manual" and t_channel:
+        est_freq = _dfi_channel_to_freq_mhz(t_channel)
+        nearby_dbm = _loudest_signal_near_freq(access_points, est_freq) if est_freq else None
+        if est_freq is not None:
+            if nearby_dbm is None:
+                transmitter_note = (
+                    f"Transmitter channel {t_channel} (~{est_freq:.0f} MHz, estimated — Chauvet "
+                    "doesn't publish an exact channel table) looks clear right now."
+                )
+            else:
+                band = "loud" if nearby_dbm >= -55 else "moderate" if nearby_dbm >= -70 else "quiet"
+                est_wifi_ch = _wifi_channel_from_freq(est_freq)
+                already_in_quiet_window = est_wifi_ch is not None and quiet_window[0] <= est_wifi_ch <= quiet_window[1]
+                if band == "quiet":
+                    verdict = "Looks fine."
+                elif already_in_quiet_window:
+                    verdict = "That's already about as clear as this WiFi environment gets right now."
+                else:
+                    verdict = "Consider moving it toward the quiet window below."
+                transmitter_note = (
+                    f"Transmitter channel {t_channel} (~{est_freq:.0f} MHz, estimated) is sitting near "
+                    f"{band} WiFi traffic ({nearby_dbm:.0f} dBm). {verdict}"
+                )
+    if transmitter_note:
+        suggestions.insert(0, transmitter_note)
+
     return {
         "per_channel_congestion_dbm": congestion,
         "quiet_window": quiet_window,
         "nonoverlapping_channels": list(_WIFI_NONOVERLAPPING_CHANNELS),
         "suggestions": suggestions,
+        "transmitter": transmitter or None,
     }
 
 
@@ -4674,7 +5487,7 @@ def diagnostics_rf_scan():
         }), 500
 
     access_points = _parse_iw_scan_output(result["output"])
-    analysis = _analyze_rf_channels(access_points)
+    analysis = _analyze_rf_channels(access_points, transmitter=_load_rf_settings())
 
     return jsonify({
         "success": True,
@@ -4682,6 +5495,44 @@ def diagnostics_rf_scan():
         "access_points": access_points,
         "analysis": analysis,
     })
+
+
+@app.route("/api/diagnostics/rf_settings", methods=["GET"])
+def get_rf_settings():
+    """Return the operator-entered wireless-DMX-transmitter settings, if any
+    have been saved. There's no software readback of the transmitter's
+    actual channel — this is only ever what the operator told us."""
+    return jsonify({"success": True, "transmitter": _load_rf_settings() or None})
+
+
+@app.route("/api/diagnostics/rf_settings", methods=["POST"])
+def set_rf_settings():
+    """Save what the operator says their wireless DMX transmitter is set to
+    (read off the transmitter's own display), so rf_scan can cross-check a
+    live WiFi survey against it.
+
+    Body: { "mode": "auto"|"manual"|"unknown", "channel": 1-16 or null }
+    "channel" is only meaningful (and required) when mode is "manual".
+    """
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode")
+    if mode not in ("auto", "manual", "unknown"):
+        return jsonify({"success": False, "error": "mode must be 'auto', 'manual', or 'unknown'"}), 400
+
+    channel = body.get("channel")
+    if mode == "manual":
+        try:
+            channel = int(channel)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "channel must be an integer 1-16 when mode is 'manual'"}), 400
+        if not (1 <= channel <= 16):
+            return jsonify({"success": False, "error": "channel must be between 1 and 16"}), 400
+    else:
+        channel = None
+
+    settings = {"mode": mode, "channel": channel}
+    _save_rf_settings(settings)
+    return jsonify({"success": True, "transmitter": settings})
 
 
 # =============================================================================
@@ -4798,19 +5649,42 @@ def _scene_channel_commands(scene_id) -> list:
     return [f"CH|{ch}|{max(0, min(255, val))}" for ch, val in cvs if int(ch) > 0]
 
 
-def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> None:
+def _tap_runner_blackout_commands(scene_ids: list) -> list:
+    """CH|<abs>|0 for every channel touched across scene_ids, deduped in first-seen order.
+
+    Used to clear a tap runner's footprint on stop — a surgical blackout that only
+    zeroes channels the runner actually wrote, not the whole rig.
+    """
+    channels = []
+    seen = set()
+    for scene_id in scene_ids:
+        for cmd in _scene_channel_commands(scene_id):
+            parts = cmd.split("|")
+            if len(parts) != 3:
+                continue
+            ch = parts[1]
+            if ch not in seen:
+                seen.add(ch)
+                channels.append(ch)
+    return [f"CH|{ch}|0" for ch in channels]
+
+
+def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) -> bool:
     """Start a server-side asyncio loop that steps a tap-source chase through scenes.
 
     Each iteration resolves the next step's scene to channel values and emits
     CH|abs|val frames (same replace-per-step behaviour as _mock_chase_run), then
     sleeps for state['step_ms'] ms so that BPM changes take effect on the very
     next step.
+
+    Returns False without touching any existing runner if there are no playable
+    steps, so a failed start never silently kills a runner already in progress.
     """
-    _stop_tap_runner(chase_id)  # cancel any existing runner for this chase
     if not scene_ids:
-        return
+        return False
+    _stop_tap_runner(chase_id, teardown=False)  # cancel any existing runner for this chase
     _start_qlc_loop()  # ensure background event loop is running
-    state: dict = {"step_ms": float(initial_step_ms), "running": True}
+    state: dict = {"step_ms": float(initial_step_ms), "running": True, "scene_ids": list(scene_ids)}
     _tap_runners[str(chase_id)] = state
     n = len(scene_ids)
 
@@ -4828,15 +5702,29 @@ def _start_tap_runner(chase_id: str, scene_ids: list, initial_step_ms: float) ->
             idx = (idx + 1) % n
 
     asyncio.run_coroutine_threadsafe(_loop(), _qlc_loop)
+    return True
 
 
-def _stop_tap_runner(chase_id: str) -> bool:
-    """Cancel a running server-side tap runner. Returns True if one was active."""
+def _stop_tap_runner(chase_id: str, teardown: bool = True) -> bool:
+    """Cancel a running server-side tap runner. Returns True if one was active.
+
+    teardown=True (stop/user-facing) blackouts the runner's channel footprint so
+    the rig doesn't stay lit at the last step's values. teardown=False (internal
+    restart path in _start_tap_runner) skips the blackout so restarting a tap
+    chase doesn't clobber the freshly-started runner's first frame.
+    """
     state = _tap_runners.pop(str(chase_id), None)
-    if state:
-        state["running"] = False
-        return True
-    return False
+    if not state:
+        return False
+    state["running"] = False
+    if teardown:
+        try:
+            commands = _tap_runner_blackout_commands(state.get("scene_ids", []))
+            if commands:
+                _qlc_run(_qlc_send_commands(commands), timeout=5)
+        except Exception:
+            pass
+    return True
 
 
 def _engine_functions(engine):
@@ -5419,9 +6307,8 @@ def delete_chase(chase_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/chases/<chase_id>/start", methods=["POST"])
-def start_chase(chase_id):
-    """Start chase playback.
+def _start_chase_by_ref(chase_id):
+    """Start chase playback. Returns (result_dict, http_status).
 
     For tap-source chases the server drives the step loop so that BPM changes
     take effect immediately without touching QLC+'s in-memory timing.
@@ -5429,53 +6316,80 @@ def start_chase(chase_id):
     """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
-        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+        return {"success": False, "error": f"Chase not found: {chase_id}"}, 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
-        return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+        return {"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}, 500
+    name = chase.get("Name")
 
     if chase.get("TempoSource", "fixed") == "tap":
         scene_ids = _chase_step_scene_ids(chase)
         speed = next(iter(_find_children(chase, "Speed")), None)
         initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
-        _start_tap_runner(fid, scene_ids, initial_step_ms)
-        return jsonify({
+        started = _start_tap_runner(fid, scene_ids, initial_step_ms)
+        if not started:
+            return {
+                "success": False,
+                "chase": {"id": int(fid), "name": name},
+                "response": "",
+                "error": "chase has no playable steps",
+            }, 400
+        _emit("chase_started", {"chase_id": int(fid), "chase_name": name})
+        return {
             "success": True,
-            "chase": {"id": int(fid), "name": chase.get("Name")},
+            "chase": {"id": int(fid), "name": name},
             "response": "tap runner started",
             "error": "",
-        })
+        }, 200
 
     ok, raw = set_function_status(int(fid), running=True)
-    return jsonify({
+    if ok:
+        _emit("chase_started", {"chase_id": int(fid), "chase_name": name})
+    return {
         "success": ok,
-        "chase": {"id": int(fid), "name": chase.get("Name")},
+        "chase": {"id": int(fid), "name": name},
         "response": raw,
         "error": "" if ok else raw,
-    })
+    }, 200
 
 
-@app.route("/api/chases/<chase_id>/stop", methods=["POST"])
-def stop_chase(chase_id):
-    """Stop chase playback.
+def _stop_chase_by_ref(chase_id):
+    """Stop chase playback. Returns (result_dict, http_status).
 
     Cancels the server-side tap runner if active, and also sends a
     setFunctionStatus stop to QLC+ (harmless if the chaser wasn't running there).
     """
     chase = _find_function_element(chase_id, function_type="Chaser")
     if chase is None:
-        return jsonify({"success": False, "error": f"Chase not found: {chase_id}"}), 404
+        return {"success": False, "error": f"Chase not found: {chase_id}"}, 404
     fid = chase.get("ID")
     if not (fid and fid.isdigit()):
-        return jsonify({"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}), 500
+        return {"success": False, "error": f"Chase has no numeric ID: {chase.get('Name')}"}, 500
+    name = chase.get("Name")
     tap_was_running = _stop_tap_runner(fid)
     ok, raw = set_function_status(int(fid), running=False)
-    return jsonify({
+    if ok or tap_was_running:
+        _emit("chase_stopped", {"chase_id": int(fid), "chase_name": name})
+    return {
         "success": ok or tap_was_running,
-        "chase": {"id": int(fid), "name": chase.get("Name")},
+        "chase": {"id": int(fid), "name": name},
         "response": "tap runner stopped" if tap_was_running else raw,
         "error": "" if (ok or tap_was_running) else raw,
-    })
+    }, 200
+
+
+@app.route("/api/chases/<chase_id>/start", methods=["POST"])
+def start_chase(chase_id):
+    """Start chase playback."""
+    result, status = _start_chase_by_ref(chase_id)
+    return jsonify(result), status
+
+
+@app.route("/api/chases/<chase_id>/stop", methods=["POST"])
+def stop_chase(chase_id):
+    """Stop chase playback."""
+    result, status = _stop_chase_by_ref(chase_id)
+    return jsonify(result), status
 
 
 @app.route("/api/chases/<chase_id>/tempo", methods=["POST"])
@@ -5494,7 +6408,7 @@ def set_chase_tempo(chase_id):
             bpm = float(bpm_raw)
         except (TypeError, ValueError):
             return jsonify({"success": False, "error": "bpm must be a number"}), 400
-        if bpm < 40 or bpm > 240:
+        if not math.isfinite(bpm) or bpm < 40 or bpm > 240:
             return jsonify({
                 "success": False,
                 "error": f"BPM must be between 40 and 240, got {bpm}",
@@ -5757,6 +6671,7 @@ def _serialize_cue_list(cl: dict, include_runtime: bool = False) -> dict:
         "duration": _format_time_ms(cl.get("duration_ms", 0)),
         "cue_count": len(cl.get("cues", [])),
         "cues": [_serialize_cue(c) for c in cl.get("cues", [])],
+        "audio_file": cl.get("audio_file"),
     }
     if include_runtime:
         runtime = _active_cue_lists.get(cl["id"])
@@ -5785,6 +6700,71 @@ def _find_cue_list(id_or_name) -> tuple[dict, dict] | tuple[None, None]:
         if str(cl["id"]) == str(id_or_name) or cl["name"].lower() == needle:
             return data, cl
     return None, None
+
+
+def _cue_active_at(cues: list[dict], at_ms: int) -> dict | None:
+    """Return the last cue whose at_ms <= at_ms, or None if at_ms is
+    before the first cue (or there are no cues)."""
+    candidates = [c for c in cues if c["at_ms"] <= at_ms]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c["at_ms"])
+
+
+def _audio_file_path(cl: dict) -> Path | None:
+    """Resolve a cue list's associated audio file within CUE_AUDIO_DIR.
+
+    Returns None if there's no audio_file set, it's an absolute path, or it
+    resolves outside CUE_AUDIO_DIR (path traversal guard).
+    """
+    audio_file = cl.get("audio_file")
+    if not audio_file:
+        return None
+    if Path(audio_file).is_absolute():
+        return None
+    candidate = (CUE_AUDIO_DIR / audio_file).resolve()
+    audio_dir = CUE_AUDIO_DIR.resolve()
+    if audio_dir not in candidate.parents and candidate != audio_dir:
+        return None
+    return candidate
+
+
+def _wav_peaks(path: Path, resolution_ms: int = 50) -> list[dict]:
+    """Return per-bucket {"peak", "rms"} amplitude data (normalized 0-1)
+    for a PCM WAV file, one bucket per resolution_ms of audio.
+
+    Pure stdlib (wave + array) — deliberately avoids numpy so this helper
+    (and CI) never depends on it.
+    """
+    import array
+
+    with wave.open(str(path), "rb") as wf:
+        n_channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        frame_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+
+    type_codes = {1: "b", 2: "h", 4: "i"}
+    if sample_width not in type_codes or n_channels < 1 or frame_rate <= 0:
+        return []
+
+    samples = array.array(type_codes[sample_width])
+    samples.frombytes(raw[: len(raw) - (len(raw) % (sample_width * n_channels))])
+    max_val = float(2 ** (8 * sample_width - 1))
+
+    frames_per_bucket = max(1, int(frame_rate * resolution_ms / 1000))
+    samples_per_bucket = frames_per_bucket * n_channels
+
+    peaks = []
+    for start in range(0, len(samples), samples_per_bucket):
+        bucket = samples[start:start + samples_per_bucket]
+        if not bucket:
+            continue
+        peak = max(abs(s) for s in bucket) / max_val
+        rms = math.sqrt(sum((s / max_val) ** 2 for s in bucket) / len(bucket))
+        peaks.append({"peak": round(min(1.0, peak), 4), "rms": round(min(1.0, rms), 4)})
+    return peaks
 
 
 # ----------------------------------------------------------------------------
@@ -6001,6 +6981,7 @@ def create_cue_list():
         "description": (body.get("description") or "").strip(),
         "duration_ms": duration_ms,
         "cues": cues,
+        "audio_file": (body.get("audio_file") or "").strip() or None,
     }
     data["cue_lists"].append(new_cl)
     _save_cue_lists(data)
@@ -6024,6 +7005,9 @@ def update_cue_list(cl_id_or_name):
 
     if "description" in body:
         cl["description"] = (body.get("description") or "").strip()
+
+    if "audio_file" in body:
+        cl["audio_file"] = (body.get("audio_file") or "").strip() or None
 
     if "cues" in body:
         raw_cues = body["cues"]
@@ -6103,6 +7087,87 @@ def stop_cue_list(cl_id_or_name):
         "success": True,
         "cue_list": {"id": cl["id"], "name": cl["name"]},
         "was_running": was_running,
+    })
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/preview", methods=["POST"])
+def preview_cue_list(cl_id_or_name):
+    """Preview — apply whatever cue would be active at a given point in
+    time, without starting playback or touching any running cue list.
+
+    Body: {"at_ms": 1500}   (also accepts "at" in any _parse_time_ms form)
+
+    Powers "click anywhere on the timeline -> preview this instant".
+    """
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"success": False, "error": "Body must be a JSON object"}), 400
+
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+
+    at_input = body.get("at_ms") if "at_ms" in body else body.get("at")
+    at_ms = _parse_time_ms(at_input)
+    if at_ms is None:
+        return jsonify({"success": False, "error": f"'at_ms' is not parseable: {at_input!r}"}), 400
+
+    cue = _cue_active_at(cl.get("cues", []), at_ms)
+    if cue is None:
+        return jsonify({"success": True, "at_ms": at_ms, "applied": None})
+
+    try:
+        execute_lighting_action(
+            {"action": cue["action"], "parameters": cue["parameters"]},
+            target_groups=cue.get("groups"),
+            source="cue-preview",
+        )
+    except Exception as e:
+        log.warning("cue_preview_failed", cue_list_id=cl["id"], action=cue["action"], error=str(e))
+        return jsonify({"success": False, "error": f"Failed to apply cue: {e}"}), 500
+
+    return jsonify({"success": True, "at_ms": at_ms, "applied": _serialize_cue(cue)})
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/waveform", methods=["GET"])
+def cue_list_waveform(cl_id_or_name):
+    """Return fixed-resolution amplitude peaks for a cue list's associated
+    audio file, for the frontend to render as a static timeline overlay.
+
+    No audio playback — display data only. Returns an empty peaks array
+    (200) when there's no associated audio, rather than an error, since
+    "no audio yet" is a normal state for a cue list.
+    """
+    _, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+
+    audio_path = _audio_file_path(cl)
+    if audio_path is None or not audio_path.exists():
+        return jsonify({
+            "success": True,
+            "audio_file": cl.get("audio_file"),
+            "resolution_ms": 50,
+            "peaks": [],
+        })
+
+    try:
+        peaks = _wav_peaks(audio_path, resolution_ms=50)
+    except (wave.Error, EOFError, OSError) as e:
+        log.warning("cue_waveform_decode_failed", cue_list_id=cl["id"], audio_file=cl.get("audio_file"), error=str(e))
+        return jsonify({
+            "success": True,
+            "audio_file": cl.get("audio_file"),
+            "resolution_ms": 50,
+            "peaks": [],
+        })
+
+    return jsonify({
+        "success": True,
+        "audio_file": cl.get("audio_file"),
+        "resolution_ms": 50,
+        "duration_ms": cl.get("duration_ms", 0),
+        "peaks": peaks,
     })
 
 
@@ -6393,6 +7458,211 @@ def list_audio_chases():
             "running": key in running_keys,
         })
     return jsonify({"audio_chases": chases})
+
+
+# =============================================================================
+# MIDI controller input (OSS-1143)
+# =============================================================================
+#
+# Backend-only slice of #26: a python-rtmidi listener thread (mirrors the
+# _qlc_loop background-thread pattern above) feeds parsed messages through
+# midi_engine.dispatch_midi_message(), which triggers the SAME call paths
+# the web UI / MCP tools already use — set_channel_values(), scene
+# activation, chase start/stop. No new lighting logic, just new triggers.
+#
+# Storage: ~/.qlcplus/midi_mappings.json, same {"mappings": [...]} sidecar
+# pattern as fixture_groups.json / audio_chases.json.
+#
+# The hardware-dependent bits (rtmidi port discovery/hot-plug) live in
+# midi_engine.MidiListener and are gated behind `.available`, so this
+# section — and the server as a whole — imports and runs cleanly on a
+# headless Pi with python-rtmidi absent or no controller plugged in.
+
+_midi_mappings_lock = threading.Lock()
+_midi_last_values: dict = {}   # mapping_id -> last raw MIDI value (0-127)
+_midi_chase_state: dict = {}   # mapping_id -> bool (chase_toggle running state)
+
+
+def _load_midi_mappings() -> list:
+    if not MIDI_MAPPINGS_FILE.exists():
+        return []
+    try:
+        data = json.loads(MIDI_MAPPINGS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    mappings = data.get("mappings") if isinstance(data, dict) else None
+    return mappings if isinstance(mappings, list) else []
+
+
+def _save_midi_mappings(mappings: list) -> None:
+    MIDI_MAPPINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MIDI_MAPPINGS_FILE.write_text(json.dumps({"mappings": mappings}, indent=2))
+
+
+def _midi_resolve_channel(fixture_id, channel_offset):
+    """fixture_id/channel_offset -> absolute DMX channel, or None if the
+    fixture doesn't exist in the current workspace (e.g. a stale mapping)."""
+    for fixture in get_workspace_fixtures():
+        if fixture.get("id") == fixture_id:
+            return _absolute_channel(fixture, channel_offset)
+    return None
+
+
+def _midi_start_chase(chase_id) -> bool:
+    """Start chase playback for MIDI dispatch — same primitives as the
+    /api/chases/<id>/start route, without the Flask request/response wrapping
+    (the dispatch runs on the listener thread, outside a request context)."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return False
+    fid = chase.get("ID")
+    if not (fid and fid.isdigit()):
+        return False
+    if chase.get("TempoSource", "fixed") == "tap":
+        scene_ids = _chase_step_scene_ids(chase)
+        speed = next(iter(_find_children(chase, "Speed")), None)
+        initial_step_ms = float(speed.get("Duration", "500")) if speed is not None else 500.0
+        _start_tap_runner(fid, scene_ids, initial_step_ms)
+        return True
+    ok, _raw = set_function_status(int(fid), running=True)
+    return ok
+
+
+def _midi_stop_chase(chase_id) -> bool:
+    """Stop chase playback for MIDI dispatch — mirrors /api/chases/<id>/stop."""
+    chase = _find_function_element(chase_id, function_type="Chaser")
+    if chase is None:
+        return False
+    fid = chase.get("ID")
+    if not (fid and fid.isdigit()):
+        return False
+    tap_was_running = _stop_tap_runner(fid)
+    ok, _raw = set_function_status(int(fid), running=False)
+    return ok or tap_was_running
+
+
+def _midi_actions() -> dict:
+    return {
+        "set_channel_values": set_channel_values,
+        "resolve_channel": _midi_resolve_channel,
+        "activate_scene": apply_existing_scene_live,
+        "start_chase": _midi_start_chase,
+        "stop_chase": _midi_stop_chase,
+    }
+
+
+def _on_midi_message(port_name: str, raw_message: list) -> None:
+    """MidiListener callback — runs on the listener thread. Never raises:
+    a malformed message or a mapping referencing missing fixtures/scenes/
+    chases is dropped, not fatal, so one bad controller can't take down the
+    listener thread."""
+    try:
+        parsed = midi_engine.parse_midi_message(raw_message)
+        if parsed is None:
+            return
+        with _midi_mappings_lock:
+            mappings = _load_midi_mappings()
+            result = midi_engine.dispatch_midi_message(
+                parsed, mappings, _midi_actions(), _midi_chase_state
+            )
+            if result.get("matched") and result.get("mapping_id"):
+                _midi_last_values[result["mapping_id"]] = parsed["value"]
+        if result.get("matched"):
+            _emit("midi_dispatch", {
+                "port": port_name,
+                "mapping_id": result.get("mapping_id"),
+                "action": result.get("action"),
+            })
+    except Exception as exc:
+        log.error("midi_dispatch_failed", error=str(exc))
+
+
+_midi_listener = midi_engine.MidiListener(dispatch_fn=_on_midi_message)
+
+
+@app.route("/api/midi/devices", methods=["GET"])
+def midi_devices():
+    """List connected MIDI input devices. Always returns 200 with an empty
+    list when python-rtmidi isn't installed or nothing is plugged in."""
+    return jsonify({
+        "devices": _midi_listener.list_device_names(),
+        "available": _midi_listener.available,
+    })
+
+
+@app.route("/api/midi/mappings", methods=["GET"])
+def list_midi_mappings():
+    return jsonify({"mappings": _load_midi_mappings()})
+
+
+@app.route("/api/midi/mappings", methods=["POST"])
+def create_midi_mapping():
+    """Create a MIDI mapping.
+
+    Body:
+        {
+          "name": "Fixture 0 master",           # optional label
+          "input": {"type": "cc", "channel": null, "number": 21},
+          "action": {"type": "channel", "fixture_id": 0, "channel_offset": 0,
+                     "out_min": 0, "out_max": 255, "curve": "linear"}
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    mapping, error = midi_engine.build_mapping(data)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    with _midi_mappings_lock:
+        mappings = _load_midi_mappings()
+        mappings.append(mapping)
+        _save_midi_mappings(mappings)
+    _emit("midi_mapping_modified", {"mapping_id": mapping["id"], "action": "created"})
+    return jsonify({"success": True, "mapping": mapping})
+
+
+@app.route("/api/midi/mappings/<mapping_id>", methods=["PATCH"])
+def update_midi_mapping(mapping_id):
+    """Replace an existing mapping's input/action/name. Body shape matches POST."""
+    data = request.get_json(silent=True) or {}
+    with _midi_mappings_lock:
+        mappings = _load_midi_mappings()
+        existing = next((m for m in mappings if m.get("id") == mapping_id), None)
+        if existing is None:
+            return jsonify({"success": False, "error": f"Mapping '{mapping_id}' not found"}), 404
+
+        merged = {
+            "name": data.get("name", existing.get("name")),
+            "input": data.get("input", existing.get("input")),
+            "action": data.get("action", existing.get("action")),
+        }
+        mapping, error = midi_engine.build_mapping(merged, mapping_id=mapping_id)
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+
+        mappings = [mapping if m.get("id") == mapping_id else m for m in mappings]
+        _save_midi_mappings(mappings)
+    _emit("midi_mapping_modified", {"mapping_id": mapping_id, "action": "updated"})
+    return jsonify({"success": True, "mapping": mapping})
+
+
+@app.route("/api/midi/mappings/<mapping_id>", methods=["DELETE"])
+def delete_midi_mapping(mapping_id):
+    with _midi_mappings_lock:
+        mappings = _load_midi_mappings()
+        remaining = [m for m in mappings if m.get("id") != mapping_id]
+        if len(remaining) == len(mappings):
+            return jsonify({"success": False, "error": f"Mapping '{mapping_id}' not found"}), 404
+        _save_midi_mappings(remaining)
+        _midi_last_values.pop(mapping_id, None)
+        _midi_chase_state.pop(mapping_id, None)
+    _emit("midi_mapping_modified", {"mapping_id": mapping_id, "action": "deleted"})
+    return jsonify({"success": True})
+
+
+@app.route("/api/midi/state", methods=["GET"])
+def midi_state():
+    """Last CC value (0-127) seen per mapping, for the future UI tab to poll."""
+    with _midi_mappings_lock:
+        return jsonify({"state": dict(_midi_last_values)})
 
 
 # =============================================================================
@@ -7613,6 +8883,61 @@ def handle_chat():
     })
 
 
+# ----------------------------------------------------------------------------
+# OSC backend — adapter binding OSC router verbs to the in-process helpers
+# above. Kept in app.py (rather than osc_backend.py) because it closes over
+# Flask-app internals; osc_backend.py itself stays a pure, dependency-light
+# module the tests can import without touching app.py's startup side effects.
+# ----------------------------------------------------------------------------
+
+class _OscActions:
+    def activate_scene(self, name):
+        apply_existing_scene_live(name)
+
+    def start_chase(self, name):
+        _start_chase_by_ref(name)
+
+    def set_channel(self, fixture_id, channel, value):
+        fixtures = {str(f["id"]): f for f in get_workspace_fixtures()}
+        fixture = fixtures.get(str(fixture_id))
+        if fixture is None:
+            log.warning("osc_set_channel_unknown_fixture", fixture_id=fixture_id)
+            return
+        set_channel_values([(_absolute_channel(fixture, channel), value)])
+
+    def set_master(self, value):
+        apply_brightness_live(value, target_groups=None)
+
+    def blackout(self):
+        _do_blackout(None)
+
+    def cue_go(self, ref):
+        cl = self._resolve_cue_list(ref)
+        if cl and cl.get("cues"):
+            _go_cue_list(cl)
+
+    def cue_stop(self, ref):
+        cl = self._resolve_cue_list(ref)
+        if cl:
+            _stop_cue_list(cl["id"])
+
+    def cue_pause(self, ref):
+        # Cue lists only support go/stop today — no pause primitive exists to
+        # map onto (see parent #27). Log and no-op rather than guessing.
+        log.info("osc_cue_pause_unsupported", ref=ref)
+
+    def _resolve_cue_list(self, ref):
+        if ref is not None:
+            _, cl = _find_cue_list(ref)
+            return cl
+        data = _load_cue_lists()
+        cue_lists = data["cue_lists"]
+        if len(cue_lists) == 1:
+            return cue_lists[0]
+        log.warning("osc_cue_ref_missing_and_ambiguous", cue_list_count=len(cue_lists))
+        return None
+
+
 _runtime_initialized = False
 
 
@@ -7658,6 +8983,29 @@ def init_runtime() -> None:
         print("✓ Audio engine ready (aubio + sounddevice found)")
     else:
         print("⚠ Audio engine unavailable — aubio/sounddevice not installed")
+
+    # Start the MIDI listener thread — device auto-discovery + reconnect on
+    # hot-plug. No-op (never opens a port) when python-rtmidi isn't installed.
+    _midi_listener.start()
+    if _midi_listener.available:
+        print("✓ MIDI engine ready (python-rtmidi found)")
+    else:
+        print("⚠ MIDI engine unavailable — python-rtmidi not installed")
+
+    # OSC backend — inbound UDP listener + outbound /state/* feedback.
+    # Fails soft: a busy port or missing python-osc logs a warning, never
+    # blocks boot (the QLC+ single-writer path never depends on this).
+    _osc_config = OscConfig.from_env()
+    if _osc_config.enabled:
+        try:
+            start_listener(_osc_config, _OscActions())
+            _osc_emitter = OscStateEmitter(build_udp_client(_osc_config))
+            threading.Thread(
+                target=drain_event_bus, args=(EVENT_BUS, _osc_emitter),
+                daemon=True, name="osc-state-emitter",
+            ).start()
+        except Exception as e:
+            log.warning("osc_backend_start_failed", error=str(e))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ Flask==3.1.3
 flask-cors==6.0.2
 flask-socketio==5.6.1
 requests==2.34.2
+structlog==24.4.0
 websockets==15.0.1
 # Production WSGI (issue #47) — gunicorn -k eventlet replaces the Werkzeug
 # dev server. Required at import time: engineio auto-selects its async mode
@@ -9,8 +10,17 @@ websockets==15.0.1
 # for `python app.py` dev runs and the pytest suite.
 gunicorn==23.0.0
 eventlet==0.36.1
+python-osc==1.9.3
 # Audio reactivity (issue #28) — optional: server starts without these but
 # /api/audio/enable returns 503 until installed on the Pi.
 aubio>=0.4.9
-numpy>=1.24
+# aubio 0.4.9's C extension (ufuncs.c) hasn't been updated for numpy 2.x's
+# PyUFuncGenericFunction signature — pinned below 2 since that's the only
+# combination actually verified working, not just made to compile (see
+# control_server.sh's CFLAGS workaround for the compile-time half of this).
+numpy>=1.24,<2
 sounddevice>=0.4.6
+# MIDI controller input (OSS-1143) — optional: server starts without it but
+# /api/midi/devices reports available:false and the listener thread never
+# opens a port until python-rtmidi is installed on the Pi.
+python-rtmidi>=1.5.8

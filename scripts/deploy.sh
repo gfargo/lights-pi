@@ -58,6 +58,17 @@ rsync -avz --delete -e "$RSYNC_RSH" \
 rsync -avz -e "$RSYNC_RSH" lightsctl.sh "${PI_USER}@${PI_HOST}:${PI_HOME}/lightsctl.sh"
 
 echo ""
+echo "--- Syncing Python dependencies ---"
+# requirements.txt is part of the control-server/ sync above, but nothing
+# actually installs it — a deploy that changes/adds a dependency (e.g. a new
+# feature's import) would otherwise crash-loop the service on restart with
+# no rsync-visible warning. pip install is idempotent/fast when nothing
+# changed, so this runs on every deploy rather than only on first install.
+"${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "
+  ~/control-server-venv/bin/pip install -q -r ${PI_HOME}/control-server/requirements.txt
+"
+
+echo ""
 echo "--- Restarting control server ---"
 "${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "
   sudo systemctl restart lighting-control.service

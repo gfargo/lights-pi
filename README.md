@@ -556,10 +556,36 @@ cp .env.example .env
 | `AI_MODEL`              | `gpt-4.1`               | Model name for the chosen provider   |
 | `AI_SCENE_STYLE`        | `complete`               | Default scene style                  |
 | `AI_SCENE_VARIATIONS`   | `1`                      | Default number of variations         |
+| `LIGHTS_PASSWORD`       | _(none)_                 | Shared login password. Unset = open mode (no auth) |
+| `FLASK_SECRET_KEY`      | _(random per restart)_   | Session-signing key — set this alongside `LIGHTS_PASSWORD` so restarts don't log everyone out |
 
 > **Note:** Use `PI_HOSTNAME`, not `HOSTNAME` — the latter is a macOS shell builtin that will silently override your value.
 
 </details>
+
+### Authentication
+
+By default the control server is **open** — anyone on the network (or
+Tailscale tailnet, or Funnel) can drive the rig. Set `LIGHTS_PASSWORD` in
+`.env` to require a login:
+
+```bash
+LIGHTS_PASSWORD=some-shared-secret
+FLASK_SECRET_KEY=$(openssl rand -hex 32)   # keeps sessions alive across restarts
+```
+
+- The web UI shows a login screen; the session is a signed, HttpOnly cookie
+  ("Remember me" extends it to 30 days).
+- Five failed login attempts from an IP lock it out for 60 seconds.
+- `/healthz` stays reachable without a login so the systemd watchdog keeps
+  working.
+- The MCP server (`mcp-server/`) enforces the same `LIGHTS_PASSWORD` as a
+  Bearer token on `/mcp` — see [MCP_SERVER.md](docs/MCP_SERVER.md#auth).
+
+This is a single shared password, not multi-user accounts — fine for a
+studio rig, not meant to survive being exposed to the open internet. If
+you expose the control server via Tailscale Funnel, set `LIGHTS_PASSWORD`
+first; Funnel puts the rig on the public internet.
 
 ### Static IP Configuration
 

@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="color-scheme" content="dark">
+    <title>Lighting Control — Login</title>
+    <style>
+        @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+
+        :root {
+            --ink:           #0a0a0a;
+            --ink-1:         #0f0f0f;
+            --paper:         #f0f0f0;
+            --paper-60:      rgba(240, 240, 240, 0.60);
+            --paper-40:      rgba(240, 240, 240, 0.40);
+            --rule:          rgba(240, 240, 240, 0.06);
+            --rule-strong:   rgba(240, 240, 240, 0.12);
+            --amber-tungsten:      #d97757;
+            --amber-tungsten-glow: rgba(217, 119, 87, 0.30);
+            --signal-red:    #f87171;
+            --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Fira Code", monospace;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--ink);
+            color: var(--paper);
+            font-family: var(--font-sans);
+            padding: 1rem;
+        }
+
+        .card {
+            width: 100%;
+            max-width: 340px;
+            background: var(--ink-1);
+            border: 1px solid var(--rule-strong);
+            border-radius: 12px;
+            padding: 2rem;
+        }
+
+        h1 {
+            font-size: 1.1rem; font-weight: 600; letter-spacing: 0.08em;
+            text-transform: uppercase; text-align: center; margin-bottom: 1.5rem;
+        }
+
+        label {
+            display: block; font-family: var(--font-mono); font-size: 0.7rem;
+            letter-spacing: 0.1em; text-transform: uppercase; color: var(--paper-40);
+            margin-bottom: 0.4rem;
+        }
+
+        input[type="password"] {
+            width: 100%; padding: 0.65rem 0.75rem; margin-bottom: 1rem;
+            background: var(--ink); border: 1px solid var(--rule-strong);
+            border-radius: 6px; color: var(--paper); font-size: 1rem;
+            font-family: var(--font-sans);
+        }
+        input[type="password"]:focus {
+            outline: none; border-color: var(--amber-tungsten);
+            box-shadow: 0 0 0 3px var(--amber-tungsten-glow);
+        }
+
+        .remember {
+            display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.25rem;
+            font-size: 0.85rem; color: var(--paper-60);
+        }
+        .remember input { accent-color: var(--amber-tungsten); }
+
+        button {
+            width: 100%; padding: 0.7rem; border: none; border-radius: 6px;
+            background: var(--amber-tungsten); color: var(--ink); font-weight: 600;
+            font-size: 0.9rem; letter-spacing: 0.04em; text-transform: uppercase;
+            cursor: pointer;
+        }
+        button:hover { filter: brightness(1.08); }
+
+        .error {
+            background: rgba(248, 113, 113, 0.12); border: 1px solid var(--signal-red);
+            color: var(--signal-red); font-size: 0.85rem; padding: 0.6rem 0.75rem;
+            border-radius: 6px; margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Lighting Control</h1>
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+        <form method="POST" action="/login">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" autofocus required>
+            <label class="remember">
+                <input type="checkbox" name="remember" value="1">
+                Remember me for 30 days
+            </label>
+            <button type="submit">Unlock</button>
+        </form>
+    </div>
+</body>
+</html>

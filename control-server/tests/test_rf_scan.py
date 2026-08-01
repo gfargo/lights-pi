@@ -4,7 +4,16 @@ Wireless DMX transmitters share the 2.4 GHz band with WiFi. These are pure
 parsing/analysis helpers over `iw dev wlan0 scan` text — no QLC+ or network
 mocking needed.
 """
-from app import _analyze_rf_channels, _parse_iw_scan_output, _wifi_channel_from_freq
+import app
+from app import (
+    _analyze_rf_channels,
+    _dfi_channel_to_freq_mhz,
+    _load_rf_settings,
+    _loudest_signal_near_freq,
+    _parse_iw_scan_output,
+    _save_rf_settings,
+    _wifi_channel_from_freq,
+)
 
 
 class TestWifiChannelFromFreq:
@@ -108,3 +117,89 @@ class TestAnalyzeRfChannels:
     def test_nonoverlapping_channels_reported(self):
         analysis = _analyze_rf_channels([])
         assert analysis["nonoverlapping_channels"] == [1, 6, 11]
+
+    def test_no_transmitter_settings_no_transmitter_note(self):
+        analysis = _analyze_rf_channels([])
+        assert analysis["transmitter"] is None
+
+    def test_auto_mode_note(self):
+        analysis = _analyze_rf_channels([], transmitter={"mode": "auto", "channel": None})
+        assert "Auto" in analysis["suggestions"][0]
+
+    def test_manual_mode_clear_channel(self):
+        # Transmitter channel 1 (~2412 MHz) with no APs anywhere nearby.
+        aps = [{"ssid": "Far", "signal_dbm": -50.0, "freq_mhz": 2472, "channel": 13}]
+        analysis = _analyze_rf_channels(aps, transmitter={"mode": "manual", "channel": 1})
+        assert "clear" in analysis["suggestions"][0].lower()
+
+    def test_manual_mode_overlapping_channel(self):
+        # Transmitter channel 1 (~2412 MHz) right under a loud AP at 2412 MHz.
+        aps = [{"ssid": "OnTop", "signal_dbm": -45.0, "freq_mhz": 2412, "channel": 1}]
+        analysis = _analyze_rf_channels(aps, transmitter={"mode": "manual", "channel": 1})
+        assert "loud" in analysis["suggestions"][0].lower()
+        assert "moving it" in analysis["suggestions"][0].lower()
+
+    def test_manual_mode_already_in_quiet_window_no_contradictory_advice(self):
+        # Regression case from live testing: two APs whose bleed covers nearly
+        # the whole band (channel 2 AP + channel 6 AP), so the "quietest
+        # window" [7,9] is still moderately loud. A transmitter sitting on
+        # channel 9 is already inside that window — it shouldn't be told to
+        # "move toward" a window it's already in.
+        aps = [
+            {"ssid": "A", "signal_dbm": -57.0, "freq_mhz": 2417, "channel": 2},
+            {"ssid": "B", "signal_dbm": -64.0, "freq_mhz": 2437, "channel": 6},
+        ]
+        analysis = _analyze_rf_channels(aps, transmitter={"mode": "manual", "channel": 9})
+        assert analysis["quiet_window"] == [7, 9]
+        note = analysis["suggestions"][0]
+        assert "moving it toward" not in note.lower()
+        assert "clear as this wifi environment gets" in note.lower()
+
+
+class TestDfiChannelToFreqMhz:
+    def test_channel_1_is_band_floor(self):
+        assert _dfi_channel_to_freq_mhz(1) == 2412.0
+
+    def test_channel_16_is_band_ceiling(self):
+        assert _dfi_channel_to_freq_mhz(16) == 2484.0
+
+    def test_out_of_range(self):
+        assert _dfi_channel_to_freq_mhz(0) is None
+        assert _dfi_channel_to_freq_mhz(17) is None
+
+    def test_none_input(self):
+        assert _dfi_channel_to_freq_mhz(None) is None
+
+
+class TestLoudestSignalNearFreq:
+    def test_finds_nearby_ap(self):
+        aps = [{"freq_mhz": 2412, "signal_dbm": -50.0}, {"freq_mhz": 2462, "signal_dbm": -70.0}]
+        assert _loudest_signal_near_freq(aps, 2415, half_width_mhz=20) == -50.0
+
+    def test_ignores_far_ap(self):
+        aps = [{"freq_mhz": 2462, "signal_dbm": -40.0}]
+        assert _loudest_signal_near_freq(aps, 2412, half_width_mhz=20) is None
+
+    def test_picks_loudest_of_several(self):
+        aps = [{"freq_mhz": 2412, "signal_dbm": -70.0}, {"freq_mhz": 2417, "signal_dbm": -45.0}]
+        assert _loudest_signal_near_freq(aps, 2412, half_width_mhz=20) == -45.0
+
+    def test_none_freq(self):
+        assert _loudest_signal_near_freq([{"freq_mhz": 2412, "signal_dbm": -50.0}], None) is None
+
+
+class TestRfSettingsPersistence:
+    def test_load_missing_file_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app, "RF_SETTINGS_FILE", tmp_path / "rf_settings.json")
+        assert _load_rf_settings() == {}
+
+    def test_save_then_load_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app, "RF_SETTINGS_FILE", tmp_path / "rf_settings.json")
+        _save_rf_settings({"mode": "manual", "channel": 9})
+        assert _load_rf_settings() == {"mode": "manual", "channel": 9}
+
+    def test_load_corrupt_file_returns_empty(self, tmp_path, monkeypatch):
+        settings_file = tmp_path / "rf_settings.json"
+        settings_file.write_text("not json")
+        monkeypatch.setattr(app, "RF_SETTINGS_FILE", settings_file)
+        assert _load_rf_settings() == {}

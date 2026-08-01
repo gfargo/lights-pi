@@ -208,14 +208,19 @@ async with streamablehttp_client("http://lights.local:5001/mcp") as (r, w, _):
 ./lightsctl.sh mcp-uninstall   # disable, remove unit, drop firewall rule
 ```
 
-## Auth (Future Work)
+## Auth
 
-`MCP_BEARER_TOKEN` is plumbed through the systemd unit and read at startup,
-but not yet enforced. To enable, wrap `mcp.streamable_http_app()` with an
-ASGI middleware that checks the `Authorization: Bearer …` header. FastMCP
-also supports a full OAuth provider — overkill for a LAN rig, but the right
-choice if the endpoint is ever exposed off-network through the nginx/stunnel
-TLS proxy.
+Set `LIGHTS_PASSWORD` (issue #25 — same shared secret the control server's
+web login uses) and every request to `/mcp` must carry a matching
+`Authorization: Bearer <LIGHTS_PASSWORD>` header, enforced by an ASGI
+middleware wrapping `mcp.streamable_http_app()`. Requests without the header,
+or with the wrong token, get `401`. Unset `LIGHTS_PASSWORD` (and
+`MCP_BEARER_TOKEN`, kept as a fallback for older installs) means the endpoint
+stays open — LAN-only deployments don't need to opt in.
+
+FastMCP also supports a full OAuth provider — overkill for a LAN rig, but the
+right choice if the endpoint is ever exposed off-network through the
+nginx/stunnel TLS proxy.
 
 ## Failure Modes
 

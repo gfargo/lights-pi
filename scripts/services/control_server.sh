@@ -33,7 +33,11 @@ function install_control_server() {
   
   # Install Python dependencies in venv from requirements.txt
   echo "Installing Python dependencies..."
-  "${REMOTE_CMD[@]}" "~/control-server-venv/bin/pip install -r ~/control-server/requirements.txt"
+  # aubio 0.4.9's C extension trips -Wincompatible-pointer-types, which GCC
+  # 14+ (current Raspberry Pi OS) treats as a hard error instead of a
+  # warning. CFLAGS only affects packages that build from source — the
+  # rest of requirements.txt ships prebuilt wheels and ignores it.
+  "${REMOTE_CMD[@]}" "CFLAGS='-Wno-error=incompatible-pointer-types' ~/control-server-venv/bin/pip install -r ~/control-server/requirements.txt"
   
   # Copy control server files to Pi
   echo "Copying control server files to Pi..."

@@ -5,20 +5,22 @@ httpx.Client backed by a WSGITransport pointing at the Flask test app.  Tool
 functions then exercise real Flask routes without any network.
 
 What's covered:
-  - Tool count == 48 (drift detector: adding/removing a tool must update this)
+  - Tool count == 53 (drift detector: adding/removing a tool must update this)
   - Discovery tools (_get paths): get_status, list_fixtures, list_groups,
     list_scenes, list_templates, get_channel_values
   - Action tools (_post paths): adjust_brightness, adjust_color, blackout,
     set_channel
   - Cue list tools: list_cue_lists, get_active_cue_lists
+  - Workspace tools: list_workspaces, get_current_workspace, load_workspace,
+    create_workspace, delete_workspace
   - Response shape: every called tool returns a dict (never raises)
 
-NOTE: The 48-tool assertion is intentionally brittle — it IS the drift
+NOTE: The 53-tool assertion is intentionally brittle — it IS the drift
 detector.  When you add a new @mcp.tool() legitimately, update the count here.
 """
 import asyncio
 
-EXPECTED_TOOL_COUNT = 48
+EXPECTED_TOOL_COUNT = 53
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ EXPECTED_TOOL_COUNT = 48
 
 class TestToolRegistry:
     def test_tool_count(self, mcp_flask_client):
-        """All 48 @mcp.tool() decorators must be registered on the FastMCP instance."""
+        """All 53 @mcp.tool() decorators must be registered on the FastMCP instance."""
         mcp_module, _, _ = mcp_flask_client
         tools = asyncio.run(mcp_module.mcp.list_tools())
         assert len(tools) == EXPECTED_TOOL_COUNT, (

@@ -13,12 +13,14 @@ Tools are thin wrappers around REST endpoints — the Flask app owns the
 persistent QLC+ WebSocket and remains the single writer.
 """
 
+import hmac
 import os
 import sys
 from typing import Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 CONTROL_URL = os.getenv("CONTROL_URL", "http://localhost:5000").rstrip("/")
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
@@ -26,7 +28,14 @@ MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 MCP_PATH = os.getenv("MCP_PATH", "/mcp")
 
 # Bearer token gate — disabled when unset (LAN-only deployments).
-MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip() or None
+# LIGHTS_PASSWORD is the primary source (same shared secret as the control
+# server's web login, issue #25); MCP_BEARER_TOKEN is kept as a fallback so
+# existing MCP-only installs that never set LIGHTS_PASSWORD keep working.
+MCP_BEARER_TOKEN = (
+    os.getenv("LIGHTS_PASSWORD", "").strip()
+    or os.getenv("MCP_BEARER_TOKEN", "").strip()
+    or None
+)
 
 HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30"))
 
@@ -64,6 +73,16 @@ def _post(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     r = _http().post(path, json=payload or {})
     # Surface backend error bodies as MCP tool results rather than raising,
     # so the LLM sees the explanation instead of a generic 500.
+    if r.status_code >= 400:
+        try:
+            return {"success": False, "status_code": r.status_code, **r.json()}
+        except Exception:
+            return {"success": False, "status_code": r.status_code, "error": r.text}
+    return r.json()
+
+
+def _delete(path: str) -> dict[str, Any]:
+    r = _http().delete(path)
     if r.status_code >= 400:
         try:
             return {"success": False, "status_code": r.status_code, **r.json()}
@@ -120,6 +139,62 @@ def list_templates() -> dict:
 def get_channel_values() -> dict:
     """Return the current live DMX channel values from QLC+ as a {channel: value} map."""
     return _get("/api/channel_values")
+
+
+# ---------------------------------------------------------------------------
+# Workspace tools — list, switch, create, and delete .qxw workspaces
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_workspaces() -> dict:
+    """List all .qxw workspace files available on the Pi, with the active one flagged."""
+    return _get("/api/workspaces")
+
+
+@mcp.tool()
+def get_current_workspace() -> dict:
+    """Return the name and path of the currently active workspace."""
+    return _get("/api/workspaces/current")
+
+
+@mcp.tool()
+def load_workspace(name: str) -> dict:
+    """Switch the active workspace.
+
+    Copies the named .qxw to default.qxw, updates the pointer, busts the
+    scene-swatch cache, and restarts QLC+ (or returns needs_manual_restart
+    when the sudoers config is absent).
+
+    Args:
+        name: Workspace stem or filename (e.g. 'venue-a' or 'venue-a.qxw').
+    """
+    safe = name if name.endswith(".qxw") else name + ".qxw"
+    return _post(f"/api/workspaces/{safe}/load")
+
+
+@mcp.tool()
+def create_workspace(name: str, copy_from: str | None = None) -> dict:
+    """Create a new workspace (empty skeleton or copied from an existing one).
+
+    Args:
+        name:      New workspace name (stem or .qxw filename).
+        copy_from: Optional existing workspace to copy from.
+    """
+    payload: dict[str, Any] = {"name": name}
+    if copy_from:
+        payload["copy_from"] = copy_from
+    return _post("/api/workspaces", payload)
+
+
+@mcp.tool()
+def delete_workspace(name: str) -> dict:
+    """Delete a workspace. Refuses to delete the currently active workspace.
+
+    Args:
+        name: Workspace stem or filename (e.g. 'old-venue' or 'old-venue.qxw').
+    """
+    safe = name if name.endswith(".qxw") else name + ".qxw"
+    return _delete(f"/api/workspaces/{safe}")
 
 
 # ---------------------------------------------------------------------------
@@ -963,23 +1038,51 @@ def _safe_get(path: str) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _bearer_ok(header: str | None, token: str) -> bool:
+    """Constant-time check of an `Authorization: Bearer <token>` header."""
+    if not header or not header.startswith("Bearer "):
+        return False
+    supplied = header[len("Bearer "):]
+    return hmac.compare_digest(supplied, token)
+
+
+class _BearerAuthMiddleware:
+    """ASGI middleware rejecting requests without a valid bearer token."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        headers = dict(scope.get("headers") or [])
+        auth_header = headers.get(b"authorization", b"").decode("latin-1") or None
+        if not _bearer_ok(auth_header, self.token):
+            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    if MCP_BEARER_TOKEN:
-        # Reserved for future use — wire bearer-token auth here when needed.
-        # FastMCP supports an OAuth/auth provider; a simple bearer-check ASGI
-        # middleware can be attached to mcp.streamable_http_app() instead.
-        print(
-            f"[mcp] bearer token configured (length={len(MCP_BEARER_TOKEN)}) — auth enforcement not yet wired",
-            file=sys.stderr,
-        )
-
     print(f"[mcp] backend: {CONTROL_URL}", file=sys.stderr)
     print(f"[mcp] listening: http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}", file=sys.stderr)
-    mcp.run(transport="streamable-http")
+
+    if MCP_BEARER_TOKEN:
+        print("[mcp] bearer token auth enabled on /mcp", file=sys.stderr)
+        import uvicorn
+
+        http_app = mcp.streamable_http_app()
+        http_app.add_middleware(_BearerAuthMiddleware, token=MCP_BEARER_TOKEN)
+        uvicorn.run(http_app, host=MCP_HOST, port=MCP_PORT)
+    else:
+        mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
