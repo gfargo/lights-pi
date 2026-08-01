@@ -34,6 +34,40 @@ Browser/voice          Flask routes              persistent WebSocket
                                                DMX fixtures
 ```
 
+## Run Model: gunicorn + eventlet (issue #47)
+
+In production, `lighting-control.service` runs the app under gunicorn's
+eventlet worker instead of Werkzeug's dev server:
+
+```
+gunicorn -k eventlet -w 1 -b 0.0.0.0:$CONTROL_PORT -c gunicorn.conf.py app:app
+```
+
+- **`-w 1` is mandatory**, not a tuning choice — the QLC+ WebSocket
+  (`_qlc_run`, below) is a single-writer surface. A second worker would open
+  a second WS connection and duplicate every background thread
+  (boot-restore, audio subscription).
+- Startup side effects (starting the QLC+ loop, boot-restoring state,
+  subscribing to audio) live in `init_runtime()` in `app.py`, called once
+  from gunicorn's `post_worker_init` hook in `control-server/gunicorn.conf.py`
+  — i.e. after eventlet's monkey-patching has happened inside the forked
+  worker. `preload_app` is `False` so each worker imports (and patches)
+  `app.py` itself rather than inheriting an unpatched import from the master.
+- The `_qlc_loop` background thread and the blocking wait in `_qlc_run` both
+  route through eventlet's *original*, pre-monkey-patch `threading` module
+  (via `eventlet.patcher.original("threading")`) and `eventlet.tpool.execute`
+  — see the comment block above `_qlc_loop` in `app.py` for why: eventlet's
+  green `threading.Event`/`Future` primitives don't signal correctly across
+  the boundary between a genuine OS thread (the asyncio loop) and the
+  eventlet hub.
+- Local dev (`python app.py`) is unaffected — it still runs via
+  `socketio.run(...)`, calling the same `init_runtime()` directly instead of
+  through a gunicorn hook.
+- `scripts/deploy.sh` does not reinstall the systemd unit, so switching an
+  already-provisioned Pi to gunicorn requires one manual re-run of
+  `./lightsctl.sh` control-server install (or equivalent) to pick up the new
+  `ExecStart`.
+
 ## Why a Single Persistent WebSocket
 
 QLC+ 4.14.x has a hard cap (~50) on simultaneous WebSocket clients. Earlier
