@@ -388,7 +388,7 @@ function wifi_add_network() {
     echo "Usage: wifi-add-network <SSID> <password> [priority]"
     echo ""
     echo "Example:"
-    echo "  ./lightsctl.sh wifi-add-network \"CBCI-F2B8\" \"eagle4691buckle\" 30"
+    echo "  ./lightsctl.sh wifi-add-network \"StudioWifi\" \"<passphrase>\" 30"
     echo ""
     echo "Priority: Higher number = higher priority (default: 0)"
     return 1
@@ -403,15 +403,20 @@ function wifi_add_network() {
   echo "Priority: ${priority}"
   echo ""
   
-  # Add the network using nmcli
+  # Profile is named after the SSID, matching what `nmcli device wifi connect`
+  # and provisioning create. autoconnect-retries 0 = keep trying forever; the
+  # default gives up after 4 attempts, which is fatal on a headless box.
   run_sudo nmcli connection add \
     type wifi \
-    con-name "netplan-wlan0-${ssid}" \
+    con-name "${ssid}" \
     ifname wlan0 \
     ssid "${ssid}" \
     wifi-sec.key-mgmt wpa-psk \
     wifi-sec.psk "${password}" \
-    connection.autoconnect-priority "${priority}"
+    connection.autoconnect yes \
+    connection.autoconnect-priority "${priority}" \
+    connection.autoconnect-retries 0 \
+    ipv4.dhcp-timeout 60
   
   echo ""
   echo "Network added successfully!"
@@ -446,7 +451,8 @@ function wifi_connect() {
   fi
   
   echo "Connecting to: ${ssid}"
-  run_sudo nmcli connection up "netplan-wlan0-${ssid}"
+  # Older wifi-add-network versions named profiles netplan-wlan0-<ssid>.
+  run_sudo nmcli connection up "${ssid}" || run_sudo nmcli connection up "netplan-wlan0-${ssid}"
   
   echo ""
   echo "Current status:"

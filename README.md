@@ -268,12 +268,12 @@ open-web                      # Open the web UI in the default browser
 <summary><b>🌐 Network / WiFi Commands</b></summary>
 
 ```bash
-wifi                          # Dump /etc/wpa_supplicant/wpa_supplicant.conf
+wifi                          # Dump configured networks (NetworkManager profiles)
 wifi-list                     # List all configured and available WiFi networks
-wifi-add-network <ssid> <pass> [priority]  # Add a new WiFi network
+wifi-add-network <ssid> <pass> [priority]  # Add a new WiFi network (persists across reboots)
 wifi-connect <ssid>           # Connect to a specific WiFi network
 wifi-test                     # End-to-end connectivity test (IP, gateway, DNS, internet)
-wifi-reconf                   # Run wpa_cli -i wlan0 reconfigure
+wifi-reconf                   # Reload network configuration (nmcli connection reload)
 wifi-status                   # Show current SSID and wlan0 address
 wifi-diagnose                 # Comprehensive WiFi diagnostics
 wifi-reconnect                # Force disconnect and reconnect to best network
@@ -1036,12 +1036,15 @@ sudo apt-get update
 <details>
 <summary><b>Network interface commands not found</b></summary>
 
-Raspberry Pi OS Lite does not include `ifup`/`ifdown` or the `networking` systemd unit. Use instead:
+Raspberry Pi OS Lite does not include `ifup`/`ifdown` or the `networking` systemd unit. On Bookworm and newer, Wi-Fi is managed by NetworkManager (`dhcpcd` and `wpa_supplicant@wlan0` are not used). Use instead:
 
 ```bash
-sudo ip link set wlan0 down && sudo ip link set wlan0 up
-sudo systemctl restart dhcpcd5
+sudo nmcli device disconnect wlan0 && sudo nmcli device connect wlan0
+# or, heavier:
+sudo systemctl restart NetworkManager
 ```
+
+Do **not** add networks with `wpa_cli` or by editing `/etc/wpa_supplicant/wpa_supplicant.conf`: NetworkManager ignores that file, and `wpa_cli` changes connect immediately but are gone after a reboot. Use `./lightsctl.sh wifi-add-network` (or `nmcli`) — see [docs/WIFI_RELIABILITY.md](docs/WIFI_RELIABILITY.md).
 
 </details>
 

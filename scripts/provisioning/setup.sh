@@ -74,6 +74,34 @@ if ! grep -q '^allow-interfaces=' "\${AVAHI_CONF}"; then
 fi
 
 echo "[3/9] Configure Wi-Fi with two networks"
+if systemctl is-active --quiet NetworkManager; then
+  # Raspberry Pi OS Bookworm+ manages Wi-Fi with NetworkManager, which never
+  # reads /etc/wpa_supplicant/wpa_supplicant.conf. Profiles must go through
+  # nmcli or they do not exist after a reboot.
+  echo "  NetworkManager active — writing persistent connection profiles"
+
+  # The Pi 3's BCM43430 drops off the network under Wi-Fi power management.
+  printf '[connection]\nwifi.powersave = 2\n' > /etc/NetworkManager/conf.d/wifi-powersave.conf
+  systemctl reload NetworkManager || true
+
+  nm_wifi_profile() {
+    local ssid="\$1" psk="\$2" priority="\$3"
+    if nmcli -t -f NAME connection show | grep -qx "\${ssid}"; then
+      # modify, not delete+add: deleting the profile we are SSH'd in over drops the session
+      nmcli connection modify "\${ssid}" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "\${psk}" \
+        connection.autoconnect yes connection.autoconnect-priority "\${priority}" \
+        connection.autoconnect-retries 0 ipv4.dhcp-timeout 60
+    else
+      nmcli connection add type wifi con-name "\${ssid}" ifname wlan0 ssid "\${ssid}" \
+        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "\${psk}" \
+        connection.autoconnect yes connection.autoconnect-priority "\${priority}" \
+        connection.autoconnect-retries 0 ipv4.dhcp-timeout 60 >/dev/null
+    fi
+    echo "  profile: \${ssid} (priority \${priority})"
+  }
+  nm_wifi_profile "${WIFI2_SSID}" "${WIFI2_PSK}" 20
+  nm_wifi_profile "${WIFI1_SSID}" "${WIFI1_PSK}" 10
+else
 WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
 cp -a "\${WPA_CONF}" "\${WPA_CONF}.bak.\$(date +%s)" || true
 
@@ -99,6 +127,7 @@ WPA
 
 chmod 600 "\${WPA_CONF}"
 systemctl restart wpa_supplicant || true
+fi
 
 echo "[4/9] Waiting for network after Wi-Fi reconfiguration"
 _dns_ok=0
