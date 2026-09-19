@@ -209,20 +209,48 @@ def start_listener(config: OscConfig, actions):
         return None
 
     from pythonosc.dispatcher import Dispatcher
-    from pythonosc.osc_server import ThreadingOSCUDPServer
+    from pythonosc.osc_server import BlockingOSCUDPServer
 
     disp = Dispatcher()
     disp.set_default_handler(lambda address, *args: _log_route(dispatch_osc(address, args, actions)))
 
     try:
-        server = ThreadingOSCUDPServer((config.listen_host, config.listen_port), disp)
+        server = BlockingOSCUDPServer((config.listen_host, config.listen_port), disp)
     except OSError as e:
         log.warning("osc_listen_bind_failed", host=config.listen_host, port=config.listen_port, error=str(e))
         return None
 
-    threading.Thread(target=server.serve_forever, daemon=True, name="osc-listener").start()
+    threading.Thread(target=_serve, args=(server,), daemon=True, name="osc-listener").start()
     log.info("osc_listener_started", host=config.listen_host, port=config.listen_port)
     return server
+
+
+def _serve(server):
+    """Receive loop that stays cooperative under gunicorn's eventlet worker.
+
+    Not server.serve_forever(): socketserver picks its selector class when the
+    module is first imported, which gunicorn does (via logging.config) before
+    eventlet monkey-patches anything. Under the eventlet worker that loop then
+    spins in a non-green poll() and never yields, so the hub — and every HTTP
+    request behind it — starves. Verified on the Pi 2026-09-19: the worker
+    listened on :5000 with 60+ connections queued and accepted none.
+
+    recvfrom() on the (green, post-patch) socket yields properly. Handling the
+    packet inline keeps dispatch on the hub, which the QLC+ bridge in app.py
+    requires; under plain `python app.py` this is an ordinary OS thread and a
+    plain blocking recvfrom, so behaviour there is unchanged.
+    """
+    sock = server.socket
+    while True:
+        try:
+            data, client = sock.recvfrom(server.max_packet_size)
+        except OSError as e:
+            log.warning("osc_listener_recv_failed", error=str(e))
+            return
+        try:
+            server.finish_request((data, sock), client)
+        except Exception as e:  # a bad packet must never kill the listener
+            log.warning("osc_listener_handle_failed", error=str(e))
 
 
 def _log_route(result):
