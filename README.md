@@ -193,7 +193,7 @@ setup                         # Base install (requires WIFI1_SSID/PSK, WIFI2_SSI
 harden                        # Firewall, watchdog, unattended upgrades, udev rule
 add-key [pubkey]              # Install local SSH public key on the Pi
 disable-password-auth         # Disable SSH password login (run add-key first)
-static-ip <ip/prefix> <gw>   # Write static IP to /etc/dhcpcd.conf and restart
+static-ip <ip/prefix> <gw>   # Set a static IP on the active wlan0 profile
 update                        # apt update && apt upgrade on the Pi
 update-qlc                    # Upgrade only the qlcplus package and restart service
 ```

@@ -65,7 +65,7 @@ Provisioning:
   harden                        firewall, watchdog, unattended upgrades, udev rule
   add-key [pubkey]              install local SSH public key on the Pi
   disable-password-auth         disable SSH password login (run add-key first)
-  static-ip <ip/prefix> <gw>   write static IP to /etc/dhcpcd.conf and restart
+  static-ip <ip/prefix> <gw>   set a static IP on the active wlan0 profile
   update                        apt update && apt upgrade on the Pi
   update-qlc                    upgrade only the qlcplus package and restart service
 
@@ -95,13 +95,13 @@ QLC+:
   open-web                      open the web UI in the default browser
 
 Network / WiFi:
-  wifi                          dump /etc/wpa_supplicant/wpa_supplicant.conf
+  wifi                          show configured networks (NetworkManager profiles)
   wifi-list                     list all configured and available WiFi networks
   wifi-add-network <ssid> <pass> [priority]  add a new WiFi network (NetworkManager)
   wifi-connect <ssid>           connect to a specific WiFi network
   wifi-test                     end-to-end connectivity test (IP, gateway, DNS, internet)
-  wifi-reconf                   reload wpa_supplicant configuration
-  wifi-restart                  restart wpa_supplicant service (reloads config file)
+  wifi-reconf                   reload network configuration (nmcli connection reload)
+  wifi-restart                  restart NetworkManager (drops and re-establishes Wi-Fi)
   wifi-reconnect                force disconnect and reconnect to best available network
   wifi-status                   show SSID and wlan0 address
   wifi-diagnose                 comprehensive WiFi diagnostics and troubleshooting
@@ -587,6 +587,27 @@ function command_static_ip() {
     return 1
   fi
   dns="${dns:-${gateway}}"
+  source "${SCRIPT_DIR}/scripts/lib/wifi.sh"
+  if [[ "$(detect_network_manager)" == "networkmanager" ]]; then
+    # dhcpcd.conf is inert under NetworkManager; apply to the active wlan0 profile.
+    local con
+    con=$(run nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2=="wlan0"{print $1; exit}')
+    if [[ -z "$con" ]]; then
+      echo "No active NetworkManager connection on wlan0; cannot set a static IP." >&2
+      return 1
+    fi
+    echo "Applying static IP to NetworkManager profile '${con}'..."
+    # Args cross ssh as one string; %q survives the remote shell re-parsing them.
+    local q_con q_ip q_gw q_dns
+    q_con=$(printf '%q' "$con"); q_ip=$(printf '%q' "$ip")
+    q_gw=$(printf '%q' "$gateway"); q_dns=$(printf '%q' "$dns")
+    run_sudo nmcli connection modify "$q_con" ipv4.method manual \
+      ipv4.addresses "$q_ip" ipv4.gateway "$q_gw" ipv4.dns "$q_dns"
+    echo "Static IP configured: ${ip} (gateway: ${gateway}, DNS: ${dns})"
+    echo "Re-activating wlan0 — the SSH session will drop; reconnect at ${ip%/*}"
+    run_sudo nmcli connection up "$q_con" || true
+    return 0
+  fi
   local dhcpcd_conf="/etc/dhcpcd.conf"
   run_sudo sed -i '/^# lightsctl static IP/,/^[[:space:]]*$/d' "$dhcpcd_conf" || true
   run_sudo tee -a "$dhcpcd_conf" >/dev/null <<DHCP
