@@ -70,10 +70,25 @@ echo "--- Syncing Python dependencies ---"
 
 echo ""
 echo "--- Restarting control server ---"
+# `systemctl is-active` 2s after restart says "active" even when the process
+# is about to die on an import error (it took ~4s to crash on 2026-09-19).
+# Poll /healthz instead and fail the deploy loudly if it never answers.
 "${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "
   sudo systemctl restart lighting-control.service
-  sleep 2
-  systemctl is-active lighting-control.service && echo '✓ lighting-control.service active' || echo '✗ lighting-control.service failed'
+  for i in \$(seq 1 20); do
+    # 503 is fine here: it means Flask is up but a subsystem (QLC+ ws) is red,
+    # which is a rig problem, not a deploy failure. Only no-answer is a failure.
+    code=\$(curl -s -o /tmp/healthz.json --max-time 3 -w '%{http_code}' http://localhost:5000/healthz 2>/dev/null || true)
+    if [ \"\$code\" = 200 ] || [ \"\$code\" = 503 ]; then
+      echo \"✓ lighting-control.service serving (/healthz \$code after \${i}s): \$(cat /tmp/healthz.json)\"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo '✗ lighting-control.service did not become healthy within 20s'
+  echo \"   state: \$(systemctl is-active lighting-control.service)\"
+  journalctl -u lighting-control.service --since '30 sec ago' --no-pager | grep -v midi-listener | tail -25
+  exit 1
 "
 
 echo ""

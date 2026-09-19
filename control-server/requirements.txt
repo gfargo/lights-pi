@@ -9,7 +9,9 @@ websockets==15.0.1
 # based on whichever of these is importable, so eventlet must be present even
 # for `python app.py` dev runs and the pytest suite.
 gunicorn==23.0.0
-eventlet==0.36.1
+# 0.36.x breaks on Python 3.13 (Pi OS trixie): eventlet.green.thread lacks
+# start_joinable_thread and the service crash-loops at import.
+eventlet==0.41.2
 python-osc==1.9.3
 # Audio reactivity (issue #28) — optional: server starts without these but
 # /api/audio/enable returns 503 until installed on the Pi.
