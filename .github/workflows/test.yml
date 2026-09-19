@@ -26,6 +26,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # python-rtmidi ships no 3.13 wheel yet, so pip builds it from source
+      # and its meson build needs ALSA headers (same reason the Pi has them).
+      - name: Install native build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev
+
       - name: Install control-server dev dependencies
         working-directory: control-server
         run: pip install -r requirements-dev.txt
