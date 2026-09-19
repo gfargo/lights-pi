@@ -19,6 +19,31 @@
 
 ---
 
+## Adding a network: use NetworkManager, nothing else
+
+Raspberry Pi OS Bookworm and newer manage Wi-Fi with **NetworkManager**. Two things look like they work but do not survive a reboot:
+
+- **Editing `/etc/wpa_supplicant/wpa_supplicant.conf`** — NetworkManager never reads it. The file may still exist from older provisioning; it is inert.
+- **Adding a network with `wpa_cli`** (`add_network` / `set_network` / `enable_network`) — this talks to NetworkManager's own wpa_supplicant backend and connects immediately, but that backend runs without a config file, so `save_config` always returns `FAIL` and the network is gone on the next boot. This is easy to mistake for "it worked, then something reset it."
+
+Both leave NetworkManager with **zero Wi-Fi profiles**, and the watchdog cannot recover from that — there is nothing for it to reconnect to. Always add networks with:
+
+```bash
+./lightsctl.sh wifi-add-network "<SSID>" "<passphrase>" 30
+# or on the Pi:
+sudo nmcli device wifi connect "<SSID>" password "<passphrase>"
+```
+
+Verify the profile is on disk, not just live:
+
+```bash
+ssh pi@lights.local sudo ls /etc/NetworkManager/system-connections/
+```
+
+Symptoms of the no-profile state: `nmcli connection show` lists no `wifi` rows, `journalctl -u NetworkManager -b` has no `Activation: starting connection` line, and the watchdog logs `FAIL: wlan0 has no IP address` every two minutes.
+
+---
+
 ## WiFi Watchdog
 
 The WiFi watchdog is a systemd timer that runs on the Pi every 2 minutes. It performs two checks:

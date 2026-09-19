@@ -36,7 +36,9 @@ can_reach_gateway() {
 recover() {
   local failures
   failures=$(get_failures)
-  ((failures++))
+  # Not ((failures++)): that returns exit 1 when the counter is 0 and set -e
+  # would abort here before any recovery ever ran.
+  failures=$((failures + 1))
   set_failures "$failures"
 
   if [[ $failures -ge $MAX_FAILURES ]]; then
@@ -64,6 +66,11 @@ if ! has_ip; then
   log "FAIL: wlan0 has no IP address"
 elif ! can_reach_gateway; then
   log "FAIL: cannot reach gateway"
+fi
+
+if ! nmcli -t -f TYPE connection show 2>/dev/null | grep -qx '802-11-wireless'; then
+  log "ERROR: NetworkManager has no Wi-Fi profiles — nothing to reconnect to. Add one with: lightsctl.sh wifi-add-network <ssid> <psk> [priority]"
+  exit 1
 fi
 
 recover
