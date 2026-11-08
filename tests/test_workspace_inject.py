@@ -105,5 +105,39 @@ class TestWorkspaceInject(unittest.TestCase):
             Path(output_file.name).unlink(missing_ok=True)
 
 
+class TestChannelBase(unittest.TestCase):
+    """Injected scenes are stored 0-based (QLC+ native) whatever the generator wrote."""
+
+    WS = '''<?xml version="1.0" encoding="UTF-8"?>
+<Workspace xmlns="http://www.qlcplus.org/Workspace">
+  <Engine>
+    <Fixture><Manufacturer>m</Manufacturer><Model>m</Model><Mode>3-Ch</Mode><ID>0</ID><Name>a</Name><Universe>0</Universe><Address>0</Address><Channels>3</Channels></Fixture>
+  </Engine>
+</Workspace>'''
+
+    def _inject(self, vals, path=None):
+        import os
+        d = tempfile.mkdtemp()
+        ws = os.path.join(d, "w.qxw"); out = os.path.join(d, "o.qxw")
+        Path(ws).write_text(self.WS)
+        attrs = f' Path="{path}"' if path else ""
+        scene = f'<Function Type="Scene" Name="s"{attrs}><FixtureVal ID="0">{vals}</FixtureVal></Function>'
+        self.assertTrue(inject_scene(ws, scene, out, 1))
+        fn = next(f for f in ET.parse(out).getroot().iter() if f.tag.endswith("Function"))
+        return fn, next(v for v in fn if v.tag.endswith("FixtureVal")).text
+
+    def test_one_based_is_shifted(self):
+        self.assertEqual(self._inject("1,255,2,0,3,0")[1], "0,255,1,0,2,0")
+
+    def test_zero_based_is_untouched(self):
+        self.assertEqual(self._inject("0,255,1,0,2,0")[1], "0,255,1,0,2,0")
+
+    def test_ambiguous_is_untouched(self):
+        self.assertEqual(self._inject("1,255,2,10")[1], "1,255,2,10")
+
+    def test_folder_path_is_kept(self):
+        self.assertEqual(self._inject("0,1,1,1,2,1", path="AI Generated")[0].get("Path"), "AI Generated")
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -3394,8 +3394,9 @@ def _snapshot_current_state_as_xml(name: str, path: str = "AI Generated") -> str
         for offset in range(fixture["channels"]):
             abs_ch = fixture["universe"] * 512 + fixture["address"] + offset + 1
             val = values.get(abs_ch, 0)
-            # Use 1-based channel numbering for generated scenes
-            pairs.append(f"{offset + 1},{val}")
+            # QLC+ reads FixtureVal channels 0-based. Writing them 1-based shifts
+            # every value up one channel when QLC+ itself plays the scene.
+            pairs.append(f"{offset},{val}")
         if pairs:
             fixture_vals.append(
                 f'  <FixtureVal ID="{fixture["id"]}">{",".join(pairs)}</FixtureVal>'
@@ -3449,6 +3450,37 @@ def _xml_escape(text: str) -> str:
             .replace("'", "&apos;"))
 
 
+def _normalize_scene_fixture_vals(scene_root, fixtures=None) -> int:
+    """Rewrite every <FixtureVal> in a scene to QLC+'s native 0-based channels.
+
+    Scenes arrive from several writers (AI generation, MCP/API clients, templates) and some
+    historically used 1-based channels, which QLC+ misreads: values land one channel too high
+    and the last one falls off the end of the fixture. The base is decided per fixture by
+    _decode_fixture_val_pairs (a 0 means 0-based; the fixture's channel count means 1-based;
+    otherwise the data is ambiguous and left alone). Returns how many FixtureVals changed.
+    """
+    if fixtures is None:
+        fixtures = get_workspace_fixtures()
+    by_id = {str(f["id"]): f for f in fixtures}
+    changed = 0
+    for fixture_val in _find_children(scene_root, "FixtureVal"):
+        fixture = by_id.get(str(fixture_val.get("ID")))
+        if not fixture or not fixture_val.text:
+            continue
+        parts = [p.strip() for p in fixture_val.text.split(",") if p.strip() != ""]
+        try:
+            pairs = [(int(parts[i]), int(parts[i + 1])) for i in range(0, len(parts) - 1, 2)]
+        except ValueError:
+            continue
+        if not pairs:
+            continue
+        decoded = _decode_fixture_val_pairs(pairs, int(fixture.get("channels", 0)))
+        if decoded != pairs:
+            fixture_val.text = ",".join(f"{ch},{val}" for ch, val in decoded)
+            changed += 1
+    return changed
+
+
 def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
     """Inject scene XML into the workspace file's Engine element.
 
@@ -3469,6 +3501,9 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
 
             # Set the ID attribute
             scene_root.set("ID", str(scene_id))
+
+            # Store channels in QLC+'s native 0-based form whatever the writer used
+            _normalize_scene_fixture_vals(scene_root, get_workspace_fixtures(root))
 
             # Append to Engine
             engine.append(scene_root)
@@ -3501,7 +3536,7 @@ def list_groups():
         for group_name, group_info in groups_dict.items():
             groups.append({
                 "name": group_name,
-                "fixtures": group_info.get("fixtures", []),
+                "fixtures": _normalize_fixture_ids(group_info.get("fixtures", [])),
                 "description": group_info.get("description", "")
             })
 
@@ -3727,8 +3762,15 @@ def _load_groups() -> dict:
     except json.JSONDecodeError:
         return {}
     if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], dict):
-        return data["groups"]
-    return data if isinstance(data, dict) else {}
+        groups = data["groups"]
+    else:
+        groups = data if isinstance(data, dict) else {}
+    # Older files (imported from QLC+) store fixture IDs as strings ("4"); the API compares ints,
+    # so removing "4" silently did nothing. Normalise here so every read sees ints.
+    for info in groups.values():
+        if isinstance(info, dict) and "fixtures" in info:
+            info["fixtures"] = _normalize_fixture_ids(info.get("fixtures"))
+    return groups
 
 
 def _save_groups(groups: dict) -> None:

@@ -119,10 +119,10 @@ XML
     # Generate channel values based on fixture type
     if [[ "$model" =~ "SlimPAR Pro H USB" ]]; then
       # 7 Channel: Dimmer, Red, Green, Blue, Color Macros, Amber, Strobe
-      echo "  <FixtureVal ID=\"$fid\">1,$dimmer,2,$red,3,$green,4,$blue,5,0,6,0,7,0</FixtureVal>"
+      echo "  <FixtureVal ID=\"$fid\">0,$dimmer,1,$red,2,$green,3,$blue,4,0,5,0,6,0</FixtureVal>"
     elif [[ "$model" =~ "SlimPAR 56" ]]; then
       # 3 Channel: Red, Green, Blue
-      echo "  <FixtureVal ID=\"$fid\">1,$red,2,$green,3,$blue</FixtureVal>"
+      echo "  <FixtureVal ID=\"$fid\">0,$red,1,$green,2,$blue</FixtureVal>"
     else
       # Generic RGB
       echo "  <FixtureVal ID=\"$fid\">1,$red,2,$green,3,$blue,4,$dimmer</FixtureVal>"
