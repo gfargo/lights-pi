@@ -140,7 +140,9 @@ class TestListWorkspaceFiles:
             (tmp_path / n).write_text(_VALID_QXW)
 
     def test_excludes_reserved(self, tmp_path, monkeypatch):
+        # A named workspace is active, so default/autostart are just its copies: hidden.
         self._setup_dir(tmp_path, monkeypatch, ["default.qxw", "autostart.qxw", "venue.qxw"])
+        (tmp_path / "current_workspace").write_text("venue")
         result = _list_workspace_files()
         names = [w["filename"] for w in result]
         assert "default.qxw" not in names
@@ -155,6 +157,22 @@ class TestListWorkspaceFiles:
         by_name = {w["filename"]: w for w in result}
         assert by_name["studio.qxw"]["active"] is True
         assert by_name["venue.qxw"]["active"] is False
+
+    def test_live_default_is_listed_when_no_named_workspace_backs_it(self, tmp_path, monkeypatch):
+        """The Pi had only default.qxw/autostart.qxw: the list was empty and the live workspace hidden."""
+        self._setup_dir(tmp_path, monkeypatch, ["default.qxw", "autostart.qxw"])
+        result = _list_workspace_files()
+        assert [(w["filename"], w["active"], w.get("live")) for w in result] == [("default.qxw", True, True)]
+
+    def test_live_default_is_listed_alongside_named_workspaces_when_none_is_active(self, tmp_path, monkeypatch):
+        self._setup_dir(tmp_path, monkeypatch, ["default.qxw", "autostart.qxw", "venue.qxw"])
+        by_name = {w["filename"]: w for w in _list_workspace_files()}
+        assert by_name["default.qxw"]["active"] is True and by_name["venue.qxw"]["active"] is False
+
+    def test_stale_pointer_to_a_missing_workspace_still_shows_the_live_default(self, tmp_path, monkeypatch):
+        self._setup_dir(tmp_path, monkeypatch, ["default.qxw"])
+        (tmp_path / "current_workspace").write_text("deleted-one")
+        assert [w["filename"] for w in _list_workspace_files()] == ["default.qxw"]
 
     def test_empty_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr("app.WORKSPACE_DIR", tmp_path)
@@ -228,12 +246,21 @@ def client(ws_dir):
 
 
 class TestListWorkspacesRoute:
-    def test_empty_returns_success(self, client):
+    def test_only_the_live_default_is_listed_as_active(self, client):
+        # default.qxw/autostart.qxw and nothing else (the Pi's real state): the live workspace
+        # is shown, not "No workspaces found".
         r = client.get("/api/workspaces")
         assert r.status_code == 200
         data = r.get_json()
         assert data["success"] is True
-        assert data["workspaces"] == []
+        assert [(w["filename"], w["active"]) for w in data["workspaces"]] == [("default.qxw", True)]
+
+    def test_empty_returns_success(self, client, ws_dir):
+        (ws_dir / "default.qxw").unlink()
+        (ws_dir / "autostart.qxw").unlink()
+        r = client.get("/api/workspaces")
+        assert r.status_code == 200
+        assert r.get_json()["workspaces"] == []
 
     def test_lists_qxw_files(self, client, ws_dir):
         (ws_dir / "venue-a.qxw").write_text(_VALID_QXW)
@@ -241,7 +268,8 @@ class TestListWorkspacesRoute:
         data = r.get_json()
         names = [w["filename"] for w in data["workspaces"]]
         assert "venue-a.qxw" in names
-        assert "default.qxw" not in names
+        assert "autostart.qxw" not in names          # the alias itself stays hidden
+        assert next(w for w in data["workspaces"] if w["filename"] == "default.qxw")["live"] is True
 
 
 class TestGetCurrentWorkspaceRoute:
@@ -334,7 +362,166 @@ class TestLoadWorkspaceRoute:
         r = client.post("/api/workspaces/missing.qxw/load")
         assert r.status_code == 404
 
-    def test_load_reserved_name_400(self, client):
-        # 'default.qxw' is reserved and should be rejected even if the file exists
+    def test_load_reserved_name_400(self, client, ws_dir):
+        # With a named workspace active, default.qxw is just its copy: reserved, rejected.
+        (ws_dir / "venue.qxw").write_text(_VALID_QXW)
+        (ws_dir / "current_workspace").write_text("venue")
         r = client.post("/api/workspaces/default.qxw/load")
         assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Routes: the live default can be seen, copied and is never lost on a switch
+# ---------------------------------------------------------------------------
+
+class TestLiveDefaultRoutes:
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        import app as app_module
+        monkeypatch.setattr(app_module, "WORKSPACE_DIR", tmp_path)
+        monkeypatch.setattr(app_module, "_WORKSPACE_POINTER", tmp_path / "current_workspace")
+        monkeypatch.setattr(app_module, "IS_LOCAL", True)
+        monkeypatch.setattr(app_module, "_restart_qlc", lambda: {"success": True})
+        monkeypatch.setattr(app_module, "_bust_scene_swatch_cache", lambda: None)
+        (tmp_path / "default.qxw").write_text(_VALID_QXW + "<!--live-->")
+        (tmp_path / "autostart.qxw").write_text(_VALID_QXW + "<!--live-->")
+        return app_module.app.test_client(), tmp_path
+
+    def test_list_shows_the_live_default(self, client):
+        c, _ = client
+        ws = c.get("/api/workspaces").get_json()["workspaces"]
+        assert [w["name"] for w in ws] == ["default"] and ws[0]["active"] and ws[0]["live"]
+
+    def test_switching_to_the_live_default_is_a_noop(self, client):
+        c, d = client
+        r = c.post("/api/workspaces/default.qxw/load")
+        assert r.status_code == 200 and r.get_json()["message"] == "already active"
+        assert "<!--live-->" in (d / "default.qxw").read_text()
+
+    def test_the_live_default_can_be_copied_to_a_named_workspace(self, client):
+        c, d = client
+        r = c.post("/api/workspaces", json={"name": "studio", "copy_from": "default.qxw"})
+        assert r.status_code == 201
+        assert "<!--live-->" in (d / "studio.qxw").read_text()
+
+    def test_switching_away_from_an_unnamed_live_default_saves_it_first(self, client):
+        c, d = client
+        (d / "venue.qxw").write_text(_VALID_QXW + "<!--venue-->")
+        r = c.post("/api/workspaces/venue.qxw/load").get_json()
+        assert r["success"] and r["backup"] == "studio-default.qxw"
+        assert "<!--live-->" in (d / r["backup"]).read_text()          # the rig's workspace survived
+        assert "<!--venue-->" in (d / "default.qxw").read_text()       # and the switch happened
+
+    def test_no_backup_when_a_named_file_already_holds_the_active_workspace(self, client):
+        c, d = client
+        (d / "studio.qxw").write_text(_VALID_QXW + "<!--live-->")
+        (d / "venue.qxw").write_text(_VALID_QXW + "<!--venue-->")
+        (d / "current_workspace").write_text("studio")
+        assert c.post("/api/workspaces/venue.qxw/load").get_json()["backup"] is None
+
+
+class TestCreateAndSwitchBetweenWorkspaces:
+    """New workspaces start with the current fixtures, and you can move between them and back."""
+
+    _FULL = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE Workspace>\n'
+        '<Workspace xmlns="http://www.qlcplus.org/Workspace" CurrentWindow="VirtualConsole">\n'
+        ' <Engine>\n'
+        '  <Fixture><Manufacturer>m</Manufacturer><Model>m</Model><Mode>3-Ch</Mode><ID>0</ID><Name>a</Name>'
+        '<Universe>0</Universe><Address>0</Address><Channels>3</Channels></Fixture>\n'
+        '  <Function ID="1" Type="Scene" Name="Warm"><FixtureVal ID="0">0,255</FixtureVal></Function>\n'
+        ' </Engine>\n'
+        ' <VirtualConsole><Frame><Button Caption="Warm" ID="1"><Function ID="1"/></Button></Frame></VirtualConsole>\n'
+        '</Workspace>\n'
+    )
+
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        import app as app_module
+        monkeypatch.setattr(app_module, "WORKSPACE_DIR", tmp_path)
+        monkeypatch.setattr(app_module, "_WORKSPACE_POINTER", tmp_path / "current_workspace")
+        monkeypatch.setattr(app_module, "GROUPS_FILE", tmp_path / "fixture_groups.json")
+        monkeypatch.setattr(app_module, "IS_LOCAL", True)
+        monkeypatch.setattr(app_module, "_restart_qlc", lambda: {"success": True})
+        monkeypatch.setattr(app_module, "_bust_scene_swatch_cache", lambda: None)
+        (tmp_path / "default.qxw").write_text(self._FULL)
+        (tmp_path / "autostart.qxw").write_text(self._FULL)
+        (tmp_path / "fixture_groups.json").write_text('{"groups": {"Left": {"fixtures": [0]}}}')
+        return app_module.app.test_client(), tmp_path
+
+    def test_copy_has_fixtures_scenes_console_and_its_own_groups(self, env):
+        c, d = env
+        assert c.post("/api/workspaces", json={"name": "a", "copy_from": "default.qxw"}).status_code == 201
+        text = (d / "a.qxw").read_text()
+        assert "<Fixture>" in text and 'Type="Scene"' in text and "Caption=\"Warm\"" in text
+        assert "Left" in (d / "fixture_groups.a.json").read_text()
+
+    def test_fixtures_only_drops_scenes_and_console_but_keeps_fixtures_and_groups(self, env):
+        c, d = env
+        r = c.post("/api/workspaces", json={"name": "b", "copy_from": "default.qxw", "fixtures_only": True})
+        assert r.status_code == 201
+        text = (d / "b.qxw").read_text()
+        assert "Fixture" in text and "<Name>a</Name>" in text
+        assert "Scene" not in text and "Warm" not in text
+        import app as app_module
+        assert app_module._validate_qxw(d / "b.qxw")
+        assert "Left" in (d / "fixture_groups.b.json").read_text()
+
+    def test_empty_workspace_gets_empty_groups_not_the_global_ones(self, env):
+        c, d = env
+        c.post("/api/workspaces", json={"name": "blank"})
+        assert (d / "fixture_groups.blank.json").read_text() == '{"groups": {}}'
+
+    def test_switch_to_a_new_workspace_and_back_to_the_saved_default(self, env):
+        c, d = env
+        c.post("/api/workspaces", json={"name": "venue", "copy_from": "default.qxw", "fixtures_only": True})
+        r = c.post("/api/workspaces/venue.qxw/load").get_json()
+        saved = r["backup"]
+        assert saved == "studio-default.qxw" and 'Type="Scene"' not in (d / "default.qxw").read_text()
+        names = [w["filename"] for w in c.get("/api/workspaces").get_json()["workspaces"]]
+        assert saved in names and "venue.qxw" in names                 # both are switchable
+        back = c.post(f"/api/workspaces/{saved}/load").get_json()
+        assert back["success"] and back["backup"] is None
+        assert 'Type="Scene"' in (d / "default.qxw").read_text()       # the original default is live again
+
+    def test_edits_to_the_active_workspace_are_saved_back_before_switching(self, env):
+        c, d = env
+        (d / "venue.qxw").write_text(self._FULL)
+        (d / "studio.qxw").write_text(self._FULL)
+        (d / "current_workspace").write_text("studio")
+        (d / "default.qxw").write_text(self._FULL.replace('Name="Warm"', 'Name="Added while studio was live"'))
+        c.post("/api/workspaces/venue.qxw/load")
+        assert "Added while studio was live" in (d / "studio.qxw").read_text()
+
+
+class TestMainWorkspaceName:
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        import app as app_module
+        monkeypatch.setattr(app_module, "WORKSPACE_DIR", tmp_path)
+        monkeypatch.setattr(app_module, "_WORKSPACE_POINTER", tmp_path / "current_workspace")
+        monkeypatch.setattr(app_module, "GROUPS_FILE", tmp_path / "fixture_groups.json")
+        monkeypatch.setattr(app_module, "IS_LOCAL", True)
+        monkeypatch.setattr(app_module, "_restart_qlc", lambda: {"success": True})
+        monkeypatch.setattr(app_module, "_bust_scene_swatch_cache", lambda: None)
+        (tmp_path / "default.qxw").write_text(_VALID_QXW + "<!--main-->")
+        (tmp_path / "venue.qxw").write_text(_VALID_QXW + "<!--venue-->")
+        return app_module.app.test_client(), tmp_path
+
+    def test_the_main_workspace_is_kept_under_a_stable_name(self, env):
+        c, d = env
+        assert c.post("/api/workspaces/venue.qxw/load").get_json()["backup"] == "studio-default.qxw"
+        assert "<!--main-->" in (d / "studio-default.qxw").read_text()
+
+    def test_an_identical_named_copy_needs_no_backup(self, env):
+        c, d = env
+        c.post("/api/workspaces", json={"name": "studio-default", "copy_from": "default.qxw"})
+        assert c.post("/api/workspaces/venue.qxw/load").get_json()["backup"] is None
+
+    def test_a_different_file_with_that_name_is_never_overwritten(self, env):
+        c, d = env
+        (d / "studio-default.qxw").write_text(_VALID_QXW + "<!--something else-->")
+        backup = c.post("/api/workspaces/venue.qxw/load").get_json()["backup"]
+        assert backup.startswith("studio-default-") and backup != "studio-default.qxw"
+        assert "<!--something else-->" in (d / "studio-default.qxw").read_text()
+        assert "<!--main-->" in (d / backup).read_text()

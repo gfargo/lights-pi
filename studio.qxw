@@ -65,17 +65,49 @@
    <Address>13</Address>
    <Channels>7</Channels>
   </Fixture>
+  <Fixture>
+   <Manufacturer>Chauvet</Manufacturer>
+   <Model>SlimPAR Pro H USB</Model>
+   <Mode>7 Channel</Mode>
+   <ID>6</ID>
+   <Name>SlimPAR Pro H USB [7]</Name>
+   <Universe>0</Universe>
+   <Address>29</Address>
+   <Channels>7</Channels>
+  </Fixture>
+  <Fixture>
+   <Manufacturer>Chauvet</Manufacturer>
+   <Model>SlimPAR Pro H USB</Model>
+   <Mode>7 Channel</Mode>
+   <ID>7</ID>
+   <Name>SlimPAR Pro H USB [8]</Name>
+   <Universe>0</Universe>
+   <Address>36</Address>
+   <Channels>7</Channels>
+  </Fixture>
+  <Fixture>
+   <Manufacturer>Chauvet</Manufacturer>
+   <Model>SlimPAR Pro H USB</Model>
+   <Mode>7 Channel</Mode>
+   <ID>8</ID>
+   <Name>SlimPAR Pro H USB [9]</Name>
+   <Universe>0</Universe>
+   <Address>43</Address>
+   <Channels>7</Channels>
+  </Fixture>
   <FixtureGroup ID="0">
    <Name>Left Side</Name>
-   <Size X="2" Y="1"/>
+   <Size X="3" Y="1"/>
    <Head X="0" Y="0" Fixture="3">0</Head>
    <Head X="1" Y="0" Fixture="0">0</Head>
+   <Head X="2" Y="0" Fixture="6">0</Head>
   </FixtureGroup>
   <FixtureGroup ID="1">
    <Name>Right Side</Name>
-   <Size X="2" Y="1"/>
-   <Head X="0" Y="0" Fixture="5">0</Head>
-   <Head X="1" Y="0" Fixture="4">0</Head>
+   <Size X="3" Y="1"/>
+   <Head X="0" Y="0" Fixture="7">0</Head>
+   <Head X="1" Y="0" Fixture="5">0</Head>
+   <Head X="2" Y="0" Fixture="4">0</Head>
   </FixtureGroup>
   <FixtureGroup ID="2">
    <Name>Work Light</Name>
@@ -84,12 +116,15 @@
   </FixtureGroup>
   <FixtureGroup ID="3">
    <Name>All Lights</Name>
-   <Size X="5" Y="1"/>
-   <Head X="0" Y="0" Fixture="5">0</Head>
-   <Head X="1" Y="0" Fixture="4">0</Head>
-   <Head X="2" Y="0" Fixture="3">0</Head>
-   <Head X="3" Y="0" Fixture="0">0</Head>
-   <Head X="4" Y="0" Fixture="1">0</Head>
+   <Size X="8" Y="1"/>
+   <Head X="0" Y="0" Fixture="7">0</Head>
+   <Head X="1" Y="0" Fixture="5">0</Head>
+   <Head X="2" Y="0" Fixture="4">0</Head>
+   <Head X="3" Y="0" Fixture="8">0</Head>
+   <Head X="4" Y="0" Fixture="3">0</Head>
+   <Head X="5" Y="0" Fixture="0">0</Head>
+   <Head X="6" Y="0" Fixture="6">0</Head>
+   <Head X="7" Y="0" Fixture="1">0</Head>
   </FixtureGroup>
   <FixtureGroup ID="4">
    <Name>56s</Name>
@@ -99,10 +134,13 @@
   </FixtureGroup>
   <FixtureGroup ID="5">
    <Name>Pars Only</Name>
-   <Size X="3" Y="1"/>
-   <Head X="0" Y="0" Fixture="5">0</Head>
-   <Head X="1" Y="0" Fixture="0">0</Head>
-   <Head X="2" Y="0" Fixture="1">0</Head>
+   <Size X="6" Y="1"/>
+   <Head X="0" Y="0" Fixture="7">0</Head>
+   <Head X="1" Y="0" Fixture="5">0</Head>
+   <Head X="2" Y="0" Fixture="8">0</Head>
+   <Head X="3" Y="0" Fixture="0">0</Head>
+   <Head X="4" Y="0" Fixture="6">0</Head>
+   <Head X="5" Y="0" Fixture="1">0</Head>
   </FixtureGroup>
   <!-- ============ SCENES: Utility ============ -->
   <Function ID="1" Type="Scene" Name="Lights ON">
@@ -112,6 +150,9 @@
    <FixtureVal ID="3">0,255,1,220,2,220</FixtureVal>
    <FixtureVal ID="4">0,255,1,255,2,220</FixtureVal>
    <FixtureVal ID="5">0,255,1,255,2,220,3,220,4,0,5,120,6,0</FixtureVal>
+   <FixtureVal ID="6">0,240,1,255,2,220,3,220,4,0,5,120,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,255,2,220,3,220,4,0,5,120,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,255,2,220,3,220,4,0,5,120,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="6" Type="Scene" Name="Lights OFF">
@@ -121,6 +162,9 @@
    <FixtureVal ID="3">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="4">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="5">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="7" Type="Scene" Name="Work Light" Path="Modes">
@@ -130,6 +174,9 @@
    <FixtureVal ID="3">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="4">0,170,1,40,2,70</FixtureVal>
    <FixtureVal ID="5">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
   </Function>
   <Function ID="10" Type="Scene" Name="Fade In">
    <Speed FadeIn="2000" FadeOut="0" Duration="0"/>
@@ -138,6 +185,9 @@
    <FixtureVal ID="3">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="4">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="5">0,255,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="11" Type="Scene" Name="Fade Out">
@@ -147,6 +197,9 @@
    <FixtureVal ID="3">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="4">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="5">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="12" Type="Scene" Name="Spotlight" Path="Modes">
@@ -156,6 +209,9 @@
    <FixtureVal ID="3">0,255,1,19,2,0</FixtureVal>
    <FixtureVal ID="4">0,0,1,0,2,0</FixtureVal>
    <FixtureVal ID="5">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,215,2,118,3,34,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,0,1,0,2,0,3,0,4,0,5,0,6,0</FixtureVal>
   </Function>
   <!-- ============ SCENES: Core Colors ============ -->
   <Function ID="0" Type="Scene" Name="Red" Path="Colors">
@@ -165,6 +221,9 @@
    <FixtureVal ID="3">0,255,1,0,2,30</FixtureVal>
    <FixtureVal ID="4">0,255,1,0,2,30</FixtureVal>
    <FixtureVal ID="5">0,255,1,250,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,250,2,0,3,0,4,205,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,250,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,250,2,0,3,0,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="2" Type="Scene" Name="Blue" Path="Colors">
@@ -174,6 +233,9 @@
    <FixtureVal ID="3">0,0,1,0,2,255</FixtureVal>
    <FixtureVal ID="4">0,0,1,0,2,255</FixtureVal>
    <FixtureVal ID="5">0,255,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="3" Type="Scene" Name="White - Cool" Path="Colors">
@@ -183,6 +245,9 @@
    <FixtureVal ID="3">0,200,1,200,2,255</FixtureVal>
    <FixtureVal ID="4">0,200,1,200,2,255</FixtureVal>
    <FixtureVal ID="5">0,255,1,200,2,200,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,200,2,200,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,200,2,200,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,200,2,200,3,255,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="4" Type="Scene" Name="Green" Path="Colors">
@@ -192,6 +257,9 @@
    <FixtureVal ID="3">0,0,1,255,2,0</FixtureVal>
    <FixtureVal ID="4">0,0,1,255,2,0</FixtureVal>
    <FixtureVal ID="5">0,255,1,0,2,255,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,0,2,255,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,255,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,255,3,0,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="5" Type="Scene" Name="White - Warm" Path="Colors">
@@ -201,6 +269,9 @@
    <FixtureVal ID="3">0,230,1,90,2,185</FixtureVal>
    <FixtureVal ID="4">0,230,1,90,2,185</FixtureVal>
    <FixtureVal ID="5">0,229,1,27,2,0,3,0,4,0,5,255,6,0</FixtureVal>
+   <FixtureVal ID="6">0,231,1,27,2,0,3,0,4,0,5,255,6,0</FixtureVal>
+   <FixtureVal ID="7">0,229,1,27,2,0,3,0,4,0,5,255,6,0</FixtureVal>
+   <FixtureVal ID="8">0,229,1,27,2,0,3,0,4,0,5,255,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="8" Type="Scene" Name="Purple" Path="Colors">
@@ -210,6 +281,9 @@
    <FixtureVal ID="3">0,160,1,0,2,255</FixtureVal>
    <FixtureVal ID="4">0,193,1,0,2,255</FixtureVal>
    <FixtureVal ID="5">0,255,1,200,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,200,2,0,3,255,4,0,5,10,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,200,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,200,2,0,3,255,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="9" Type="Scene" Name="Warm Amber" Path="Colors">
@@ -219,6 +293,9 @@
    <FixtureVal ID="3">0,255,1,120,2,0</FixtureVal>
    <FixtureVal ID="4">0,255,1,120,2,0</FixtureVal>
    <FixtureVal ID="5">0,255,1,255,2,120,3,0,4,0,5,10,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,120,3,0,4,0,5,10,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,255,2,120,3,0,4,0,5,10,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,255,2,120,3,0,4,0,5,10,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <!-- ============ SCENES: New Color Palettes ============ -->
@@ -229,6 +306,9 @@
    <FixtureVal ID="3">0,0,1,200,2,180</FixtureVal>
    <FixtureVal ID="4">0,0,1,200,2,180</FixtureVal>
    <FixtureVal ID="5">0,255,1,0,2,200,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,0,2,200,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,200,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,200,3,180,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="14" Type="Scene" Name="Magenta" Path="Colors">
@@ -238,6 +318,9 @@
    <FixtureVal ID="3">0,255,1,0,2,180</FixtureVal>
    <FixtureVal ID="4">0,255,1,0,2,180</FixtureVal>
    <FixtureVal ID="5">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="15" Type="Scene" Name="Ocean Blue" Path="Colors">
@@ -247,6 +330,9 @@
    <FixtureVal ID="3">0,30,1,80,2,255</FixtureVal>
    <FixtureVal ID="4">0,30,1,80,2,255</FixtureVal>
    <FixtureVal ID="5">0,255,1,30,2,80,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,30,2,80,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,30,2,80,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,30,2,80,3,255,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="16" Type="Scene" Name="Sunset" Path="Colors">
@@ -256,6 +342,9 @@
    <FixtureVal ID="3">0,255,1,60,2,0</FixtureVal>
    <FixtureVal ID="4">0,255,1,60,2,0</FixtureVal>
    <FixtureVal ID="5">0,255,1,220,2,30,3,80,4,0,5,20,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,60,3,0,4,0,5,40,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,220,2,30,3,80,4,0,5,20,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,220,2,30,3,80,4,0,5,20,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="17" Type="Scene" Name="Lavender" Path="Colors">
@@ -265,6 +354,9 @@
    <FixtureVal ID="3">0,140,1,80,2,200</FixtureVal>
    <FixtureVal ID="4">0,140,1,80,2,200</FixtureVal>
    <FixtureVal ID="5">0,220,1,140,2,80,3,200,4,0,5,60,6,0</FixtureVal>
+   <FixtureVal ID="6">0,220,1,140,2,80,3,200,4,0,5,60,6,0</FixtureVal>
+   <FixtureVal ID="7">0,220,1,140,2,80,3,200,4,0,5,60,6,0</FixtureVal>
+   <FixtureVal ID="8">0,220,1,140,2,80,3,200,4,0,5,60,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="18" Type="Scene" Name="Golden Hour" Path="Colors">
@@ -274,6 +366,9 @@
    <FixtureVal ID="3">0,200,1,80,2,0</FixtureVal>
    <FixtureVal ID="4">0,200,1,80,2,0</FixtureVal>
    <FixtureVal ID="5">0,255,1,200,2,80,3,0,4,0,5,180,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,200,2,80,3,0,4,0,5,180,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,200,2,80,3,0,4,0,5,180,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,200,2,80,3,0,4,0,5,180,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="19" Type="Scene" Name="Deep Red" Path="Colors">
@@ -283,6 +378,9 @@
    <FixtureVal ID="3">0,255,1,0,2,0</FixtureVal>
    <FixtureVal ID="4">0,255,1,0,2,0</FixtureVal>
    <FixtureVal ID="5">0,200,1,255,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,200,1,255,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,200,1,255,2,0,3,0,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,200,1,255,2,0,3,0,4,0,5,0,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="20" Type="Scene" Name="Ice Blue" Path="Colors">
@@ -292,6 +390,9 @@
    <FixtureVal ID="3">0,100,1,180,2,255</FixtureVal>
    <FixtureVal ID="4">0,100,1,180,2,255</FixtureVal>
    <FixtureVal ID="5">0,255,1,100,2,180,3,255,4,0,5,30,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,100,2,180,3,255,4,0,5,30,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,100,2,180,3,255,4,0,5,30,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,100,2,180,3,255,4,0,5,30,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="21" Type="Scene" Name="Rose" Path="Colors">
@@ -301,6 +402,9 @@
    <FixtureVal ID="3">0,255,1,40,2,120</FixtureVal>
    <FixtureVal ID="4">0,255,1,40,2,120</FixtureVal>
    <FixtureVal ID="5">0,240,1,255,2,40,3,120,4,0,5,60,6,0</FixtureVal>
+   <FixtureVal ID="6">0,240,1,255,2,40,3,120,4,0,5,60,6,0</FixtureVal>
+   <FixtureVal ID="7">0,240,1,255,2,40,3,120,4,0,5,60,6,0</FixtureVal>
+   <FixtureVal ID="8">0,240,1,255,2,40,3,120,4,0,5,60,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="22" Type="Scene" Name="Forest" Path="Colors">
@@ -310,6 +414,9 @@
    <FixtureVal ID="3">0,40,1,255,2,0</FixtureVal>
    <FixtureVal ID="4">0,40,1,255,2,0</FixtureVal>
    <FixtureVal ID="5">0,200,1,40,2,255,3,0,4,0,5,40,6,0</FixtureVal>
+   <FixtureVal ID="6">0,200,1,40,2,255,3,0,4,0,5,40,6,0</FixtureVal>
+   <FixtureVal ID="7">0,200,1,40,2,255,3,0,4,0,5,40,6,0</FixtureVal>
+   <FixtureVal ID="8">0,200,1,40,2,255,3,0,4,0,5,40,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
   </Function>
   <Function ID="23" Type="Scene" Name="Daylight" Path="Colors">
@@ -319,7 +426,87 @@
    <FixtureVal ID="3">0,220,1,220,2,240</FixtureVal>
    <FixtureVal ID="4">0,220,1,220,2,240</FixtureVal>
    <FixtureVal ID="5">0,255,1,220,2,220,3,240,4,0,5,80,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,220,2,220,3,240,4,0,5,80,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,220,2,220,3,240,4,0,5,80,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,220,2,220,3,240,4,0,5,80,6,0</FixtureVal>
    <FixtureGroup ID="3"/>
+  </Function>
+  <Function ID="24" Type="Scene" Name="deep red" Path="AI Generated">
+   <Speed FadeIn="500" FadeOut="500" Duration="0"/>
+   <FixtureVal ID="0">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,0,2,0,3,0,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,0</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,0</FixtureVal>
+   <FixtureVal ID="5">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+  </Function>
+  <Function ID="25" Type="Scene" Name="Unicorn Rainbow Blast" Path="AI Generated">
+   <Speed FadeIn="500" FadeOut="500" Duration="0"/>
+   <FixtureVal ID="0">0,255,1,255,2,20,3,240,4,120,5,50,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,255,2,255,3,80,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,180</FixtureVal>
+   <FixtureVal ID="4">0,0,1,255,2,200</FixtureVal>
+   <FixtureVal ID="5">0,255,1,0,2,255,3,100,4,120,5,60,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,20,3,240,4,120,5,50,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,255,3,100,4,120,5,60,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,255,3,100,4,120,5,60,6,0</FixtureVal>
+  </Function>
+  <Function ID="26" Type="Scene" Name="Pole dancing" Path="AI Generated">
+   <Speed FadeIn="500" FadeOut="500" Duration="0"/>
+   <FixtureVal ID="0">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,220,1,220,2,40,3,100,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,80</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,80</FixtureVal>
+   <FixtureVal ID="5">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+  </Function>
+  <Function ID="27" Type="Scene" Name="Gold Center Party Purple Blue 🌟💙🫦" Path="AI Generated">
+   <Speed FadeIn="0" FadeOut="0" Duration="0"/>
+   <FixtureVal ID="0">0,128,1,100,2,0,3,128,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,59,2,0,3,125,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,100,1,0,2,128</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,255</FixtureVal>
+   <FixtureVal ID="5">0,255,1,0,2,0,3,251,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,128,1,100,2,0,3,128,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,0,3,251,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,0,3,251,4,0,5,0,6,0</FixtureVal>
+  </Function>
+  <Function ID="28" Type="Scene" Name="Strip Night" Path="AI Generated">
+   <Speed FadeIn="0" FadeOut="0" Duration="0"/>
+   <FixtureVal ID="0">0,0,1,255,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="1">0,151,1,255,2,0,3,252,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,255</FixtureVal>
+   <FixtureVal ID="4">0,0,1,18,2,255</FixtureVal>
+   <FixtureVal ID="5">0,0,1,191,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="6">0,0,1,255,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="7">0,0,1,191,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="8">0,0,1,191,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+  </Function>
+  <Function ID="29" Type="Scene" Name="after party" Path="AI Generated">
+   <Speed FadeIn="0" FadeOut="0" Duration="0"/>
+   <FixtureVal ID="0">0,34,1,255,2,6,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,0,2,0,3,252,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,255</FixtureVal>
+   <FixtureVal ID="4">0,0,1,18,2,255</FixtureVal>
+   <FixtureVal ID="5">0,112,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,34,1,255,2,6,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,112,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,112,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+  </Function>
+  <Function ID="30" Type="Scene" Name="dolly 🦋" Path="Colors">
+   <Speed FadeIn="500" FadeOut="500" Duration="0"/>
+   <FixtureVal ID="0">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,220,1,0,2,60,3,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,180</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,180</FixtureVal>
+   <FixtureVal ID="5">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,255,2,0,3,180,4,0,5,0,6,0</FixtureVal>
   </Function>
   <Monitor DisplayMode="0" ShowLabels="0">
    <Font>Arial,12,-1,5,400,0,0,0,0,0,0,0,0,0,0,1</Font>
@@ -332,6 +519,9 @@
    <FxItem ID="3" XPos="2894.59" YPos="2272.85" ZPos="966.413"/>
    <FxItem ID="4" XPos="1890.48" YPos="2272.85" ZPos="976.35"/>
    <FxItem ID="5" XPos="992.615" YPos="2272.85" ZPos="949.817"/>
+   <FxItem ID="6" XPos="4600" YPos="2272.85" ZPos="950"/>
+   <FxItem ID="7" XPos="400" YPos="2272.85" ZPos="950"/>
+   <FxItem ID="8" XPos="2500" YPos="2272.85" ZPos="950"/>
   </Monitor>
  </Engine>
  <VirtualConsole>

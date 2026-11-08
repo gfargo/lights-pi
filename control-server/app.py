@@ -871,6 +871,8 @@ def get_next_scene_id():
 
 _SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+\.qxw$')
 _RESERVED_WS = {"default.qxw", "autostart.qxw"}
+# Name under which an unnamed live default.qxw is kept when you switch away from it.
+MAIN_WORKSPACE_NAME = "studio-default"
 
 
 def _safe_workspace_name(name: str) -> str | None:
@@ -902,7 +904,88 @@ def _list_workspace_files() -> list[dict]:
             "active": p.stem == active,
             "size_bytes": p.stat().st_size,
         })
+    # default.qxw / autostart.qxw are aliases that switching copies INTO, so they are normally
+    # hidden. But when no named workspace backs the active one (the rig was set up straight into
+    # default.qxw, e.g. `lightsctl set-default-workspace`), the live workspace IS default.qxw and
+    # hiding it left the list empty ("No workspaces found") with the real workspace invisible.
+    live = WORKSPACE_DIR / "default.qxw"
+    if live.exists() and not any(w["active"] for w in results):
+        results.insert(0, {
+            "name": "default",
+            "filename": "default.qxw",
+            "active": True,
+            "live": True,
+            "size_bytes": live.stat().st_size,
+        })
     return results
+
+
+def _workspace_groups_path(stem: str) -> Path:
+    return WORKSPACE_DIR / f"fixture_groups.{stem}.json"
+
+
+def _copy_workspace_groups(src_stem: str, new_stem: str) -> None:
+    """Give a new workspace its own copy of the source's fixture groups.
+
+    Groups are lists of fixture IDs, and IDs differ between workspaces, so sharing one global file
+    would point a new workspace's groups at fixtures it does not have. The source is its own
+    per-workspace file if it has one, else the global file (what an unnamed live default uses).
+    """
+    src = _workspace_groups_path(src_stem)
+    if not src.exists():
+        src = GROUPS_FILE
+    dest = _workspace_groups_path(new_stem)
+    if src.exists():
+        shutil.copy2(src, dest)
+    else:
+        dest.write_text('{"groups": {}}')
+
+
+def _strip_workspace_to_fixtures(path: Path) -> None:
+    """Keep a workspace's fixtures, output setup, groups and stage layout; drop scenes/chases/etc.
+
+    Removes every <Function> and resets the Virtual Console to an empty frame (its buttons point
+    at the functions just removed).
+    """
+    ns = "http://www.qlcplus.org/Workspace"
+    ET.register_namespace("", ns)
+    tree = ET.parse(path)
+    root = tree.getroot()
+    def local(e):
+        return e.tag.split("}")[-1]
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if local(child) == "Function":
+                parent.remove(child)
+    for vc in [e for e in root.iter() if local(e) == "VirtualConsole"]:
+        for child in list(vc):
+            vc.remove(child)
+        ET.SubElement(vc, f"{{{ns}}}Frame")
+    tree.write(path, encoding="UTF-8", xml_declaration=True)
+
+
+def _backup_unnamed_live_workspace() -> str | None:
+    """Before a switch overwrites default.qxw: if no named workspace backs it, keep a copy.
+
+    Otherwise the first switch would destroy the only copy of the rig's workspace. Returns the
+    backup's filename, or None when nothing needed saving.
+    """
+    live = WORKSPACE_DIR / "default.qxw"
+    if not live.exists():
+        return None
+    active = _active_workspace_name()
+    if active != "default" and (WORKSPACE_DIR / f"{active}.qxw").exists():
+        return None  # a named file already holds it
+    # The rig's main workspace gets a stable, human name (not a timestamp). If that name is already
+    # taken by an identical copy there is nothing to save; if by a DIFFERENT file, never overwrite it.
+    backup = WORKSPACE_DIR / f"{MAIN_WORKSPACE_NAME}.qxw"
+    if backup.exists():
+        if backup.read_bytes() == live.read_bytes():
+            return None
+        backup = WORKSPACE_DIR / f"{MAIN_WORKSPACE_NAME}-{time.strftime('%Y%m%d-%H%M%S')}.qxw"
+    shutil.copy2(live, backup)
+    _copy_workspace_groups("default", backup.stem)  # its groups travel with it, so switching back is complete
+    return backup.name
 
 
 def _active_workspace_name() -> str:
@@ -3394,8 +3477,9 @@ def _snapshot_current_state_as_xml(name: str, path: str = "AI Generated") -> str
         for offset in range(fixture["channels"]):
             abs_ch = fixture["universe"] * 512 + fixture["address"] + offset + 1
             val = values.get(abs_ch, 0)
-            # Use 1-based channel numbering for generated scenes
-            pairs.append(f"{offset + 1},{val}")
+            # QLC+ reads FixtureVal channels 0-based. Writing them 1-based shifts
+            # every value up one channel when QLC+ itself plays the scene.
+            pairs.append(f"{offset},{val}")
         if pairs:
             fixture_vals.append(
                 f'  <FixtureVal ID="{fixture["id"]}">{",".join(pairs)}</FixtureVal>'
@@ -3449,6 +3533,37 @@ def _xml_escape(text: str) -> str:
             .replace("'", "&apos;"))
 
 
+def _normalize_scene_fixture_vals(scene_root, fixtures=None) -> int:
+    """Rewrite every <FixtureVal> in a scene to QLC+'s native 0-based channels.
+
+    Scenes arrive from several writers (AI generation, MCP/API clients, templates) and some
+    historically used 1-based channels, which QLC+ misreads: values land one channel too high
+    and the last one falls off the end of the fixture. The base is decided per fixture by
+    _decode_fixture_val_pairs (a 0 means 0-based; the fixture's channel count means 1-based;
+    otherwise the data is ambiguous and left alone). Returns how many FixtureVals changed.
+    """
+    if fixtures is None:
+        fixtures = get_workspace_fixtures()
+    by_id = {str(f["id"]): f for f in fixtures}
+    changed = 0
+    for fixture_val in _find_children(scene_root, "FixtureVal"):
+        fixture = by_id.get(str(fixture_val.get("ID")))
+        if not fixture or not fixture_val.text:
+            continue
+        parts = [p.strip() for p in fixture_val.text.split(",") if p.strip() != ""]
+        try:
+            pairs = [(int(parts[i]), int(parts[i + 1])) for i in range(0, len(parts) - 1, 2)]
+        except ValueError:
+            continue
+        if not pairs:
+            continue
+        decoded = _decode_fixture_val_pairs(pairs, int(fixture.get("channels", 0)))
+        if decoded != pairs:
+            fixture_val.text = ",".join(f"{ch},{val}" for ch, val in decoded)
+            changed += 1
+    return changed
+
+
 def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
     """Inject scene XML into the workspace file's Engine element.
 
@@ -3469,6 +3584,9 @@ def _inject_scene_into_workspace(scene_xml: str, scene_id: int) -> bool:
 
             # Set the ID attribute
             scene_root.set("ID", str(scene_id))
+
+            # Store channels in QLC+'s native 0-based form whatever the writer used
+            _normalize_scene_fixture_vals(scene_root, get_workspace_fixtures(root))
 
             # Append to Engine
             engine.append(scene_root)
@@ -3501,7 +3619,7 @@ def list_groups():
         for group_name, group_info in groups_dict.items():
             groups.append({
                 "name": group_name,
-                "fixtures": group_info.get("fixtures", []),
+                "fixtures": _normalize_fixture_ids(group_info.get("fixtures", [])),
                 "description": group_info.get("description", "")
             })
 
@@ -3727,8 +3845,15 @@ def _load_groups() -> dict:
     except json.JSONDecodeError:
         return {}
     if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], dict):
-        return data["groups"]
-    return data if isinstance(data, dict) else {}
+        groups = data["groups"]
+    else:
+        groups = data if isinstance(data, dict) else {}
+    # Older files (imported from QLC+) store fixture IDs as strings ("4"); the API compares ints,
+    # so removing "4" silently did nothing. Normalise here so every read sees ints.
+    for info in groups.values():
+        if isinstance(info, dict) and "fixtures" in info:
+            info["fixtures"] = _normalize_fixture_ids(info.get("fixtures"))
+    return groups
 
 
 def _save_groups(groups: dict) -> None:
@@ -3989,14 +4114,25 @@ def create_workspace():
     if copy_from:
         if not copy_from.endswith(".qxw"):
             copy_from = copy_from + ".qxw"
-        safe_copy_from = _safe_workspace_name(copy_from)
+        # default.qxw is a valid COPY source (read-only) even though it is a reserved alias, so the
+        # live workspace can be saved under a name before switching away from it.
+        safe_copy_from = "default.qxw" if copy_from == "default.qxw" else _safe_workspace_name(copy_from)
         if not safe_copy_from:
             return jsonify({"success": False, "error": "invalid source workspace name"}), 400
         src = WORKSPACE_DIR / safe_copy_from
         if not src.exists():
             return jsonify({"success": False, "error": f"Source workspace '{safe_copy_from}' not found"}), 404
         shutil.copy2(src, dest)
+        _copy_workspace_groups(src.stem, dest.stem)
+        if data.get("fixtures_only"):
+            try:
+                _strip_workspace_to_fixtures(dest)
+            except Exception as exc:  # leave no half-made workspace behind
+                dest.unlink(missing_ok=True)
+                _workspace_groups_path(dest.stem).unlink(missing_ok=True)
+                return jsonify({"success": False, "error": f"could not strip scenes: {exc}"}), 500
     else:
+        _workspace_groups_path(dest.stem).write_text('{"groups": {}}')
         _QXW_SKELETON = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE Workspace>\n'
@@ -4031,6 +4167,9 @@ def load_workspace(name):
 
     if not name.endswith(".qxw"):
         name = name + ".qxw"
+    if name == "default.qxw" and not any(w["active"] and not w.get("live") for w in _list_workspace_files()):
+        # The live default is what is already running; "switching" to it is a no-op.
+        return jsonify({"success": True, "message": "already active", "name": "default"}), 200
     safe = _safe_workspace_name(name)
     if not safe:
         return jsonify({"success": False, "error": "invalid workspace name"}), 400
@@ -4043,8 +4182,13 @@ def load_workspace(name):
     if src.stem == active:
         return jsonify({"success": True, "message": "already active", "name": active}), 200
 
-    # Swap default.qxw and autostart.qxw
+    # default.qxw is where the ACTIVE workspace is edited (scenes saved through the API, QLC+ saves),
+    # so write it back to its named file before overwriting it, or edits made since the last
+    # switch would be lost. An unnamed live default has no file to go back to: keep a copy instead.
     default_path = WORKSPACE_DIR / "default.qxw"
+    backup = _backup_unnamed_live_workspace()
+    if active != "default" and default_path.exists() and (WORKSPACE_DIR / f"{active}.qxw").exists():
+        shutil.copy2(default_path, WORKSPACE_DIR / f"{active}.qxw")
     autostart_path = WORKSPACE_DIR / "autostart.qxw"
     shutil.copy2(src, default_path)
     shutil.copy2(src, autostart_path)
@@ -4056,6 +4200,7 @@ def load_workspace(name):
     return jsonify({
         "success": True,
         "name": src.stem,
+        "backup": backup,
         "restarted": restart_result.get("success", False),
         "needs_manual_restart": not restart_result.get("success", False),
         "restart_error": restart_result.get("error") if not restart_result.get("success") else None,

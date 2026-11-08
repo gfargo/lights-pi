@@ -250,7 +250,8 @@ CRITICAL OUTPUT RULES:
 - Output ONLY valid QLC+ scene XML. No prose, no markdown, no commentary.
 - Use ONLY the fixture IDs from the inventory you are given.
 - Use ONLY the channel offsets that exist on each fixture (see channel_info).
-- Channel offsets in <FixtureVal> are 1-based for QLC+ generated scenes.
+- Channel numbers in <FixtureVal> are 0-based (QLC+'s native form) and equal the `offset`
+  in channel_info: the first channel of a fixture is 0, NOT 1.
 - DMX values are integers 0-255.
 
 CHANNEL SEMANTICS (read this carefully):
@@ -295,10 +296,10 @@ WHEN BUILDING A SCENE:
 
 CONCRETE EXAMPLE — a "soft dim warm light" scene on a SlimPAR Pro W (9 Ch
 warm/cool/amber, no RGB):
-  channel_info offsets are 0-based, so the FixtureVal channels (1-based) are:
-    CH1 dimmer=140, CH2 warm=240, CH3 cool=20, CH4 amber=120,
-    CH5 macro=0, CH6 strobe=0, CH7=0, CH8=0, CH9=0
-  → FixtureVal text: "1,140,2,240,3,20,4,120,5,0,6,0,7,0,8,0,9,0"
+  channel_info offsets are 0-based and the FixtureVal channels use the same numbers:
+    0 dimmer=140, 1 warm=240, 2 cool=20, 3 amber=120,
+    4 macro=0, 5 strobe=0, 6=0, 7=0, 8=0
+  → FixtureVal text: "0,140,1,240,2,20,3,120,4,0,5,0,6,0,7,0,8,0"
 
 OUTPUT FORMAT:
 <?xml version="1.0" encoding="UTF-8"?>

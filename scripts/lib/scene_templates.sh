@@ -45,14 +45,14 @@ XML
     if echo "$capabilities" | grep -q "rgb"; then
       # RGB fixture: neutral white (equal RGB at 80%)
       if [[ "$channels" -eq 3 ]]; then
-        dmx_values="1,200,2,200,3,200"
+        dmx_values="0,200,1,200,2,200"
       elif [[ "$channels" -ge 7 ]]; then
         # RGBWA fixture with dimmer
-        dmx_values="1,255,2,200,3,200,4,200,5,0,6,0,7,0"
+        dmx_values="0,255,1,200,2,200,3,200,4,0,5,0,6,0"
       fi
     else
       # Dimmer only
-      dmx_values="1,255"
+      dmx_values="0,255"
     fi
     
     if [[ -n "$dmx_values" ]]; then
@@ -86,36 +86,36 @@ XML
       case $((color_index % 4)) in
         0) # Magenta
           if [[ "$channels" -eq 3 ]]; then
-            dmx_values="1,255,2,0,3,255"
+            dmx_values="0,255,1,0,2,255"
           else
-            dmx_values="1,255,2,255,3,0,4,255,5,0,6,0,7,0"
+            dmx_values="0,255,1,255,2,0,3,255,4,0,5,0,6,0"
           fi
           ;;
         1) # Cyan
           if [[ "$channels" -eq 3 ]]; then
-            dmx_values="1,0,2,255,3,255"
+            dmx_values="0,0,1,255,2,255"
           else
-            dmx_values="1,255,2,0,3,255,4,255,5,0,6,0,7,0"
+            dmx_values="0,255,1,0,2,255,3,255,4,0,5,0,6,0"
           fi
           ;;
         2) # Yellow
           if [[ "$channels" -eq 3 ]]; then
-            dmx_values="1,255,2,255,3,0"
+            dmx_values="0,255,1,255,2,0"
           else
-            dmx_values="1,255,2,255,3,255,4,0,5,0,6,0,7,0"
+            dmx_values="0,255,1,255,2,255,3,0,4,0,5,0,6,0"
           fi
           ;;
         3) # Green
           if [[ "$channels" -eq 3 ]]; then
-            dmx_values="1,0,2,255,3,0"
+            dmx_values="0,0,1,255,2,0"
           else
-            dmx_values="1,255,2,0,3,255,4,0,5,0,6,0,7,0"
+            dmx_values="0,255,1,0,2,255,3,0,4,0,5,0,6,0"
           fi
           ;;
       esac
       color_index=$((color_index + 1))
     else
-      dmx_values="1,255"
+      dmx_values="0,255"
     fi
     
     if [[ -n "$dmx_values" ]]; then
@@ -144,12 +144,12 @@ XML
     if echo "$capabilities" | grep -q "rgb"; then
       # Warm amber glow
       if [[ "$channels" -eq 3 ]]; then
-        dmx_values="1,100,2,60,3,20"
+        dmx_values="0,100,1,60,2,20"
       else
-        dmx_values="1,80,2,100,3,60,4,20,5,0,6,40,7,0"
+        dmx_values="0,80,1,100,2,60,3,20,4,0,5,40,6,0"
       fi
     else
-      dmx_values="1,80"
+      dmx_values="0,80"
     fi
     
     if [[ -n "$dmx_values" ]]; then
@@ -180,22 +180,22 @@ XML
       # First fixture: full white
       if echo "$capabilities" | grep -q "rgb"; then
         if [[ "$channels" -eq 3 ]]; then
-          dmx_values="1,255,2,255,3,255"
+          dmx_values="0,255,1,255,2,255"
         else
-          dmx_values="1,255,2,255,3,255,4,255,5,0,6,0,7,0"
+          dmx_values="0,255,1,255,2,255,3,255,4,0,5,0,6,0"
         fi
       else
-        dmx_values="1,255"
+        dmx_values="0,255"
       fi
       first=false
     else
       # Other fixtures: off
       if [[ "$channels" -eq 3 ]]; then
-        dmx_values="1,0,2,0,3,0"
+        dmx_values="0,0,1,0,2,0"
       elif [[ "$channels" -ge 7 ]]; then
-        dmx_values="1,0,2,0,3,0,4,0,5,0,6,0,7,0"
+        dmx_values="0,0,1,0,2,0,3,0,4,0,5,0,6,0"
       else
-        dmx_values="1,0"
+        dmx_values="0,0"
       fi
     fi
     
@@ -224,12 +224,12 @@ XML
     
     if echo "$capabilities" | grep -q "rgb"; then
       if [[ "$channels" -eq 3 ]]; then
-        dmx_values="1,255,2,255,3,255"
+        dmx_values="0,255,1,255,2,255"
       else
-        dmx_values="1,255,2,255,3,255,4,255,5,0,6,0,7,0"
+        dmx_values="0,255,1,255,2,255,3,255,4,0,5,0,6,0"
       fi
     else
-      dmx_values="1,255"
+      dmx_values="0,255"
     fi
     
     if [[ -n "$dmx_values" ]]; then
@@ -257,12 +257,12 @@ XML
     
     if echo "$capabilities" | grep -q "rgb"; then
       if [[ "$channels" -eq 3 ]]; then
-        dmx_values="1,255,2,180,3,100"
+        dmx_values="0,255,1,180,2,100"
       else
-        dmx_values="1,220,2,255,3,180,4,100,5,0,6,80,7,0"
+        dmx_values="0,220,1,255,2,180,3,100,4,0,5,80,6,0"
       fi
     else
-      dmx_values="1,220"
+      dmx_values="0,220"
     fi
     
     if [[ -n "$dmx_values" ]]; then
@@ -290,12 +290,12 @@ XML
     
     if echo "$capabilities" | grep -q "rgb"; then
       if [[ "$channels" -eq 3 ]]; then
-        dmx_values="1,180,2,220,3,255"
+        dmx_values="0,180,1,220,2,255"
       else
-        dmx_values="1,220,2,180,3,220,4,255,5,0,6,0,7,0"
+        dmx_values="0,220,1,180,2,220,3,255,4,0,5,0,6,0"
       fi
     else
-      dmx_values="1,220"
+      dmx_values="0,220"
     fi
     
     if [[ -n "$dmx_values" ]]; then
