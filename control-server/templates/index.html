@@ -1937,7 +1937,7 @@
             <div class="tool-panel" data-eyebrow="Workspace · switch">
                 <div class="tool-header">
                     <span class="tool-title">Workspaces</span>
-                    <button class="btn-secondary btn-tiny" onclick="loadWorkspaces()">Refresh</button>
+                    <button class="btn-secondary btn-tiny" onclick="loadWorkspaces(false)">Refresh</button>
                 </div>
                 <div class="tool-actions">
                     <select id="workspaceSelect" class="field-input" style="flex:1;">
@@ -1950,6 +1950,14 @@
                     <input type="text" id="newWorkspaceName" class="field-input" placeholder="new-workspace-name" style="flex:1;">
                     <button class="btn-secondary" onclick="createWorkspace()">New</button>
                 </div>
+                <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;font-size:0.78rem;color:var(--paper-60);">
+                    <input type="checkbox" id="newWorkspaceCopy" checked onchange="syncNewWorkspaceOptions()">
+                    Copy the current workspace's fixtures (and groups)
+                </label>
+                <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.35rem;font-size:0.78rem;color:var(--paper-60);">
+                    <input type="checkbox" id="newWorkspaceCopyScenes" checked>
+                    Also copy scenes, chases and the virtual console
+                </label>
             </div>
 
             <div class="tool-panel" data-eyebrow="journalctl · tail">
@@ -3475,11 +3483,10 @@
         /* ══════════════════════════════════════
            Workspaces
            ══════════════════════════════════════ */
-        async function loadWorkspaces() {
+        async function loadWorkspaces(keepMessage = false) {
             const sel = document.getElementById('workspaceSelect');
             const result = document.getElementById('workspaceResult');
-            result.className = 'result-bar';
-            result.textContent = '';
+            if (!keepMessage) { result.className = 'result-bar'; result.textContent = ''; }
             try {
                 const r = await fetch('/api/workspaces');
                 const data = await r.json();
@@ -3488,8 +3495,10 @@
                     sel.innerHTML = '<option value="">No workspaces found</option>';
                     return;
                 }
+                const act = ws.find(w => w.active);
+                window._activeWorkspaceFile = act ? act.filename : null;
                 sel.innerHTML = ws.map(w =>
-                    `<option value="${escHtml(w.filename)}"${w.active ? ' selected' : ''}>${escHtml(w.name)}${w.active ? ' (active)' : ''}</option>`
+                    `<option value="${escHtml(w.filename)}"${w.active ? ' selected' : ''}>${escHtml(w.name)}${w.active ? (w.live ? ' (active · live)' : ' (active)') : ''}</option>`
                 ).join('');
             } catch (e) {
                 sel.innerHTML = '<option value="">Failed to load</option>';
@@ -3501,6 +3510,11 @@
             const result = document.getElementById('workspaceResult');
             const name = sel.value;
             if (!name) return;
+            if (name === window._activeWorkspaceFile) {
+                result.className = 'result-bar ok';
+                result.textContent = `"${name.replace('.qxw', '')}" is already the active workspace.`;
+                return;
+            }
             if (!confirm(`Switch to workspace "${name.replace('.qxw', '')}"?\n\nThis will restart QLC+. Any unsaved changes will be lost.`)) return;
             result.className = 'result-bar';
             result.textContent = 'Switching…';
@@ -3509,10 +3523,11 @@
                 const data = await r.json();
                 if (data.success) {
                     result.className = 'result-bar ok';
-                    result.textContent = data.needs_manual_restart
+                    result.textContent = (data.needs_manual_restart
                         ? `Switched to "${data.name}". Restart QLC+ manually to apply.`
-                        : `Switched to "${data.name}" — QLC+ restarted.`;
-                    loadWorkspaces();
+                        : `Switched to "${data.name}" — QLC+ restarted.`)
+                        + (data.backup ? ` The previous default workspace was saved as "${data.backup.replace('.qxw', '')}".` : '');
+                    loadWorkspaces(true);
                     checkStatus();
                 } else {
                     result.className = 'result-bar err';
@@ -3524,6 +3539,12 @@
             }
         }
 
+        function syncNewWorkspaceOptions() {
+            // Scenes/console only make sense when fixtures are copied; unchecking fixtures = empty.
+            const fx = document.getElementById('newWorkspaceCopy'), sc = document.getElementById('newWorkspaceCopyScenes');
+            sc.disabled = !fx.checked;
+        }
+
         async function createWorkspace() {
             const nameEl = document.getElementById('newWorkspaceName');
             const result = document.getElementById('workspaceResult');
@@ -3532,17 +3553,21 @@
             result.className = 'result-bar';
             result.textContent = 'Creating…';
             try {
+                const copyFrom = document.getElementById('newWorkspaceCopy').checked ? window._activeWorkspaceFile : null;
+                const withScenes = document.getElementById('newWorkspaceCopyScenes').checked;
                 const r = await fetch('/api/workspaces', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name }),
+                    body: JSON.stringify(copyFrom ? { name, copy_from: copyFrom, fixtures_only: !withScenes } : { name }),
                 });
                 const data = await r.json();
                 if (data.success) {
                     result.className = 'result-bar ok';
-                    result.textContent = `Created workspace "${data.name}"`;
+                    result.textContent = copyFrom
+                        ? `Created workspace "${data.name}" from "${copyFrom.replace('.qxw', '')}" (${withScenes ? 'fixtures, scenes and console' : 'fixtures only'}). Pick it above and press Switch to use it.`
+                        : `Created empty workspace "${data.name}"`;
                     nameEl.value = '';
-                    loadWorkspaces();
+                    loadWorkspaces(true);
                 } else {
                     result.className = 'result-bar err';
                     result.textContent = data.error || 'Create failed';

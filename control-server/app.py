@@ -902,7 +902,82 @@ def _list_workspace_files() -> list[dict]:
             "active": p.stem == active,
             "size_bytes": p.stat().st_size,
         })
+    # default.qxw / autostart.qxw are aliases that switching copies INTO, so they are normally
+    # hidden. But when no named workspace backs the active one (the rig was set up straight into
+    # default.qxw, e.g. `lightsctl set-default-workspace`), the live workspace IS default.qxw and
+    # hiding it left the list empty ("No workspaces found") with the real workspace invisible.
+    live = WORKSPACE_DIR / "default.qxw"
+    if live.exists() and not any(w["active"] for w in results):
+        results.insert(0, {
+            "name": "default",
+            "filename": "default.qxw",
+            "active": True,
+            "live": True,
+            "size_bytes": live.stat().st_size,
+        })
     return results
+
+
+def _workspace_groups_path(stem: str) -> Path:
+    return WORKSPACE_DIR / f"fixture_groups.{stem}.json"
+
+
+def _copy_workspace_groups(src_stem: str, new_stem: str) -> None:
+    """Give a new workspace its own copy of the source's fixture groups.
+
+    Groups are lists of fixture IDs, and IDs differ between workspaces, so sharing one global file
+    would point a new workspace's groups at fixtures it does not have. The source is its own
+    per-workspace file if it has one, else the global file (what an unnamed live default uses).
+    """
+    src = _workspace_groups_path(src_stem)
+    if not src.exists():
+        src = GROUPS_FILE
+    dest = _workspace_groups_path(new_stem)
+    if src.exists():
+        shutil.copy2(src, dest)
+    else:
+        dest.write_text('{"groups": {}}')
+
+
+def _strip_workspace_to_fixtures(path: Path) -> None:
+    """Keep a workspace's fixtures, output setup, groups and stage layout; drop scenes/chases/etc.
+
+    Removes every <Function> and resets the Virtual Console to an empty frame (its buttons point
+    at the functions just removed).
+    """
+    ns = "http://www.qlcplus.org/Workspace"
+    ET.register_namespace("", ns)
+    tree = ET.parse(path)
+    root = tree.getroot()
+    local = lambda e: e.tag.split("}")[-1]
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if local(child) == "Function":
+                parent.remove(child)
+    for vc in [e for e in root.iter() if local(e) == "VirtualConsole"]:
+        for child in list(vc):
+            vc.remove(child)
+        ET.SubElement(vc, f"{{{ns}}}Frame")
+    tree.write(path, encoding="UTF-8", xml_declaration=True)
+
+
+def _backup_unnamed_live_workspace() -> str | None:
+    """Before a switch overwrites default.qxw: if no named workspace backs it, keep a copy.
+
+    Otherwise the first switch would destroy the only copy of the rig's workspace. Returns the
+    backup's filename, or None when nothing needed saving.
+    """
+    live = WORKSPACE_DIR / "default.qxw"
+    if not live.exists():
+        return None
+    active = _active_workspace_name()
+    if active != "default" and (WORKSPACE_DIR / f"{active}.qxw").exists():
+        return None  # a named file already holds it
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = WORKSPACE_DIR / f"default-saved-{stamp}.qxw"
+    shutil.copy2(live, backup)
+    _copy_workspace_groups("default", backup.stem)  # its groups travel with it, so switching back is complete
+    return backup.name
 
 
 def _active_workspace_name() -> str:
@@ -4031,14 +4106,25 @@ def create_workspace():
     if copy_from:
         if not copy_from.endswith(".qxw"):
             copy_from = copy_from + ".qxw"
-        safe_copy_from = _safe_workspace_name(copy_from)
+        # default.qxw is a valid COPY source (read-only) even though it is a reserved alias, so the
+        # live workspace can be saved under a name before switching away from it.
+        safe_copy_from = "default.qxw" if copy_from == "default.qxw" else _safe_workspace_name(copy_from)
         if not safe_copy_from:
             return jsonify({"success": False, "error": "invalid source workspace name"}), 400
         src = WORKSPACE_DIR / safe_copy_from
         if not src.exists():
             return jsonify({"success": False, "error": f"Source workspace '{safe_copy_from}' not found"}), 404
         shutil.copy2(src, dest)
+        _copy_workspace_groups(src.stem, dest.stem)
+        if data.get("fixtures_only"):
+            try:
+                _strip_workspace_to_fixtures(dest)
+            except Exception as exc:  # leave no half-made workspace behind
+                dest.unlink(missing_ok=True)
+                _workspace_groups_path(dest.stem).unlink(missing_ok=True)
+                return jsonify({"success": False, "error": f"could not strip scenes: {exc}"}), 500
     else:
+        _workspace_groups_path(dest.stem).write_text('{"groups": {}}')
         _QXW_SKELETON = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE Workspace>\n'
@@ -4073,6 +4159,9 @@ def load_workspace(name):
 
     if not name.endswith(".qxw"):
         name = name + ".qxw"
+    if name == "default.qxw" and not any(w["active"] and not w.get("live") for w in _list_workspace_files()):
+        # The live default is what is already running; "switching" to it is a no-op.
+        return jsonify({"success": True, "message": "already active", "name": "default"}), 200
     safe = _safe_workspace_name(name)
     if not safe:
         return jsonify({"success": False, "error": "invalid workspace name"}), 400
@@ -4085,8 +4174,13 @@ def load_workspace(name):
     if src.stem == active:
         return jsonify({"success": True, "message": "already active", "name": active}), 200
 
-    # Swap default.qxw and autostart.qxw
+    # default.qxw is where the ACTIVE workspace is edited (scenes saved through the API, QLC+ saves),
+    # so write it back to its named file before overwriting it, or edits made since the last
+    # switch would be lost. An unnamed live default has no file to go back to: keep a copy instead.
     default_path = WORKSPACE_DIR / "default.qxw"
+    backup = _backup_unnamed_live_workspace()
+    if active != "default" and default_path.exists() and (WORKSPACE_DIR / f"{active}.qxw").exists():
+        shutil.copy2(default_path, WORKSPACE_DIR / f"{active}.qxw")
     autostart_path = WORKSPACE_DIR / "autostart.qxw"
     shutil.copy2(src, default_path)
     shutil.copy2(src, autostart_path)
@@ -4098,6 +4192,7 @@ def load_workspace(name):
     return jsonify({
         "success": True,
         "name": src.stem,
+        "backup": backup,
         "restarted": restart_result.get("success", False),
         "needs_manual_restart": not restart_result.get("success", False),
         "restart_error": restart_result.get("error") if not restart_result.get("success") else None,
