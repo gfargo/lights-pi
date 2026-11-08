@@ -871,6 +871,8 @@ def get_next_scene_id():
 
 _SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+\.qxw$')
 _RESERVED_WS = {"default.qxw", "autostart.qxw"}
+# Name under which an unnamed live default.qxw is kept when you switch away from it.
+MAIN_WORKSPACE_NAME = "studio-default"
 
 
 def _safe_workspace_name(name: str) -> str | None:
@@ -973,8 +975,13 @@ def _backup_unnamed_live_workspace() -> str | None:
     active = _active_workspace_name()
     if active != "default" and (WORKSPACE_DIR / f"{active}.qxw").exists():
         return None  # a named file already holds it
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup = WORKSPACE_DIR / f"default-saved-{stamp}.qxw"
+    # The rig's main workspace gets a stable, human name (not a timestamp). If that name is already
+    # taken by an identical copy there is nothing to save; if by a DIFFERENT file, never overwrite it.
+    backup = WORKSPACE_DIR / f"{MAIN_WORKSPACE_NAME}.qxw"
+    if backup.exists():
+        if backup.read_bytes() == live.read_bytes():
+            return None
+        backup = WORKSPACE_DIR / f"{MAIN_WORKSPACE_NAME}-{time.strftime('%Y%m%d-%H%M%S')}.qxw"
     shutil.copy2(live, backup)
     _copy_workspace_groups("default", backup.stem)  # its groups travel with it, so switching back is complete
     return backup.name

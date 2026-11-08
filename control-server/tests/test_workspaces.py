@@ -408,7 +408,7 @@ class TestLiveDefaultRoutes:
         c, d = client
         (d / "venue.qxw").write_text(_VALID_QXW + "<!--venue-->")
         r = c.post("/api/workspaces/venue.qxw/load").get_json()
-        assert r["success"] and r["backup"].startswith("default-saved-")
+        assert r["success"] and r["backup"] == "studio-default.qxw"
         assert "<!--live-->" in (d / r["backup"]).read_text()          # the rig's workspace survived
         assert "<!--venue-->" in (d / "default.qxw").read_text()       # and the switch happened
 
@@ -477,7 +477,7 @@ class TestCreateAndSwitchBetweenWorkspaces:
         c.post("/api/workspaces", json={"name": "venue", "copy_from": "default.qxw", "fixtures_only": True})
         r = c.post("/api/workspaces/venue.qxw/load").get_json()
         saved = r["backup"]
-        assert saved.startswith("default-saved-") and 'Type="Scene"' not in (d / "default.qxw").read_text()
+        assert saved == "studio-default.qxw" and 'Type="Scene"' not in (d / "default.qxw").read_text()
         names = [w["filename"] for w in c.get("/api/workspaces").get_json()["workspaces"]]
         assert saved in names and "venue.qxw" in names                 # both are switchable
         back = c.post(f"/api/workspaces/{saved}/load").get_json()
@@ -492,3 +492,36 @@ class TestCreateAndSwitchBetweenWorkspaces:
         (d / "default.qxw").write_text(self._FULL.replace('Name="Warm"', 'Name="Added while studio was live"'))
         c.post("/api/workspaces/venue.qxw/load")
         assert "Added while studio was live" in (d / "studio.qxw").read_text()
+
+
+class TestMainWorkspaceName:
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        import app as app_module
+        monkeypatch.setattr(app_module, "WORKSPACE_DIR", tmp_path)
+        monkeypatch.setattr(app_module, "_WORKSPACE_POINTER", tmp_path / "current_workspace")
+        monkeypatch.setattr(app_module, "GROUPS_FILE", tmp_path / "fixture_groups.json")
+        monkeypatch.setattr(app_module, "IS_LOCAL", True)
+        monkeypatch.setattr(app_module, "_restart_qlc", lambda: {"success": True})
+        monkeypatch.setattr(app_module, "_bust_scene_swatch_cache", lambda: None)
+        (tmp_path / "default.qxw").write_text(_VALID_QXW + "<!--main-->")
+        (tmp_path / "venue.qxw").write_text(_VALID_QXW + "<!--venue-->")
+        return app_module.app.test_client(), tmp_path
+
+    def test_the_main_workspace_is_kept_under_a_stable_name(self, env):
+        c, d = env
+        assert c.post("/api/workspaces/venue.qxw/load").get_json()["backup"] == "studio-default.qxw"
+        assert "<!--main-->" in (d / "studio-default.qxw").read_text()
+
+    def test_an_identical_named_copy_needs_no_backup(self, env):
+        c, d = env
+        c.post("/api/workspaces", json={"name": "studio-default", "copy_from": "default.qxw"})
+        assert c.post("/api/workspaces/venue.qxw/load").get_json()["backup"] is None
+
+    def test_a_different_file_with_that_name_is_never_overwritten(self, env):
+        c, d = env
+        (d / "studio-default.qxw").write_text(_VALID_QXW + "<!--something else-->")
+        backup = c.post("/api/workspaces/venue.qxw/load").get_json()["backup"]
+        assert backup.startswith("studio-default-") and backup != "studio-default.qxw"
+        assert "<!--something else-->" in (d / "studio-default.qxw").read_text()
+        assert "<!--main-->" in (d / backup).read_text()
