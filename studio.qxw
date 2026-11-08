@@ -433,69 +433,69 @@
   </Function>
   <Function ID="24" Type="Scene" Name="deep red" Path="AI Generated">
    <Speed FadeIn="500" FadeOut="500" Duration="0"/>
-   <FixtureVal ID="0">1,255,2,255,3,0,4,0,5,80,6,0,7,0</FixtureVal>
-   <FixtureVal ID="1">1,255,2,0,3,0,4,0,5,0,6,0,7,0,8,0,9,0</FixtureVal>
-   <FixtureVal ID="3">1,255,2,0,3,0</FixtureVal>
-   <FixtureVal ID="4">1,255,2,0,3,0</FixtureVal>
-   <FixtureVal ID="5">1,255,2,255,3,0,4,0,5,80,6,0,7,0</FixtureVal>
-   <FixtureVal ID="6">1,255,2,255,3,0,4,0,5,80,6,0,7,0</FixtureVal>
-   <FixtureVal ID="7">1,255,2,255,3,0,4,0,5,80,6,0,7,0</FixtureVal>
-   <FixtureVal ID="8">1,255,2,255,3,0,4,0,5,80,6,0,7,0</FixtureVal>
+   <FixtureVal ID="0">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,0,2,0,3,0,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,0</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,0</FixtureVal>
+   <FixtureVal ID="5">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,255,2,0,3,0,4,80,5,0,6,0</FixtureVal>
   </Function>
   <Function ID="25" Type="Scene" Name="Unicorn Rainbow Blast" Path="AI Generated">
    <Speed FadeIn="500" FadeOut="500" Duration="0"/>
-   <FixtureVal ID="0">1,255,2,255,3,20,4,240,5,120,6,50,7,0</FixtureVal>
-   <FixtureVal ID="1">1,255,2,255,3,255,4,80,5,0,6,0,7,0,8,0,9,0</FixtureVal>
-   <FixtureVal ID="3">1,255,2,0,3,180</FixtureVal>
-   <FixtureVal ID="4">1,0,2,255,3,200</FixtureVal>
-   <FixtureVal ID="5">1,255,2,0,3,255,4,100,5,120,6,60,7,0</FixtureVal>
-   <FixtureVal ID="6">1,255,2,255,3,20,4,240,5,120,6,50,7,0</FixtureVal>
-   <FixtureVal ID="7">1,255,2,0,3,255,4,100,5,120,6,60,7,0</FixtureVal>
-   <FixtureVal ID="8">1,255,2,0,3,255,4,100,5,120,6,60,7,0</FixtureVal>
+   <FixtureVal ID="0">0,255,1,255,2,20,3,240,4,120,5,50,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,255,2,255,3,80,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,180</FixtureVal>
+   <FixtureVal ID="4">0,0,1,255,2,200</FixtureVal>
+   <FixtureVal ID="5">0,255,1,0,2,255,3,100,4,120,5,60,6,0</FixtureVal>
+   <FixtureVal ID="6">0,255,1,255,2,20,3,240,4,120,5,50,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,255,3,100,4,120,5,60,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,255,3,100,4,120,5,60,6,0</FixtureVal>
   </Function>
   <Function ID="26" Type="Scene" Name="Pole dancing" Path="AI Generated">
    <Speed FadeIn="500" FadeOut="500" Duration="0"/>
-   <FixtureVal ID="0">1,240,2,255,3,0,4,100,5,120,6,0,7,0</FixtureVal>
-   <FixtureVal ID="1">1,220,2,220,3,40,4,100,5,0,6,0,7,0,8,0,9,0</FixtureVal>
-   <FixtureVal ID="3">1,255,2,0,3,80</FixtureVal>
-   <FixtureVal ID="4">1,255,2,0,3,80</FixtureVal>
-   <FixtureVal ID="5">1,240,2,255,3,0,4,100,5,120,6,0,7,0</FixtureVal>
-   <FixtureVal ID="6">1,240,2,255,3,0,4,100,5,120,6,0,7,0</FixtureVal>
-   <FixtureVal ID="7">1,240,2,255,3,0,4,100,5,120,6,0,7,0</FixtureVal>
-   <FixtureVal ID="8">1,240,2,255,3,0,4,100,5,120,6,0,7,0</FixtureVal>
+   <FixtureVal ID="0">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,220,1,220,2,40,3,100,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,80</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,80</FixtureVal>
+   <FixtureVal ID="5">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,240,1,255,2,0,3,100,4,120,5,0,6,0</FixtureVal>
   </Function>
   <Function ID="27" Type="Scene" Name="Gold Center Party Purple Blue 🌟💙🫦" Path="AI Generated">
    <Speed FadeIn="0" FadeOut="0" Duration="0"/>
-   <FixtureVal ID="0">1,128,2,100,3,0,4,128,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="1">1,255,2,59,3,0,4,125,5,0,6,0,7,0,8,0,9,0</FixtureVal>
-   <FixtureVal ID="3">1,100,2,0,3,128</FixtureVal>
-   <FixtureVal ID="4">1,255,2,0,3,255</FixtureVal>
-   <FixtureVal ID="5">1,255,2,0,3,0,4,251,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="6">1,128,2,100,3,0,4,128,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="7">1,255,2,0,3,0,4,251,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="8">1,255,2,0,3,0,4,251,5,0,6,0,7,0</FixtureVal>
+   <FixtureVal ID="0">0,128,1,100,2,0,3,128,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,59,2,0,3,125,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,100,1,0,2,128</FixtureVal>
+   <FixtureVal ID="4">0,255,1,0,2,255</FixtureVal>
+   <FixtureVal ID="5">0,255,1,0,2,0,3,251,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,128,1,100,2,0,3,128,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,255,1,0,2,0,3,251,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,255,1,0,2,0,3,251,4,0,5,0,6,0</FixtureVal>
   </Function>
   <Function ID="28" Type="Scene" Name="Strip Night" Path="AI Generated">
    <Speed FadeIn="0" FadeOut="0" Duration="0"/>
-   <FixtureVal ID="0">1,0,2,255,3,191,4,255,5,191,6,191,7,0</FixtureVal>
-   <FixtureVal ID="1">1,151,2,255,3,0,4,252,5,0,6,0,7,0,8,0,9,0</FixtureVal>
-   <FixtureVal ID="3">1,255,2,0,3,255</FixtureVal>
-   <FixtureVal ID="4">1,0,2,18,3,255</FixtureVal>
-   <FixtureVal ID="5">1,0,2,191,3,191,4,255,5,191,6,191,7,0</FixtureVal>
-   <FixtureVal ID="6">1,0,2,255,3,191,4,255,5,191,6,191,7,0</FixtureVal>
-   <FixtureVal ID="7">1,0,2,191,3,191,4,255,5,191,6,191,7,0</FixtureVal>
-   <FixtureVal ID="8">1,0,2,191,3,191,4,255,5,191,6,191,7,0</FixtureVal>
+   <FixtureVal ID="0">0,0,1,255,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="1">0,151,1,255,2,0,3,252,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,255</FixtureVal>
+   <FixtureVal ID="4">0,0,1,18,2,255</FixtureVal>
+   <FixtureVal ID="5">0,0,1,191,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="6">0,0,1,255,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="7">0,0,1,191,2,191,3,255,4,191,5,191,6,0</FixtureVal>
+   <FixtureVal ID="8">0,0,1,191,2,191,3,255,4,191,5,191,6,0</FixtureVal>
   </Function>
   <Function ID="29" Type="Scene" Name="after party" Path="AI Generated">
    <Speed FadeIn="0" FadeOut="0" Duration="0"/>
-   <FixtureVal ID="0">1,34,2,255,3,6,4,255,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="1">1,255,2,0,3,0,4,252,5,0,6,0,7,0,8,0,9,0</FixtureVal>
-   <FixtureVal ID="3">1,255,2,0,3,255</FixtureVal>
-   <FixtureVal ID="4">1,0,2,18,3,255</FixtureVal>
-   <FixtureVal ID="5">1,112,2,0,3,0,4,255,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="6">1,34,2,255,3,6,4,255,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="7">1,112,2,0,3,0,4,255,5,0,6,0,7,0</FixtureVal>
-   <FixtureVal ID="8">1,112,2,0,3,0,4,255,5,0,6,0,7,0</FixtureVal>
+   <FixtureVal ID="0">0,34,1,255,2,6,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="1">0,255,1,0,2,0,3,252,4,0,5,0,6,0,7,0,8,0</FixtureVal>
+   <FixtureVal ID="3">0,255,1,0,2,255</FixtureVal>
+   <FixtureVal ID="4">0,0,1,18,2,255</FixtureVal>
+   <FixtureVal ID="5">0,112,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="6">0,34,1,255,2,6,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="7">0,112,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
+   <FixtureVal ID="8">0,112,1,0,2,0,3,255,4,0,5,0,6,0</FixtureVal>
   </Function>
   <Function ID="30" Type="Scene" Name="dolly 🦋" Path="Colors">
    <Speed FadeIn="500" FadeOut="500" Duration="0"/>
