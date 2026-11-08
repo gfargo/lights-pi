@@ -76,7 +76,8 @@ class TestInject:
         # fixture 0 of the sample workspace has 7 channels
         xml = '<Function Type="Scene" Name="one-based"><FixtureVal ID="0">1,255,2,255,3,0,4,0,5,80,6,0,7,0</FixtureVal></Function>'
         assert app_module._inject_scene_into_workspace(xml, 9001) is True
-        local = lambda e: e.tag.split("}")[-1]
+        def local(e):
+            return e.tag.split("}")[-1]
         scene = next(f for f in ET.parse(ws).getroot().iter() if local(f) == "Function" and f.get("ID") == "9001")
         fv = next(v for v in scene if local(v) == "FixtureVal")
         assert fv.text == "0,255,1,255,2,0,3,0,4,80,5,0,6,0"

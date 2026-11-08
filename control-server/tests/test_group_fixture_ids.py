@@ -5,9 +5,8 @@ DELETE /api/groups/<g>/fixtures with [4] compared 4 against "4" and silently rem
 """
 import json
 
-import pytest
-
 import app as app_module
+import pytest
 
 
 @pytest.fixture

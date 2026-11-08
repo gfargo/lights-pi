@@ -951,7 +951,8 @@ def _strip_workspace_to_fixtures(path: Path) -> None:
     ET.register_namespace("", ns)
     tree = ET.parse(path)
     root = tree.getroot()
-    local = lambda e: e.tag.split("}")[-1]
+    def local(e):
+        return e.tag.split("}")[-1]
     for parent in list(root.iter()):
         for child in list(parent):
             if local(child) == "Function":
