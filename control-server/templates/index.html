@@ -599,9 +599,8 @@
             /* ── Logs viewer: shorter on mobile to leave room for the input ── */
             .logs-viewer { max-height: 220px; font-size: 0.7rem; }
 
-            /* ── Chat tab: edge-to-edge on mobile, sidebar hidden ── */
-            .chat-layout { max-height: calc(100vh - 280px); min-height: 300px; }
-            .chat-sidebar { display: none; }
+            /* ── Chat tab: edge-to-edge on mobile. The layout/drawer rules live next to the base
+                   .chat-layout rules (further down): they must come AFTER them to win. ── */
             .chat-main .chat-pane { padding: 0.75rem; }
             .chat-welcome { padding: 1rem 0.5rem; }
             .chat-welcome-title { font-size: 0.95rem; }
@@ -1331,6 +1330,62 @@
             min-height: 0;
             max-height: none;
         }
+
+        /* ── Chat on phones: the conversation list is a slide-out drawer ──
+           A fixed 180px sidebar left a phone ~230px for the chat itself. Below 600px the list
+           moves off-canvas (opened from the "Chats" button, a left-edge swipe, or the backdrop)
+           and the chat gets the full width. Must stay AFTER the base .chat-* rules above. */
+        .chat-mobile-bar, .chat-drawer-head, .chat-drawer-backdrop { display: none; }
+        @media (max-width: 600px) {
+            .chat-layout {
+                position: relative;
+                overflow: hidden;
+                min-height: 360px;
+                max-height: none;
+                height: calc(100vh - 300px);
+                height: calc(100dvh - 300px);
+            }
+            .chat-main { width: 100%; }
+            .chat-mobile-bar {
+                display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;
+                padding: 0.4rem 0.5rem; background: var(--ink-1);
+                border-bottom: 1px solid var(--rule);
+            }
+            .chat-mobile-title {
+                flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                font-size: 0.78rem; color: var(--paper-60);
+            }
+            .chat-drawer-backdrop {
+                display: block; position: absolute; inset: 0; z-index: 20;
+                background: rgba(0, 0, 0, 0.55); opacity: 0; pointer-events: none;
+                transition: opacity 0.22s ease;
+            }
+            .chat-layout.drawer-open .chat-drawer-backdrop { opacity: 1; pointer-events: auto; }
+            .chat-sidebar {
+                position: absolute; top: 0; bottom: 0; left: 0; z-index: 30;
+                width: min(84%, 320px);
+                transform: translateX(-102%); visibility: hidden;
+                transition: transform 0.22s ease, visibility 0s linear 0.22s;
+                border-right: 1px solid var(--rule-strong);
+            }
+            .chat-layout.drawer-open .chat-sidebar {
+                transform: none; visibility: visible; transition-delay: 0s;
+                box-shadow: 6px 0 24px rgba(0, 0, 0, 0.5);
+            }
+            .chat-drawer-head {
+                display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+                padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--rule);
+                font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--paper-60);
+            }
+            .chat-drawer-head button { min-width: 2.25rem; min-height: 2.25rem; }
+            .conv-item { padding: 0.7rem 0.75rem; font-size: 0.85rem; }
+            .conv-date { font-size: 0.7rem; }
+            #convSearch { font-size: 16px; padding: 0.5rem; } /* 16px stops iOS zooming on focus */
+            .chat-mobile-bar .btn-ghost { min-height: 2.25rem; }
+        }
+        @media (max-width: 600px) and (prefers-reduced-motion: reduce) {
+            .chat-sidebar, .chat-drawer-backdrop { transition: none; }
+        }
     </style>
 </head>
 <body>
@@ -1441,9 +1496,15 @@
              Full conversational agent with server-side history persistence
              ══════════════════════════════════════ -->
         <div id="chat-tab" class="tab-content">
-            <div class="chat-layout">
-                <!-- Sidebar: conversation history + search -->
-                <aside class="chat-sidebar" id="chatSidebar">
+            <div class="chat-layout" id="chatLayout">
+                <!-- Phones: dimmed backdrop behind the slide-out conversation drawer -->
+                <div class="chat-drawer-backdrop" onclick="closeChatDrawer()"></div>
+                <!-- Sidebar: conversation history + search (a slide-out drawer on phones) -->
+                <aside class="chat-sidebar" id="chatSidebar" aria-label="Conversations">
+                    <div class="chat-drawer-head">
+                        <span>Chats</span>
+                        <button class="btn-ghost btn-tiny" onclick="closeChatDrawer()" aria-label="Close chat list">✕</button>
+                    </div>
                     <div class="sidebar-hdr">
                         <button class="btn-ghost btn-tiny" onclick="startNewChat()" style="width:100%;text-align:left">+ New chat</button>
                         <input type="search" id="convSearch" placeholder="Search…"
@@ -1457,6 +1518,11 @@
 
                 <!-- Main: message pane + composer -->
                 <div class="chat-main">
+                    <div class="chat-mobile-bar">
+                        <button class="btn-ghost btn-tiny" id="chatDrawerBtn" onclick="toggleChatDrawer()"
+                                aria-controls="chatSidebar" aria-expanded="false">☰ Chats</button>
+                        <div class="chat-mobile-title" id="chatMobileTitle">New chat</div>
+                    </div>
                     <div class="chat-pane" id="chatPane">
                         <div class="chat-welcome" id="chatWelcome">
                             <div class="chat-welcome-title">Talk to your rig</div>
@@ -3794,6 +3860,45 @@
             try { localStorage.setItem('lp_conv_id_v1', currentConversationId || ''); } catch(e) {}
         }
 
+        /* ── Phone drawer for the conversation list (CSS only shows it below 600px) ── */
+        function _setChatDrawer(open) {
+            const layout = document.getElementById('chatLayout');
+            if (!layout) return;
+            layout.classList.toggle('drawer-open', open);
+            const btn = document.getElementById('chatDrawerBtn');
+            if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+        function openChatDrawer()   { _setChatDrawer(true); }
+        function closeChatDrawer()  { _setChatDrawer(false); }
+        function toggleChatDrawer() {
+            _setChatDrawer(!document.getElementById('chatLayout').classList.contains('drawer-open'));
+        }
+        function _setChatMobileTitle(t) {
+            const el = document.getElementById('chatMobileTitle');
+            if (el) el.textContent = t || 'New chat';
+        }
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChatDrawer(); });
+        (function () {
+            // Left-edge swipe opens the drawer, a left swipe closes it. Edge-only for opening, so
+            // horizontally scrolling code blocks inside messages are never hijacked.
+            const layout = document.getElementById('chatLayout');
+            if (!layout) return;
+            let x0 = null, y0 = null, startedAtEdge = false;
+            layout.addEventListener('touchstart', (e) => {
+                const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY;
+                startedAtEdge = (t.clientX - layout.getBoundingClientRect().left) < 24;
+            }, { passive: true });
+            layout.addEventListener('touchend', (e) => {
+                if (x0 === null) return;
+                const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+                x0 = null;
+                if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
+                const open = layout.classList.contains('drawer-open');
+                if (!open && startedAtEdge && dx > 0) openChatDrawer();
+                else if (open && dx < 0) closeChatDrawer();
+            }, { passive: true });
+        })();
+
         /* ── Sidebar: conversation list ── */
 
         async function loadConversations() {
@@ -3821,6 +3926,8 @@
                 list.innerHTML = '<div class="conv-empty">No conversations yet</div>';
                 return;
             }
+            const cur = convs.find(c => c.id === currentConversationId);
+            if (cur) _setChatMobileTitle(cur.title || 'Untitled');
             list.innerHTML = convs.map(c => {
                 const active = c.id === currentConversationId ? ' active' : '';
                 const title = escHtml(c.title || 'Untitled');
@@ -3846,6 +3953,8 @@
                 document.querySelectorAll('.conv-item').forEach(el => {
                     el.classList.toggle('active', el.getAttribute('onclick').includes(`'${convId}'`));
                 });
+                _setChatMobileTitle(data.title || (document.querySelector('.conv-item.active .conv-title') || {}).textContent || 'Chat');
+                closeChatDrawer();
             } catch(e) {}
         }
 
@@ -3855,6 +3964,8 @@
             _persistConvId();
             renderChatHistory();
             document.querySelectorAll('.conv-item').forEach(el => el.classList.remove('active'));
+            _setChatMobileTitle('New chat');
+            closeChatDrawer();
             document.getElementById('chatInput').focus();
         }
 
