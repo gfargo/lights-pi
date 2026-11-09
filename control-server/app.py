@@ -127,6 +127,8 @@ if _ts_host:
     _ALLOWED_ORIGINS.append(f"http://{_ts_host}")
     _ALLOWED_ORIGINS.append(f"http://{_ts_host}:5000")
     _ALLOWED_ORIGINS.append(f"https://{_ts_host}")
+    # Trusted HTTPS endpoint from `lightsctl tailscale-https` (tailscale serve -> :5000)
+    _ALLOWED_ORIGINS.append(f"https://{_ts_host}:{os.getenv('CONTROL_TLS_PORT', '5443')}")
 # Allow PI_HOST if set (covers direct-IP access)
 _pi_host = os.getenv("PI_HOST", "")
 if _pi_host and _pi_host not in ("lights.local", _ts_host):

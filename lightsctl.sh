@@ -144,6 +144,8 @@ TLS:
 Landing page (http://lights.local):
   landing-setup                 install nginx and deploy the landing page (first time)
   landing-deploy                push updated landing/index.html (no nginx reinstall)
+  tailscale-https [install|status|remove]  trusted HTTPS over Tailscale on :5443 (control) and
+                                :9443 (QLC+); existing :5000/:9999 are untouched
 
 AI Scene Generation:
   generate-scene <description> [options]  generate QLC+ scene from natural language
@@ -698,6 +700,10 @@ function command_landing_deploy() {
   # Substitute all placeholders
   sed -e "s|__QLC_URL__|${qlc_url}|g" \
       -e "s|__CONTROL_URL__|${control_url}|g" \
+      -e "s|__QLC_PORT__|${QLC_PORT:-9999}|g" \
+      -e "s|__CONTROL_PORT__|${CONTROL_PORT:-5000}|g" \
+      -e "s|__QLC_TLS_PORT__|${QLC_TLS_PORT:-9443}|g" \
+      -e "s|__CONTROL_TLS_PORT__|${CONTROL_TLS_PORT:-5443}|g" \
       -e "s|__LANDING_TITLE__|${landing_title}|g" \
       -e "s|__LANDING_STUDIO_NAME__|${landing_studio_name}|g" \
       -e "s|__LANDING_SUBTITLE__|${landing_subtitle}|g" \
@@ -718,6 +724,12 @@ function command_landing_deploy() {
   echo "  Control URL: ${control_url}"
   echo "  QLC+ URL: ${qlc_url}"
   echo "  Footer: ${landing_footer_text}"
+}
+
+function command_tailscale_https() {
+  PI_HOST="${PI_HOST}" PI_USER="${PI_USER}" \
+  CONTROL_PORT="${CONTROL_PORT:-5000}" QLC_PORT="${QLC_PORT:-9999}" \
+    bash "${SCRIPT_DIR}/scripts/services/tailscale_https.sh" "${1:-install}"
 }
 
 function command_gen_cert() {
@@ -1429,6 +1441,7 @@ case "$1" in
   open-web) command_open_web ;;
   landing-setup) command_landing_setup ;;
   landing-deploy) command_landing_deploy ;;
+  tailscale-https) shift; command_tailscale_https "$@" ;;
   generate-scene) shift; command_generate_scene "$@" ;;
   list-templates) command_list_templates ;;
   generate-from-template) shift; command_generate_from_template "$@" ;;

@@ -39,6 +39,8 @@ RENDERED="$(mktemp /tmp/qlc-landing-XXXXXX.html)"
 trap "rm -f '$RENDERED'" EXIT
 sed -e "s|__QLC_PORT__|${QLC_PORT}|g" \
     -e "s|__CONTROL_PORT__|${CONTROL_PORT}|g" \
+    -e "s|__QLC_TLS_PORT__|${QLC_TLS_PORT:-9443}|g" \
+    -e "s|__CONTROL_TLS_PORT__|${CONTROL_TLS_PORT:-5443}|g" \
     -e "s|__LANDING_TITLE__|${LANDING_TITLE}|g" \
     -e "s|__LANDING_STUDIO_NAME__|${LANDING_STUDIO_NAME}|g" \
     -e "s|__LANDING_SUBTITLE__|${LANDING_SUBTITLE}|g" \

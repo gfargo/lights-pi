@@ -137,13 +137,18 @@
   </div>
 
   <script>
-    // Resolve links based on current origin so they work from lights.local,
-    // Tailscale, or any IP — no hardcoded hostnames needed.
+    // Build the links from the address you came in on, so they work from the studio network
+    // (lights.local or an IP) and from anywhere on the tailnet, with no hard-coded host.
+    //   - Tailscale name (*.ts.net): the trusted HTTPS endpoints (tailscale-https).
+    //   - anything else: the plain-HTTP ports. Never https here: the control server and QLC+
+    //     do not speak TLS on their own ports, so https://host:5000 cannot connect.
     (function() {
       var host = location.hostname;
-      var proto = location.protocol;
-      document.getElementById('controlLink').href = proto + '//' + host + ':__CONTROL_PORT__/';
-      document.getElementById('qlcLink').href = proto + '//' + host + ':__QLC_PORT__/';
+      var tailnet = /\.ts\.net$/i.test(host);
+      var control = tailnet ? 'https://' + host + ':__CONTROL_TLS_PORT__/' : 'http://' + host + ':__CONTROL_PORT__/';
+      var qlc = tailnet ? 'https://' + host + ':__QLC_TLS_PORT__/' : 'http://' + host + ':__QLC_PORT__/';
+      document.getElementById('controlLink').href = control;
+      document.getElementById('qlcLink').href = qlc;
     })();
   </script>
 
