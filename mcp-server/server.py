@@ -6,7 +6,7 @@ Exposes the Flask control-server REST API as MCP tools so LLM agents
 (Claude Desktop, ChatGPT, Cursor, custom clients) can drive the studio
 lights via the Model Context Protocol.
 
-Transport: Streamable HTTP (default at http://0.0.0.0:5001/mcp)
+Transport: Streamable HTTP (default at http://<host>:5001/mcp, all interfaces)
 Backend:   http://localhost:5000  (the control-server Flask app)
 
 Tools are thin wrappers around REST endpoints — the Flask app owns the
@@ -23,7 +23,10 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
 CONTROL_URL = os.getenv("CONTROL_URL", "http://localhost:5000").rstrip("/")
-MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
+# Empty host = every interface, IPv4 and IPv6 (uvicorn/asyncio opens one
+# socket per family). "0.0.0.0" is IPv4-only and "::" is IPv6-only under
+# asyncio, and lights.local resolves to both kinds of address.
+MCP_HOST = os.getenv("MCP_HOST", "")
 MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 MCP_PATH = os.getenv("MCP_PATH", "/mcp")
 
@@ -1072,7 +1075,7 @@ class _BearerAuthMiddleware:
 
 def main() -> None:
     print(f"[mcp] backend: {CONTROL_URL}", file=sys.stderr)
-    print(f"[mcp] listening: http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}", file=sys.stderr)
+    print(f"[mcp] listening: http://{MCP_HOST or '*'}:{MCP_PORT}{MCP_PATH}", file=sys.stderr)
 
     if MCP_BEARER_TOKEN:
         print("[mcp] bearer token auth enabled on /mcp", file=sys.stderr)

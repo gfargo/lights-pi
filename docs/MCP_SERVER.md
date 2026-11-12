@@ -159,7 +159,7 @@ Env vars (set in `/home/<user>/mcp-server/.env`, loaded by the systemd unit):
 | Variable           | Default                 | Notes                                         |
 |--------------------|-------------------------|-----------------------------------------------|
 | `CONTROL_URL`      | `http://localhost:5000` | Flask backend URL                             |
-| `MCP_HOST`         | `0.0.0.0`               | Bind address                                  |
+| `MCP_HOST`         | *(empty)*               | Bind address; empty = all interfaces, IPv4+IPv6 |
 | `MCP_PORT`         | `5001`                  | Listen port                                   |
 | `MCP_PATH`         | `/mcp`                  | Streamable HTTP mount path                    |
 | `MCP_BEARER_TOKEN` | _(unset)_               | Reserved for auth — scaffolded, not enforced  |
