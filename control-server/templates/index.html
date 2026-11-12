@@ -1004,8 +1004,15 @@
         }
         .rf-channel-bar.recommended .bar-label { color: var(--amber-tungsten); font-weight: 600; }
         .rf-channel-bar.quiet-window .bar-track { outline: 1px dashed var(--arc-cyan); outline-offset: 2px; }
+        .rf-channel-bar.dfi-pick .bar-track { outline: 1px solid var(--arc-cyan); outline-offset: 2px; }
+        .rf-channel-bar.dfi-current .bar-label { color: var(--arc-cyan); text-decoration: underline; }
+        .rf-spectrum-title {
+            margin-top: 0.75rem; font-size: 0.65rem; color: #888; letter-spacing: 0.04em;
+        }
+        .rf-spectrum-title + .rf-spectrum { margin-top: 0.3rem; }
+        .rf-limitations { margin: 0.6rem 0 0; padding-left: 1.1rem; font-size: 0.65rem; color: #777; }
         .rf-legend {
-            display: flex; gap: 1rem; margin-top: 0.4rem; font-size: 0.65rem; color: #666;
+            display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin-top: 0.4rem; font-size: 0.65rem; color: #666;
         }
         .rf-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
         .rf-legend .swatch { width: 8px; height: 8px; display: inline-block; }
@@ -3688,14 +3695,21 @@
         }
 
         /**
-         * Classify a dBm reading into the same loud/moderate/quiet bands
-         * the spectrum bars and AP list use for coloring.
+         * Classify a dBm reading into loud/moderate/quiet. Thresholds come
+         * from the scan response (analysis.bands_dbm) so the bars agree
+         * with the server's suggestions; defaults match older servers.
          */
-        function rfSignalBand(dbm) {
+        function rfSignalBand(dbm, bands) {
+            const loud = bands && bands.loud != null ? bands.loud : -55;
+            const moderate = bands && bands.moderate != null ? bands.moderate : -70;
             if (dbm === null || dbm === undefined) return 'quiet';
-            if (dbm >= -55) return 'loud';
-            if (dbm >= -70) return 'moderate';
+            if (dbm >= loud) return 'loud';
+            if (dbm >= moderate) return 'moderate';
             return 'quiet';
+        }
+
+        function rfBarHeightPct(dbm) {
+            return dbm == null ? 2 : Math.max(2, Math.min(100, Math.round((dbm + 95) / 65 * 100)));
         }
 
         function renderRfScan(data) {
@@ -3706,25 +3720,51 @@
 
             const aps = data.access_points || [];
             const analysis = data.analysis || {};
+            const radios = analysis.radios || aps;
+            const bands = analysis.bands_dbm || null;
             const congestion = analysis.per_channel_congestion_dbm || {};
             const quietWindow = analysis.quiet_window || [];
             const nonoverlapping = new Set(analysis.nonoverlapping_channels || [1, 6, 11]);
+            const dfiChannels = analysis.dfi_channels || [];
+            const dfiPick = analysis.recommended_dfi_channel || null;
+            const tx = analysis.transmitter || {};
+            const txChannel = tx.mode === 'manual' ? tx.channel : null;
+            const fmtDbm = dbm => dbm != null ? `${Number(dbm).toFixed(0)} dBm` : 'nothing heard';
 
             resultEl.className = 'result-bar ok';
-            resultEl.textContent = aps.length
-                ? `✓ Heard ${aps.length} network${aps.length !== 1 ? 's' : ''} on 2.4 GHz`
+            resultEl.textContent = radios.length
+                ? `✓ Heard ${radios.length} radio${radios.length !== 1 ? 's' : ''} on 2.4 GHz` +
+                  (aps.length > radios.length ? ` (${aps.length} networks)` : '')
                 : '✓ Scan complete — no 2.4 GHz networks heard';
 
-            spectrumEl.innerHTML = `
+            const dfiHtml = dfiChannels.length ? `
+                <div class="rf-spectrum-title">D-FI CHANNELS (estimated frequencies) — modelled Wi-Fi interference</div>
+                <div class="rf-spectrum">
+                    ${dfiChannels.map(c => {
+                        const band = rfSignalBand(c.interference_dbm, bands);
+                        const pick = dfiPick && dfiPick.channel === c.channel ? ' dfi-pick' : '';
+                        const current = txChannel === c.channel ? ' dfi-current' : '';
+                        return `<div class="rf-channel-bar ${band}${pick}${current}" title="D-Fi CH${String(c.channel).padStart(2, '0')} (~${Math.round(c.est_freq_mhz)} MHz est.): ${fmtDbm(c.interference_dbm)}">
+                            <div class="bar-track"><div class="bar-fill" style="height:${rfBarHeightPct(c.interference_dbm)}%;"></div></div>
+                            <span class="bar-label">${c.channel}</span>
+                        </div>`;
+                    }).join('')}
+                </div>
+                <div class="rf-legend">
+                    <span><span class="swatch" style="border:1px solid var(--arc-cyan);background:transparent;"></span>recommended</span>
+                    <span><span class="swatch" style="background:var(--arc-cyan);"></span>underlined = your transmitter</span>
+                </div>` : '';
+
+            spectrumEl.innerHTML = `${dfiHtml}
+                <div class="rf-spectrum-title">WI-FI CHANNELS — modelled interference at each channel centre</div>
                 <div class="rf-spectrum">
                     ${Array.from({ length: 11 }, (_, i) => i + 1).map(ch => {
                         const dbm = congestion[ch] ?? congestion[String(ch)];
-                        const band = rfSignalBand(dbm);
-                        const heightPct = dbm == null ? 2 : Math.max(2, Math.min(100, Math.round((dbm + 95) / 65 * 100)));
+                        const band = rfSignalBand(dbm, bands);
                         const recommended = nonoverlapping.has(ch) ? ' recommended' : '';
                         const inQuietWindow = quietWindow.length === 2 && ch >= quietWindow[0] && ch <= quietWindow[1] ? ' quiet-window' : '';
-                        return `<div class="rf-channel-bar ${band}${recommended}${inQuietWindow}" title="Channel ${ch}${dbm != null ? `: ${dbm.toFixed ? dbm.toFixed(0) : dbm} dBm` : ': quiet'}">
-                            <div class="bar-track"><div class="bar-fill" style="height:${heightPct}%;"></div></div>
+                        return `<div class="rf-channel-bar ${band}${recommended}${inQuietWindow}" title="Wi-Fi channel ${ch}: ${fmtDbm(dbm)}">
+                            <div class="bar-track"><div class="bar-fill" style="height:${rfBarHeightPct(dbm)}%;"></div></div>
                             <span class="bar-label">${ch}</span>
                         </div>`;
                     }).join('')}
@@ -3738,15 +3778,19 @@
                 </div>`;
 
             const hasTransmitterNote = !!(analysis.transmitter && analysis.transmitter.mode && analysis.transmitter.mode !== 'unknown');
+            const limitations = analysis.limitations || data.limitations || [];
             suggestionsEl.innerHTML = (analysis.suggestions || [])
-                .map((s, i) => `<div class="rf-suggestion${i === 0 && hasTransmitterNote ? ' transmitter' : ''}">${escHtml(s)}</div>`).join('');
+                .map((s, i) => `<div class="rf-suggestion${i === 0 && hasTransmitterNote ? ' transmitter' : ''}">${escHtml(s)}</div>`).join('') +
+                (limitations.length ? `<ul class="rf-limitations">${limitations.map(l => `<li>${escHtml(l)}</li>`).join('')}</ul>` : '');
 
-            apListEl.innerHTML = aps.map(ap => {
-                const band = rfSignalBand(ap.signal_dbm);
+            apListEl.innerHTML = radios.map(ap => {
+                const band = rfSignalBand(ap.signal_dbm, bands);
                 const dbmText = ap.signal_dbm != null ? `${ap.signal_dbm.toFixed(0)} dBm` : '?';
+                const names = ap.ssids ? ap.ssids.join(' / ') : (ap.ssid || '(hidden network)');
+                const width = ap.width_mhz && ap.width_mhz > 20 ? ` · ${ap.width_mhz} MHz` : '';
                 return `<div class="rf-ap-row">
-                    <span class="ap-ssid">${escHtml(ap.ssid || '(hidden network)')}</span>
-                    <span class="ap-channel">ch ${ap.channel}</span>
+                    <span class="ap-ssid">${escHtml(names)}</span>
+                    <span class="ap-channel">ch ${ap.channel}${width}</span>
                     <span class="ap-signal ${band}">${dbmText}</span>
                 </div>`;
             }).join('');

@@ -5,14 +5,23 @@ parsing/analysis helpers over `iw dev wlan0 scan` text — no QLC+ or network
 mocking needed.
 """
 import app
+import pytest
 from app import (
     _analyze_rf_channels,
+    _append_bounded_jsonl,
+    _bssid_radio_key,
+    _dedupe_radios,
+    _dfi_channel_interference_dbm,
     _dfi_channel_to_freq_mhz,
+    _interference_at_freq_dbm,
     _load_rf_settings,
-    _loudest_signal_near_freq,
     _parse_iw_scan_output,
+    _read_rf_history,
+    _recommend_dfi_channel,
+    _rf_history_entry,
     _save_rf_settings,
     _wifi_channel_from_freq,
+    _wifi_mask_attenuation_db,
 )
 
 
@@ -137,23 +146,255 @@ class TestAnalyzeRfChannels:
         aps = [{"ssid": "OnTop", "signal_dbm": -45.0, "freq_mhz": 2412, "channel": 1}]
         analysis = _analyze_rf_channels(aps, transmitter={"mode": "manual", "channel": 1})
         assert "loud" in analysis["suggestions"][0].lower()
-        assert "moving it" in analysis["suggestions"][0].lower()
+        assert "consider moving it to ch16" in analysis["suggestions"][0].lower()
 
-    def test_manual_mode_already_in_quiet_window_no_contradictory_advice(self):
-        # Regression case from live testing: two APs whose bleed covers nearly
-        # the whole band (channel 2 AP + channel 6 AP), so the "quietest
-        # window" [7,9] is still moderately loud. A transmitter sitting on
-        # channel 9 is already inside that window — it shouldn't be told to
-        # "move toward" a window it's already in.
+    def test_far_ap_does_not_make_channel_loud(self):
+        # Old model: a -51 dBm AP on ch10 marked ch6 "loud" (±4 channels at
+        # full strength). 20 MHz away the mask knocks it down by 28 dB.
+        aps = [{"ssid": "Ten", "signal_dbm": -51.0, "freq_mhz": 2457, "channel": 10}]
+        analysis = _analyze_rf_channels(aps)
+        assert analysis["per_channel_congestion_dbm"][6] == pytest.approx(-79.0)
+        assert analysis["per_channel_congestion_dbm"][10] == pytest.approx(-51.0)
+
+    def test_limitations_reported(self):
+        analysis = _analyze_rf_channels([])
+        text = " ".join(analysis["limitations"]).lower()
+        assert "bluetooth" in text and "receiver" in text
+        assert "can't see" in analysis["suggestions"][-1].lower()
+
+    def test_manual_mode_already_best_no_contradictory_advice(self):
+        # A transmitter sitting on the recommended channel must not be told
+        # to move.
         aps = [
             {"ssid": "A", "signal_dbm": -57.0, "freq_mhz": 2417, "channel": 2},
-            {"ssid": "B", "signal_dbm": -64.0, "freq_mhz": 2437, "channel": 6},
+            {"ssid": "B", "signal_dbm": -64.0, "freq_mhz": 2462, "channel": 11},
         ]
-        analysis = _analyze_rf_channels(aps, transmitter={"mode": "manual", "channel": 9})
-        assert analysis["quiet_window"] == [7, 9]
-        note = analysis["suggestions"][0]
-        assert "moving it toward" not in note.lower()
-        assert "clear as this wifi environment gets" in note.lower()
+        best = _analyze_rf_channels(aps)["recommended_dfi_channel"]["channel"]
+        analysis = _analyze_rf_channels(aps, transmitter={"mode": "manual", "channel": best})
+        note = analysis["suggestions"][0].lower()
+        assert "consider moving" not in note
+
+
+# Reference scan from the studio Pi, 2026-11-12. River's Way main + guest are
+# one radio (BSSIDs differ only in the first octet).
+REFERENCE_SCAN = """\
+BSS d8:0d:17:af:09:30(on wlan0) -- associated
+\tfreq: 2457
+\tsignal: -55.00 dBm
+\tSSID: River's Way
+BSS de:0d:17:af:09:30(on wlan0)
+\tfreq: 2457
+\tsignal: -51.00 dBm
+\tSSID: River's Way Guest
+BSS 3c:84:6a:00:00:01(on wlan0)
+\tfreq: 2412
+\tsignal: -60.00 dBm
+\tSSID: CBCI-F2B8
+BSS 3c:84:6a:00:00:02(on wlan0)
+\tfreq: 2462
+\tsignal: -70.00 dBm
+\tSSID: SC_storage
+BSS 3c:84:6a:00:00:03(on wlan0)
+\tfreq: 2437
+\tsignal: -84.00 dBm
+\tSSID: dorfmanfidium
+"""
+
+
+class TestReferenceScan:
+    def setup_method(self):
+        self.aps = _parse_iw_scan_output(REFERENCE_SCAN)
+        self.analysis = _analyze_rf_channels(self.aps, transmitter={"mode": "manual", "channel": 2})
+
+    def test_main_and_guest_counted_once(self):
+        assert len(self.aps) == 5
+        radios = self.analysis["radios"]
+        assert len(radios) == 4
+        rw = radios[0]
+        assert rw["signal_dbm"] == -51.0
+        assert set(rw["ssids"]) == {"River's Way", "River's Way Guest"}
+
+    def test_quiet_window_is_mid_band(self):
+        start, end = self.analysis["quiet_window"]
+        assert 4 <= start and end <= 7
+
+    def test_wifi_ch6_not_loud(self):
+        assert self.analysis["per_channel_congestion_dbm"][6] < -75
+
+    def test_current_dfi_ch2_is_loud(self):
+        assert self.analysis["dfi_channels"][1]["band"] == "loud"
+        note = self.analysis["suggestions"][0]
+        assert "CH02" in note and "loud" in note and "Consider moving" in note
+
+    def test_recommendation_avoids_loud_radios(self):
+        rec = self.analysis["recommended_dfi_channel"]
+        assert rec["band"] == "quiet"
+        # Under CBCI-F2B8 (CH01-03) and River's Way (CH08-13) are both out.
+        assert rec["channel"] not in range(1, 4)
+        assert rec["channel"] not in range(8, 14)
+        # The mid-band pocket (D-Fi ~CH05, Wi-Fi ch5) is offered too.
+        offered = {rec["channel"], *rec["alternates"]}
+        assert 5 in offered
+
+    def test_quiet_window_kept_for_backward_compat(self):
+        assert set(self.analysis) >= {"per_channel_congestion_dbm", "quiet_window", "suggestions"}
+
+
+class TestWifiMaskAttenuation:
+    def test_flat_in_band(self):
+        assert _wifi_mask_attenuation_db(0) == 0
+        assert _wifi_mask_attenuation_db(-9) == 0
+
+    def test_breakpoints(self):
+        assert _wifi_mask_attenuation_db(11) == -20
+        assert _wifi_mask_attenuation_db(20) == -28
+        assert _wifi_mask_attenuation_db(-30) == -40
+
+    def test_interpolates(self):
+        assert _wifi_mask_attenuation_db(25) == pytest.approx(-34)
+        assert _wifi_mask_attenuation_db(10) == pytest.approx(-10)
+
+    def test_beyond_mask_is_none(self):
+        assert _wifi_mask_attenuation_db(31) is None
+
+    def test_40mhz_is_stretched(self):
+        assert _wifi_mask_attenuation_db(18, width_mhz=40) == 0
+        assert _wifi_mask_attenuation_db(40, width_mhz=40) == -28
+
+
+class TestInterferenceAtFreq:
+    def test_single_radio_on_frequency(self):
+        radios = [{"freq_mhz": 2437, "signal_dbm": -60.0}]
+        assert _interference_at_freq_dbm(radios, 2437) == pytest.approx(-60.0)
+
+    def test_power_sum_of_equal_contributions(self):
+        radios = [{"freq_mhz": 2437, "signal_dbm": -80.0}, {"freq_mhz": 2437, "signal_dbm": -80.0}]
+        assert _interference_at_freq_dbm(radios, 2437) == pytest.approx(-76.99, abs=0.01)
+
+    def test_attenuated_by_offset(self):
+        radios = [{"freq_mhz": 2457, "signal_dbm": -51.0}]
+        assert _interference_at_freq_dbm(radios, 2437) == pytest.approx(-79.0)
+
+    def test_nothing_in_reach(self):
+        assert _interference_at_freq_dbm([{"freq_mhz": 2412, "signal_dbm": -40.0}], 2462) is None
+        assert _interference_at_freq_dbm([], 2437) is None
+        assert _interference_at_freq_dbm([{"freq_mhz": 2412, "signal_dbm": -40.0}], None) is None
+
+    def test_uses_40mhz_centre(self):
+        radios = [{"freq_mhz": 2412, "center_freq_mhz": 2422, "width_mhz": 40, "signal_dbm": -60.0}]
+        assert _interference_at_freq_dbm(radios, 2437) == pytest.approx(-60.0)
+
+
+class TestDfiRecommendation:
+    def test_no_radios_no_recommendation(self):
+        per_channel, rec = _recommend_dfi_channel([])
+        assert rec is None
+        assert len(per_channel) == 16
+        assert all(c["interference_dbm"] is None for c in per_channel)
+
+    def test_picks_far_side_of_single_loud_ap(self):
+        _per, rec = _recommend_dfi_channel([{"freq_mhz": 2412, "signal_dbm": -40.0}])
+        assert rec["channel"] == 16
+
+    def test_channel_score_hedges_estimate(self):
+        # The score covers ± one channel spacing, so a channel right beside
+        # a loud AP's flat band counts as loud even if its estimated centre
+        # is just past the mask edge.
+        radios = [{"freq_mhz": 2412, "signal_dbm": -50.0}]
+        assert _dfi_channel_interference_dbm(radios, 3) == pytest.approx(-50.0)
+
+
+class TestBssidDedupe:
+    def test_radio_key_ignores_first_octet(self):
+        assert _bssid_radio_key("D8:0D:17:AF:09:30") == _bssid_radio_key("de:0d:17:af:09:30")
+        assert _bssid_radio_key("d8:0d:17:af:09:31") != _bssid_radio_key("d8:0d:17:af:09:30")
+
+    def test_bad_bssid(self):
+        assert _bssid_radio_key(None) is None
+        assert _bssid_radio_key("nonsense") is None
+
+    def test_keeps_loudest_and_all_ssids(self):
+        aps = [
+            {"bssid": "d8:0d:17:af:09:30", "ssid": "Main", "signal_dbm": -55.0, "channel": 10, "freq_mhz": 2457},
+            {"bssid": "de:0d:17:af:09:30", "ssid": "Guest", "signal_dbm": -51.0, "channel": 10, "freq_mhz": 2457},
+        ]
+        radios = _dedupe_radios(aps)
+        assert len(radios) == 1
+        assert radios[0]["signal_dbm"] == -51.0
+        assert radios[0]["ssids"] == ["Main", "Guest"]
+
+    def test_same_suffix_different_channel_kept_apart(self):
+        aps = [
+            {"bssid": "d8:0d:17:af:09:30", "ssid": "A", "signal_dbm": -55.0, "channel": 10},
+            {"bssid": "de:0d:17:af:09:30", "ssid": "B", "signal_dbm": -51.0, "channel": 1},
+        ]
+        assert len(_dedupe_radios(aps)) == 2
+
+    def test_missing_bssid_not_merged(self):
+        aps = [{"ssid": "A", "signal_dbm": -55.0, "channel": 6}, {"ssid": "A", "signal_dbm": -55.0, "channel": 6}]
+        assert len(_dedupe_radios(aps)) == 2
+
+
+class TestParseIwHtAndBssid:
+    SAMPLE = """\
+BSS AA:BB:CC:DD:EE:01(on wlan0)
+\tfreq: 2412
+\tsignal: -50.00 dBm
+\tSSID: Wide
+\tHT operation:
+\t\t * primary channel: 1
+\t\t * secondary channel offset: above
+\t\t * STA channel width: any
+BSS aa:bb:cc:dd:ee:02(on wlan0)
+\tfreq: 2437
+\tsignal: -60.00 dBm
+\tSSID: Narrow
+\tHT operation:
+\t\t * primary channel: 6
+\t\t * secondary channel offset: no secondary
+\t\t * STA channel width: 20 MHz
+"""
+
+    def test_bssid_parsed_lowercase(self):
+        aps = _parse_iw_scan_output(self.SAMPLE)
+        assert aps[0]["bssid"] == "aa:bb:cc:dd:ee:01"
+
+    def test_ht40_above(self):
+        wide = _parse_iw_scan_output(self.SAMPLE)[0]
+        assert wide["width_mhz"] == 40
+        assert wide["center_freq_mhz"] == 2422
+        assert wide["channel"] == 1
+
+    def test_20mhz_default(self):
+        narrow = _parse_iw_scan_output(self.SAMPLE)[1]
+        assert narrow["width_mhz"] == 20
+        assert narrow["center_freq_mhz"] == 2437
+
+
+class TestRfHistory:
+    def test_entry_shape(self):
+        analysis = _analyze_rf_channels(_parse_iw_scan_output(REFERENCE_SCAN),
+                                        transmitter={"mode": "manual", "channel": 2})
+        entry = _rf_history_entry(analysis, 1700000000.4)
+        assert entry["ts"] == 1700000000
+        assert entry["transmitter_channel"] == 2
+        assert entry["transmitter_dbm"] == pytest.approx(-60.0)
+        assert entry["recommended_dfi_channel"] == analysis["recommended_dfi_channel"]["channel"]
+        assert len(entry["dfi_dbm"]) == 16
+        assert len(entry["radios"]) == 4
+
+    def test_bounded_append_and_read(self, tmp_path):
+        path = tmp_path / "rf_history.jsonl"
+        for i in range(5):
+            _append_bounded_jsonl(path, {"ts": i}, max_entries=3)
+        assert [e["ts"] for e in _read_rf_history(path)] == [2, 3, 4]
+        assert [e["ts"] for e in _read_rf_history(path, limit=1)] == [4]
+
+    def test_read_missing_and_corrupt(self, tmp_path):
+        path = tmp_path / "rf_history.jsonl"
+        assert _read_rf_history(path) == []
+        path.write_text('{"ts": 1}\nnot json\n')
+        assert _read_rf_history(path) == [{"ts": 1}]
 
 
 class TestDfiChannelToFreqMhz:
@@ -169,23 +410,6 @@ class TestDfiChannelToFreqMhz:
 
     def test_none_input(self):
         assert _dfi_channel_to_freq_mhz(None) is None
-
-
-class TestLoudestSignalNearFreq:
-    def test_finds_nearby_ap(self):
-        aps = [{"freq_mhz": 2412, "signal_dbm": -50.0}, {"freq_mhz": 2462, "signal_dbm": -70.0}]
-        assert _loudest_signal_near_freq(aps, 2415, half_width_mhz=20) == -50.0
-
-    def test_ignores_far_ap(self):
-        aps = [{"freq_mhz": 2462, "signal_dbm": -40.0}]
-        assert _loudest_signal_near_freq(aps, 2412, half_width_mhz=20) is None
-
-    def test_picks_loudest_of_several(self):
-        aps = [{"freq_mhz": 2412, "signal_dbm": -70.0}, {"freq_mhz": 2417, "signal_dbm": -45.0}]
-        assert _loudest_signal_near_freq(aps, 2412, half_width_mhz=20) == -45.0
-
-    def test_none_freq(self):
-        assert _loudest_signal_near_freq([{"freq_mhz": 2412, "signal_dbm": -50.0}], None) is None
 
 
 class TestRfSettingsPersistence:

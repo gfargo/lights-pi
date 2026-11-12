@@ -5404,6 +5404,36 @@ _WIFI_NONOVERLAPPING_CHANNELS = (1, 6, 11)
 # across that documented range — an ESTIMATE, not a verified table.
 _DFI_CHANNEL_COUNT = 16
 _DFI_FREQ_RANGE_MHZ = (2412.0, 2484.0)
+_DFI_CHANNEL_SPACING_MHZ = (_DFI_FREQ_RANGE_MHZ[1] - _DFI_FREQ_RANGE_MHZ[0]) / (_DFI_CHANNEL_COUNT - 1)
+
+# Effective-interference bands (dBm, after spectral-mask attenuation and
+# power-summing every radio). Shared with the UI via the response so the
+# spectrum bars and suggestions agree.
+_RF_BAND_LOUD_DBM = -60.0
+_RF_BAND_MODERATE_DBM = -75.0
+
+# 802.11 OFDM transmit spectral mask for a 20 MHz channel, as
+# (offset from centre MHz, attenuation dB) breakpoints: flat across the
+# occupied ±9 MHz, -20 dBr at ±11, -28 dBr at ±20, -40 dBr at ±30. Values
+# between breakpoints are linearly interpolated; beyond the last breakpoint
+# an AP is treated as contributing nothing. 40 MHz (HT40) APs use the same
+# shape stretched x2. The mask is a regulatory worst case — real radios
+# usually roll off faster — so this errs towards flagging interference.
+_WIFI_MASK_20MHZ = ((0.0, 0.0), (9.0, 0.0), (11.0, -20.0), (20.0, -28.0), (30.0, -40.0))
+
+# What a Wi-Fi survey from the Pi structurally cannot tell you. Surfaced in
+# the rf_scan response and as the last suggestion so nobody over-trusts it.
+_RF_SCAN_LIMITATIONS = (
+    "Only Wi-Fi access-point beacons are visible: Bluetooth, microwave ovens, "
+    "other wireless DMX and other non-Wi-Fi 2.4 GHz gear don't show up.",
+    "Levels are what the Pi's antenna hears where the Pi sits, not what the "
+    "D-Fi receiver hears at the fixtures.",
+    "One scan is a snapshot of beacon strength, not airtime; a busy network "
+    "and an idle one at the same level look identical (the Pi 3's radio "
+    "can't report channel busy-time).",
+    "D-Fi channel frequencies are a linear estimate across 2412-2484 MHz; "
+    "Chauvet doesn't publish the real table.",
+)
 
 
 def _dfi_channel_to_freq_mhz(channel):
@@ -5412,22 +5442,122 @@ def _dfi_channel_to_freq_mhz(channel):
     Chauvet-published mapping."""
     if channel is None or not (1 <= channel <= _DFI_CHANNEL_COUNT):
         return None
-    lo, hi = _DFI_FREQ_RANGE_MHZ
-    return lo + (channel - 1) * (hi - lo) / (_DFI_CHANNEL_COUNT - 1)
+    lo, _hi = _DFI_FREQ_RANGE_MHZ
+    return lo + (channel - 1) * _DFI_CHANNEL_SPACING_MHZ
 
 
-def _loudest_signal_near_freq(access_points, freq_mhz, half_width_mhz=20):
-    """Loudest signal (dBm) among access points within ±half_width_mhz of
-    freq_mhz, or None if nothing's nearby. Frequency-domain counterpart to
-    the channel-index bleed model in _analyze_rf_channels."""
+def _wifi_mask_attenuation_db(offset_mhz, width_mhz=20):
+    """Attenuation (dB, <= 0) of a Wi-Fi transmitter's power `offset_mhz`
+    away from its centre frequency, per the 802.11 OFDM spectral mask
+    (_WIFI_MASK_20MHZ, scaled for wider channels). None when the offset is
+    past the mask's last breakpoint — i.e. no meaningful contribution."""
+    scale = (width_mhz or 20) / 20.0
+    d = abs(offset_mhz)
+    points = [(x * scale, y) for x, y in _WIFI_MASK_20MHZ]
+    if d > points[-1][0]:
+        return None
+    for (x0, y0), (x1, y1) in zip(points, points[1:], strict=False):
+        if d <= x1:
+            if x1 == x0:
+                return y1
+            return y0 + (y1 - y0) * (d - x0) / (x1 - x0)
+    return points[-1][1]
+
+
+def _radio_center_mhz(radio):
+    return radio.get("center_freq_mhz") or radio.get("freq_mhz")
+
+
+def _interference_at_freq_dbm(radios, freq_mhz):
+    """Effective Wi-Fi interference (dBm) at freq_mhz: each radio's received
+    signal attenuated by the spectral mask at that offset, then power-summed
+    in milliwatts (two equal -80 dBm contributions make -77 dBm). Power-sum
+    rather than "loudest wins" because a receiver sees all of them at once.
+    None when no radio reaches this frequency."""
     if freq_mhz is None:
         return None
-    candidates = [
-        ap["signal_dbm"] for ap in access_points
-        if ap.get("freq_mhz") is not None and ap.get("signal_dbm") is not None
-        and abs(ap["freq_mhz"] - freq_mhz) <= half_width_mhz
-    ]
-    return max(candidates) if candidates else None
+    total_mw = 0.0
+    for r in radios:
+        center = _radio_center_mhz(r)
+        sig = r.get("signal_dbm")
+        if center is None or sig is None:
+            continue
+        att = _wifi_mask_attenuation_db(freq_mhz - center, r.get("width_mhz") or 20)
+        if att is None:
+            continue
+        total_mw += 10 ** ((sig + att) / 10.0)
+    if total_mw <= 0:
+        return None
+    return 10 * math.log10(total_mw)
+
+
+def _rf_band(dbm):
+    """'loud' / 'moderate' / 'quiet' for an effective-interference level."""
+    if dbm is None or dbm < _RF_BAND_MODERATE_DBM:
+        return "quiet"
+    return "loud" if dbm >= _RF_BAND_LOUD_DBM else "moderate"
+
+
+def _dfi_channel_interference_dbm(radios, channel):
+    """Score one D-Fi channel: the worst effective interference across its
+    estimated frequency ± one channel spacing (~4.8 MHz). The margin hedges
+    the linear channel→frequency estimate: the mask edge next to a loud AP
+    is a cliff (0 → -20 dB within 2 MHz), so a channel that's only quiet at
+    one exact frequency isn't a safe pick when the real frequency could be
+    a channel away. Sampled every ~1.2 MHz. None = nothing reaches it."""
+    f = _dfi_channel_to_freq_mhz(channel)
+    if f is None:
+        return None
+    margin = _DFI_CHANNEL_SPACING_MHZ
+    offsets = [margin * k / 4 for k in range(-4, 5)]
+    vals = [v for v in (_interference_at_freq_dbm(radios, f + d) for d in offsets)
+            if v is not None]
+    return max(vals) if vals else None
+
+
+def _bssid_radio_key(bssid):
+    """Key identifying the physical radio behind a BSSID. Routers advertise
+    extra SSIDs (guest, IoT) from the same radio using BSSIDs that differ
+    only in the first octet — the locally-administered bits — so
+    D8:0D:17:AF:09:30 and DE:0D:17:AF:09:30 are one radio. None if the
+    BSSID doesn't parse."""
+    if not bssid:
+        return None
+    parts = bssid.lower().split(":")
+    if len(parts) != 6 or not all(len(p) == 2 for p in parts):
+        return None
+    return ":".join(parts[1:])
+
+
+def _dedupe_radios(access_points):
+    """Collapse access points that are the same physical radio (see
+    _bssid_radio_key; same channel too) into one record carrying the
+    loudest signal and every SSID it advertises. APs without a usable
+    BSSID are kept as-is. Loudest first."""
+    radios = {}
+    order = []
+    for i, ap in enumerate(access_points):
+        rk = _bssid_radio_key(ap.get("bssid"))
+        key = (rk, ap.get("channel")) if rk else ("#", i)
+        ssid = ap.get("ssid") or "(hidden network)"
+        if key not in radios:
+            radios[key] = {**ap, "ssids": [ssid]}
+            order.append(key)
+            continue
+        r = radios[key]
+        if ssid not in r["ssids"]:
+            r["ssids"].append(ssid)
+        sig = ap.get("signal_dbm")
+        if sig is not None and (r.get("signal_dbm") is None or sig > r["signal_dbm"]):
+            r["signal_dbm"] = sig
+    out = [radios[k] for k in order]
+    out.sort(key=lambda r: r["signal_dbm"] if r.get("signal_dbm") is not None else -999, reverse=True)
+    return out
+
+
+def _radio_label(radio):
+    names = radio.get("ssids") or [radio.get("ssid") or "(hidden network)"]
+    return " / ".join(names)
 
 
 def _load_rf_settings() -> dict:
@@ -5460,9 +5590,18 @@ def _wifi_channel_from_freq(freq_mhz):
     return None
 
 
+_IW_BSS_RE = re.compile(r"^BSS\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})")
+
+
 def _parse_iw_scan_output(raw: str) -> list[dict]:
     """Parse `iw dev <iface> scan` text into 2.4 GHz access-point records:
-    {ssid, signal_dbm, freq_mhz, channel}, loudest first.
+    {bssid, ssid, signal_dbm, freq_mhz, channel, width_mhz,
+    center_freq_mhz}, loudest first.
+
+    freq_mhz/channel are the primary 20 MHz channel. An HT40 AP (HT
+    operation: secondary channel offset above/below, STA channel width
+    any) gets width_mhz=40 and a centre shifted 10 MHz towards its
+    secondary channel; everything else is 20 MHz centred on freq_mhz.
 
     5 GHz results are dropped — they share no spectrum with wireless DMX.
     Mirrors the awk parser `lightsctl.sh`'s `rf-scan` command already uses.
@@ -5473,23 +5612,34 @@ def _parse_iw_scan_output(raw: str) -> list[dict]:
     def flush():
         if not current:
             return
-        ch = _wifi_channel_from_freq(current.get("freq_mhz"))
-        if ch is not None:
-            access_points.append({
-                "ssid": current.get("ssid") or None,
-                "signal_dbm": current.get("signal_dbm"),
-                "freq_mhz": current["freq_mhz"],
-                "channel": ch,
-            })
+        freq = current.get("freq_mhz")
+        ch = _wifi_channel_from_freq(freq)
+        if ch is None:
+            return
+        offset = current.get("secondary_offset")
+        width = 40 if offset in ("above", "below") and current.get("sta_width_any") else 20
+        center = freq
+        if width == 40:
+            center = freq + (10 if offset == "above" else -10)
+        access_points.append({
+            "bssid": current.get("bssid"),
+            "ssid": current.get("ssid") or None,
+            "signal_dbm": current.get("signal_dbm"),
+            "freq_mhz": freq,
+            "channel": ch,
+            "width_mhz": width,
+            "center_freq_mhz": center,
+        })
 
     for line in raw.splitlines():
         if line.startswith("BSS "):
             flush()
-            current = {}
+            m = _IW_BSS_RE.match(line)
+            current = {"bssid": m.group(1).lower() if m else None}
             continue
         if current is None:
             continue
-        stripped = line.strip()
+        stripped = line.strip().lstrip("* ").strip()
         if stripped.startswith("freq:"):
             try:
                 current["freq_mhz"] = float(stripped.split()[1])
@@ -5502,63 +5652,127 @@ def _parse_iw_scan_output(raw: str) -> list[dict]:
                 pass
         elif stripped.startswith("SSID:"):
             current["ssid"] = stripped.split("SSID:", 1)[1].strip()
+        elif stripped.startswith("secondary channel offset:"):
+            current["secondary_offset"] = stripped.split(":", 1)[1].strip().lower()
+        elif stripped.startswith("STA channel width:"):
+            current["sta_width_any"] = stripped.split(":", 1)[1].strip().lower() == "any"
     flush()
 
     access_points.sort(key=lambda ap: ap["signal_dbm"] if ap["signal_dbm"] is not None else -999, reverse=True)
     return access_points
 
 
+def _recommend_dfi_channel(radios):
+    """Score every D-Fi channel (see _dfi_channel_interference_dbm) and pick
+    the quietest. Ties (e.g. several channels nothing reaches) go to the
+    channel furthest from any radio's centre. Returns (per_channel list,
+    recommendation dict or None when no radios were heard)."""
+    per_channel = []
+    for ch in range(1, _DFI_CHANNEL_COUNT + 1):
+        f = _dfi_channel_to_freq_mhz(ch)
+        dbm = _dfi_channel_interference_dbm(radios, ch)
+        per_channel.append({
+            "channel": ch,
+            "est_freq_mhz": round(f, 1),
+            "interference_dbm": None if dbm is None else round(dbm, 1),
+            "band": _rf_band(dbm),
+        })
+    centers = [_radio_center_mhz(r) for r in radios if _radio_center_mhz(r) is not None
+               and r.get("signal_dbm") is not None]
+    if not centers:
+        return per_channel, None
+
+    def sort_key(entry):
+        dbm = entry["interference_dbm"]
+        clearance = min(abs(entry["est_freq_mhz"] - c) for c in centers)
+        return (dbm if dbm is not None else -200.0, -clearance)
+
+    ranked = sorted(per_channel, key=sort_key)
+    best = ranked[0]
+    best_dbm = best["interference_dbm"] if best["interference_dbm"] is not None else -200.0
+    alternates = [e["channel"] for e in ranked[1:]
+                  if (e["interference_dbm"] if e["interference_dbm"] is not None else -200.0) - best_dbm <= 3.0]
+    return per_channel, {**best, "alternates": sorted(alternates)}
+
+
+def _dfi_channels_hit_by(radio, threshold_dbm):
+    """D-Fi channels whose estimated frequency gets at least threshold_dbm
+    from this one radio alone (after spectral-mask attenuation)."""
+    return [ch for ch in range(1, _DFI_CHANNEL_COUNT + 1)
+            if (_interference_at_freq_dbm([radio], _dfi_channel_to_freq_mhz(ch)) or -999) >= threshold_dbm]
+
+
+def _fmt_dbm(dbm):
+    return "nothing measurable" if dbm is None else f"{dbm:.0f} dBm"
+
+
 def _analyze_rf_channels(access_points: list[dict], transmitter: dict = None) -> dict:
-    """Summarize 2.4 GHz occupancy: per-channel congestion (accounting for
-    the ~4-channel bleed of adjacent 20 MHz-wide WiFi channels), the
-    quietest 3-channel window, and plain-language suggestions.
+    """Summarize 2.4 GHz occupancy for wireless-DMX channel choice.
+
+    Radios are deduped (_dedupe_radios), then interference is modelled in
+    MHz: each radio spreads per the 802.11 spectral mask and contributions
+    power-sum (_interference_at_freq_dbm). From that:
+      - per_channel_congestion_dbm: effective interference at each Wi-Fi
+        channel centre 1-11 (kept for the UI / backward compatibility),
+      - quiet_window: quietest 3-Wi-Fi-channel window (backward compat),
+      - dfi_channels / recommended_dfi_channel: every D-Fi channel scored
+        at its (estimated) frequency, and the quietest one,
+      - suggestions + limitations in plain language.
 
     `transmitter`, if given, is the operator-entered wireless-DMX-transmitter
     settings from _load_rf_settings(): {"mode": "auto"|"manual"|"unknown",
-    "channel": 1-16 or None}. When mode is "manual" with a channel set, this
-    adds a concrete overlap check against that channel's estimated
-    frequency; "auto" adds a note that channel-avoidance matters less.
+    "channel": 1-16 or None}. "manual" with a channel adds a concrete check
+    of that channel; "auto" adds a note that channel choice matters less.
     """
-    heard = [ap for ap in access_points if ap.get("channel") and 1 <= ap["channel"] <= 11
+    heard = [ap for ap in access_points if ap.get("channel") and 1 <= ap["channel"] <= 14
              and ap.get("signal_dbm") is not None]
+    radios = _dedupe_radios(heard)
 
     congestion = {}
     for ch in range(1, 12):
-        loudest = None
-        for ap in heard:
-            if abs(ap["channel"] - ch) <= 4:
-                if loudest is None or ap["signal_dbm"] > loudest:
-                    loudest = ap["signal_dbm"]
-        congestion[ch] = loudest
+        dbm = _interference_at_freq_dbm(radios, 2407 + 5 * ch)
+        congestion[ch] = None if dbm is None else round(dbm, 1)
 
     def window_loudness(start):
         vals = [congestion[c] for c in range(start, start + 3) if congestion.get(c) is not None]
-        return max(vals) if vals else -100.0
+        return max(vals) if vals else -200.0
     quiet_start = min(range(1, 10), key=window_loudness)
     quiet_window = [quiet_start, quiet_start + 2]
 
+    dfi_channels, recommended = _recommend_dfi_channel(radios)
+
     suggestions = []
-    if not heard:
+    if not radios:
         suggestions.append(
-            "No 2.4 GHz WiFi networks detected — the band looks clear right now. "
-            "Flicker during this window is unlikely to be WiFi-related."
+            "No 2.4 GHz Wi-Fi networks detected — the band looks clear right now. "
+            "If the lights still drop out, look past Wi-Fi (see the limits below)."
         )
     else:
-        loudest_ch, loudest_dbm = max(congestion.items(), key=lambda kv: kv[1] if kv[1] is not None else -100)
-        if loudest_dbm is not None and loudest_dbm >= -55:
+        if recommended:
+            alt = recommended["alternates"]
+            alt_text = (f" Within 3 dB: CH{', CH'.join(f'{c:02d}' for c in alt)}." if alt else "")
             suggestions.append(
-                f"Channel {loudest_ch} is loud ({loudest_dbm:.0f} dBm). Keep your wireless DMX "
-                "transmitter's channel away from it and the 3-4 channels either side."
+                f"Clearest D-Fi channel on this scan: CH{recommended['channel']:02d} "
+                f"(~{recommended['est_freq_mhz']:.0f} MHz estimated, Wi-Fi interference "
+                f"{_fmt_dbm(recommended['interference_dbm'])}).{alt_text} The channel→frequency "
+                "table is an estimate, so a neighbouring channel may be the real match."
+                + (" Band-edge channels are where that estimate is least certain — if this one "
+                   "misbehaves, try the alternatives." if recommended["channel"] in (1, _DFI_CHANNEL_COUNT) else "")
             )
-        suggestions.append(
-            f"Quietest window right now: channels {quiet_window[0]}–{quiet_window[1]}. "
-            "Check your transmitter's channel/DIP-switch table for the setting closest to that range "
-            "— we can't read the transmitter's own channel back in software."
-        )
-        crowded_offgrid = [ap for ap in heard
-                           if ap["channel"] not in _WIFI_NONOVERLAPPING_CHANNELS and ap["signal_dbm"] >= -65]
+        for r in radios:
+            if r["signal_dbm"] < _RF_BAND_LOUD_DBM:
+                break
+            near = _dfi_channels_hit_by(r, _RF_BAND_MODERATE_DBM)
+            avoid = (f" Its spill-over stays above {_RF_BAND_MODERATE_DBM:.0f} dBm across roughly "
+                     f"D-Fi CH{near[0]:02d}–CH{near[-1]:02d}; keep the transmitter out of that range."
+                     if near else "")
+            suggestions.append(
+                f"{_radio_label(r)} is loud: {r['signal_dbm']:.0f} dBm on Wi-Fi channel {r['channel']}.{avoid}"
+            )
+        crowded_offgrid = [r for r in radios
+                           if r["channel"] not in _WIFI_NONOVERLAPPING_CHANNELS and r["signal_dbm"] >= -65]
         if crowded_offgrid:
-            names = ", ".join(sorted({ap["ssid"] or "(hidden network)" for ap in crowded_offgrid}))
+            names = ", ".join(_radio_label(r) for r in crowded_offgrid)
             suggestions.append(
                 f"{names} — loud and not on the standard non-overlapping 1/6/11 channel set. "
                 "If it's a network you control, moving it to channel 1, 6, or 11 frees up more of the band."
@@ -5573,42 +5787,123 @@ def _analyze_rf_channels(access_points: list[dict], transmitter: dict = None) ->
     if t_mode == "auto":
         transmitter_note = (
             "Your transmitter is set to Auto — it already re-scans and picks its own clear "
-            "channel, so this WiFi survey matters less for channel choice. If flicker persists "
+            "channel, so this Wi-Fi survey matters less for channel choice. If dropouts persist "
             "in Auto mode, channel congestion is a less likely cause."
         )
     elif t_mode == "manual" and t_channel:
         est_freq = _dfi_channel_to_freq_mhz(t_channel)
-        nearby_dbm = _loudest_signal_near_freq(access_points, est_freq) if est_freq else None
         if est_freq is not None:
-            if nearby_dbm is None:
-                transmitter_note = (
-                    f"Transmitter channel {t_channel} (~{est_freq:.0f} MHz, estimated — Chauvet "
-                    "doesn't publish an exact channel table) looks clear right now."
-                )
+            t_dbm = _dfi_channel_interference_dbm(radios, t_channel)
+            band = _rf_band(t_dbm)
+            head = (f"Transmitter channel CH{t_channel:02d} (~{est_freq:.0f} MHz, estimated — Chauvet "
+                    "doesn't publish an exact channel table)")
+            if t_dbm is None:
+                transmitter_note = f"{head} looks clear right now."
             else:
-                band = "loud" if nearby_dbm >= -55 else "moderate" if nearby_dbm >= -70 else "quiet"
-                est_wifi_ch = _wifi_channel_from_freq(est_freq)
-                already_in_quiet_window = est_wifi_ch is not None and quiet_window[0] <= est_wifi_ch <= quiet_window[1]
                 if band == "quiet":
                     verdict = "Looks fine."
-                elif already_in_quiet_window:
-                    verdict = "That's already about as clear as this WiFi environment gets right now."
+                elif (recommended and recommended["channel"] != t_channel
+                      and recommended["interference_dbm"] is not None
+                      and t_dbm - recommended["interference_dbm"] >= 6.0) or (
+                        recommended and recommended["channel"] != t_channel
+                        and recommended["interference_dbm"] is None):
+                    verdict = (f"Consider moving it to CH{recommended['channel']:02d} "
+                               f"({_fmt_dbm(recommended['interference_dbm'])}).")
                 else:
-                    verdict = "Consider moving it toward the quiet window below."
-                transmitter_note = (
-                    f"Transmitter channel {t_channel} (~{est_freq:.0f} MHz, estimated) is sitting near "
-                    f"{band} WiFi traffic ({nearby_dbm:.0f} dBm). {verdict}"
-                )
+                    verdict = "That's already about as clear as this Wi-Fi environment gets right now."
+                transmitter_note = f"{head} sees {band} Wi-Fi interference ({t_dbm:.0f} dBm). {verdict}"
     if transmitter_note:
         suggestions.insert(0, transmitter_note)
 
+    suggestions.append(
+        "What this can't see: Bluetooth, microwaves, other wireless DMX and other non-Wi-Fi "
+        "2.4 GHz gear, or conditions at the D-Fi receiver — only Wi-Fi beacons heard at the Pi."
+    )
+
     return {
+        "model": "802.11 OFDM spectral mask, power-summed per deduped radio",
         "per_channel_congestion_dbm": congestion,
         "quiet_window": quiet_window,
         "nonoverlapping_channels": list(_WIFI_NONOVERLAPPING_CHANNELS),
+        "radios": radios,
+        "dfi_channels": dfi_channels,
+        "recommended_dfi_channel": recommended,
+        "bands_dbm": {"loud": _RF_BAND_LOUD_DBM, "moderate": _RF_BAND_MODERATE_DBM},
+        "limitations": list(_RF_SCAN_LIMITATIONS),
         "suggestions": suggestions,
         "transmitter": transmitter or None,
     }
+
+
+# Periodic background survey, so congestion over an evening can be lined up
+# against reported dropouts. One compact JSON line per scan in a bounded
+# file. Runs as a plain threading.Thread with time.sleep — both green under
+# gunicorn's eventlet monkey-patching (same pattern as the last-look saver),
+# and execute_command's subprocess call is the same one the route makes.
+RF_HISTORY_FILE = Path.home() / ".qlcplus" / "rf_history.jsonl"
+RF_HISTORY_INTERVAL_S = int(os.getenv("RF_HISTORY_INTERVAL_S", "900"))  # 0 disables
+RF_HISTORY_MAX_ENTRIES = 7 * 24 * 4  # a week at 15-minute spacing
+
+
+def _rf_history_entry(analysis: dict, ts: float) -> dict:
+    """Compact record of one scan for the history file."""
+    rec = analysis.get("recommended_dfi_channel") or {}
+    t = analysis.get("transmitter") or {}
+    t_channel = t.get("channel") if t.get("mode") == "manual" else None
+    t_entry = next((c for c in analysis.get("dfi_channels", []) if c["channel"] == t_channel), None)
+    return {
+        "ts": round(ts),
+        "radios": [{"ssids": r.get("ssids"), "channel": r.get("channel"), "dbm": r.get("signal_dbm")}
+                   for r in analysis.get("radios", [])],
+        "dfi_dbm": {str(c["channel"]): c["interference_dbm"] for c in analysis.get("dfi_channels", [])},
+        "recommended_dfi_channel": rec.get("channel"),
+        "transmitter_channel": t_channel,
+        "transmitter_dbm": t_entry["interference_dbm"] if t_entry else None,
+    }
+
+
+def _append_bounded_jsonl(path: Path, entry: dict, max_entries: int) -> None:
+    """Append one JSON line, keeping only the newest max_entries lines."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text().splitlines() if path.exists() else []
+    lines.append(json.dumps(entry, separators=(",", ":")))
+    lines = lines[-max_entries:]
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n")
+    tmp.replace(path)
+
+
+def _read_rf_history(path: Path, limit: int = None) -> list[dict]:
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out[-limit:] if limit else out
+
+
+def _run_rf_scan():
+    """Run `iw scan` and analyze it. Returns (access_points, analysis) or
+    raises RuntimeError with the scan's error."""
+    result = execute_command("sudo -n iw dev wlan0 scan 2>/dev/null")
+    if not result["success"]:
+        raise RuntimeError(result.get("error") or "iw scan failed — is wlan0 up?")
+    access_points = _parse_iw_scan_output(result["output"])
+    return access_points, _analyze_rf_channels(access_points, transmitter=_load_rf_settings())
+
+
+def _rf_history_loop():
+    while True:
+        time.sleep(RF_HISTORY_INTERVAL_S)
+        try:
+            _aps, analysis = _run_rf_scan()
+            _append_bounded_jsonl(RF_HISTORY_FILE, _rf_history_entry(analysis, time.time()),
+                                  RF_HISTORY_MAX_ENTRIES)
+        except Exception as e:  # a busy radio or failed scan just skips a sample
+            log.warning("rf_history_scan_failed", error=str(e))
 
 
 @app.route("/api/diagnostics/rf_scan", methods=["POST"])
@@ -5616,8 +5911,9 @@ def diagnostics_rf_scan():
     """Survey the 2.4 GHz band from the Pi's own WiFi radio and analyze it
     for wireless-DMX interference risk.
 
-    Returns detected access points plus a channel-congestion analysis and
-    plain-language suggestions. Local-only — needs `iw` + the wlan0 radio.
+    Returns detected access points plus a spectral-overlap analysis, a
+    recommended D-Fi channel and plain-language suggestions. Local-only —
+    needs `iw` + the wlan0 radio.
     """
     if not IS_LOCAL:
         return jsonify({
@@ -5626,21 +5922,33 @@ def diagnostics_rf_scan():
             "is_local": False,
         }), 503
 
-    result = execute_command("sudo -n iw dev wlan0 scan 2>/dev/null")
-    if not result["success"]:
-        return jsonify({
-            "success": False,
-            "error": result.get("error") or "iw scan failed — is wlan0 up?",
-        }), 500
-
-    access_points = _parse_iw_scan_output(result["output"])
-    analysis = _analyze_rf_channels(access_points, transmitter=_load_rf_settings())
+    try:
+        access_points, analysis = _run_rf_scan()
+    except RuntimeError as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
     return jsonify({
         "success": True,
         "interface": "wlan0",
         "access_points": access_points,
         "analysis": analysis,
+        "limitations": analysis["limitations"],
+    })
+
+
+@app.route("/api/diagnostics/rf_history", methods=["GET"])
+def diagnostics_rf_history():
+    """Background rf_scan samples (every RF_HISTORY_INTERVAL_S, newest last),
+    for lining up Wi-Fi congestion against reported light dropouts.
+    ?limit=N returns only the newest N."""
+    try:
+        limit = int(request.args.get("limit", 0)) or None
+    except ValueError:
+        limit = None
+    return jsonify({
+        "success": True,
+        "interval_s": RF_HISTORY_INTERVAL_S,
+        "entries": _read_rf_history(RF_HISTORY_FILE, limit),
     })
 
 
@@ -8428,7 +8736,8 @@ def _build_chat_tools() -> list[dict]:
             "name": "rf_scan",
             "description": (
                 "Survey the 2.4 GHz WiFi band from the Pi's radio and analyze it for wireless-DMX "
-                "interference risk — per-channel congestion, the quietest window, and suggestions."
+                "interference risk — spectral-mask overlap per channel, a recommended D-Fi channel "
+                "(1-16, estimated frequencies), suggestions, and what the scan can't see."
             ),
             "input_schema": {"type": "object", "properties": {}, "required": []},
             "handler": lambda a: _call_self("POST", "/api/diagnostics/rf_scan"),
@@ -9122,6 +9431,12 @@ def init_runtime() -> None:
                          name="boot-restore").start()
         threading.Thread(target=_last_look_saver_loop, daemon=True,
                          name="last-look-saver").start()
+
+    # Periodic background RF survey (see _rf_history_loop). Pi-only: it
+    # needs the wlan0 radio. RF_HISTORY_INTERVAL_S=0 turns it off.
+    if IS_LOCAL and RF_HISTORY_INTERVAL_S > 0:
+        threading.Thread(target=_rf_history_loop, daemon=True,
+                         name="rf-history").start()
 
     # Wire audio SocketIO subscriber so BPM/onset events stream to the browser.
     # The engine only starts capture when /api/audio/enable is called.
