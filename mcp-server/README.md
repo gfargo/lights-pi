@@ -127,7 +127,7 @@ mcp dev server.py
 | Variable           | Default                 | Notes                                       |
 |--------------------|-------------------------|---------------------------------------------|
 | `CONTROL_URL`      | `http://localhost:5000` | URL of the control-server Flask app         |
-| `MCP_HOST`         | `0.0.0.0`               | Bind address                                |
+| `MCP_HOST`         | *(empty)*               | Bind address; empty = all interfaces, IPv4+IPv6 |
 | `MCP_PORT`         | `5001`                  | Listen port                                 |
 | `MCP_PATH`         | `/mcp`                  | URL path mounted by Streamable HTTP         |
 | `LIGHTS_PASSWORD`  | _(unset)_               | Bearer token required on `/mcp` when set — same value as the control server's login |

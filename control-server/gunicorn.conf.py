@@ -9,7 +9,10 @@ import os
 
 worker_class = "eventlet"
 workers = 1  # QLC+ WS is a single-writer surface -- do not raise this (see issue #47).
-bind = f"0.0.0.0:{os.getenv('CONTROL_PORT', '5000')}"
+# [::] is dual-stack on Linux (net.ipv6.bindv6only=0): it accepts IPv4 and
+# IPv6. lights.local is advertised over mDNS with an IPv6 address too, so an
+# IPv4-only bind refuses clients that try IPv6 first.
+bind = f"[::]:{os.getenv('CONTROL_PORT', '5000')}"
 
 # Must stay False: the eventlet worker monkey-patches inside each forked
 # worker process, before it imports the WSGI app (app:app). Preloading would

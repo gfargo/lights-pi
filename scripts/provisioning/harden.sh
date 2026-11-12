@@ -23,6 +23,14 @@ ufw default allow outgoing
 ufw allow 22/tcp   comment 'SSH'
 ufw allow ${QLC_PORT}/tcp comment 'QLC+ web UI'
 ufw allow 5353/udp comment 'mDNS (Avahi - lights.local)'
+ufw allow 443/tcp  comment 'HTTPS (nginx)'
+# Accept IGMP. ufw drops it by default, so the Pi never answers the
+# router's membership queries; routers with IGMP snooping then stop
+# forwarding mDNS (224.0.0.251) to it and lights.local stops resolving.
+# 'ufw reset' above restores the stock before.rules, so re-add it here.
+if ! grep -q -- '-p igmp -j ACCEPT' /etc/ufw/before.rules; then
+  sed -i '/^# allow dhcp client to work/i # allow IGMP so mDNS keeps working behind IGMP-snooping routers\n-A ufw-before-input -p igmp -j ACCEPT\n' /etc/ufw/before.rules
+fi
 ufw --force enable
 ufw status verbose
 
