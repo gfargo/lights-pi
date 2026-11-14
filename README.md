@@ -214,7 +214,7 @@ When Pi 3 is detected or selected, the following optimizations are automatically
 - Disables Bluetooth (saves CPU and memory)
 - Disables HDMI output (saves power)
 - Increases swap to 512MB (better for low memory)
-- Limits journal size to 50MB (reduces SD card wear)
+- Limits journal size to 500MB (weeks of history)
 - Sets CPU governor to performance mode (better for real-time lighting)
 - Disables unnecessary services
 

@@ -250,6 +250,23 @@ def dispatch_midi_message(msg: dict | None, mappings: list, actions: dict, chase
 # MidiListener — hardware-gated background thread
 # ---------------------------------------------------------------------------
 
+def _release(midi_obj) -> None:
+    """Free an rtmidi object's ALSA sequencer client right now.
+
+    Dropping the last Python reference is not enough: python-rtmidi only
+    frees the underlying client in `delete()`. Without it every probe
+    leaks one `/dev/snd/seq` handle, and after 64 of them (the kernel's
+    per-system limit for user clients) every later MidiIn() fails with
+    "error creating ALSA sequencer client object" until the process
+    restarts. Never raises.
+    """
+    for method in ("close_port", "delete"):
+        try:
+            getattr(midi_obj, method)()
+        except Exception:
+            pass
+
+
 class MidiListener:
     """Owns rtmidi input ports: discovery, hot-plug reconnect, and callback
     wiring. Every incoming message is handed to `dispatch_fn(port_name,
@@ -272,6 +289,7 @@ class MidiListener:
         self._running = False
         self._thread: threading.Thread | None = None
         self._ports: dict = {}  # port name -> open rtmidi.MidiIn instance
+        self._last_sync_error: str | None = None
 
         self.available: bool = self._check_deps()
 
@@ -292,9 +310,10 @@ class MidiListener:
         try:
             import rtmidi
             probe = rtmidi.MidiIn()
-            names = list(probe.get_ports())
-            del probe
-            return names
+            try:
+                return list(probe.get_ports())
+            finally:
+                _release(probe)
         except Exception as exc:
             print(f"[midi-listener] device query failed: {exc}")
             return []
@@ -316,10 +335,7 @@ class MidiListener:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
         for midi_in in self._ports.values():
-            try:
-                midi_in.close_port()
-            except Exception:
-                pass
+            _release(midi_in)
         self._ports.clear()
 
     def _poll_loop(self) -> None:
@@ -327,18 +343,34 @@ class MidiListener:
         while self._running:
             try:
                 self._sync_ports(rtmidi)
+                self._note_sync_result(None)
             except Exception as exc:
-                print(f"[midi-listener] port sync error: {exc}")
+                self._note_sync_result(str(exc))
             time.sleep(self._poll_interval)
+
+    def _note_sync_result(self, error: str | None) -> None:
+        """Log a port-sync failure once, not on every poll. The loop runs
+        every couple of seconds, so a persistent failure would otherwise
+        fill the journal and push everything else out of it."""
+        if error == self._last_sync_error:
+            return
+        if error:
+            print(f"[midi-listener] port sync error: {error} (repeats suppressed until this changes)")
+        else:
+            print("[midi-listener] port sync recovered")
+        self._last_sync_error = error
 
     def _sync_ports(self, rtmidi) -> None:
         probe = rtmidi.MidiIn()
-        current_names = list(probe.get_ports())
-        del probe
+        try:
+            current_names = list(probe.get_ports())
+        finally:
+            _release(probe)
 
         for idx, name in enumerate(current_names):
             if name in self._ports:
                 continue
+            midi_in = None
             try:
                 midi_in = rtmidi.MidiIn()
                 midi_in.open_port(idx)
@@ -347,14 +379,13 @@ class MidiListener:
                 self._ports[name] = midi_in
                 print(f"[midi-listener] connected: {name}")
             except Exception as exc:
+                if midi_in is not None:
+                    _release(midi_in)
                 print(f"[midi-listener] failed to open {name}: {exc}")
 
         for name in list(self._ports.keys()):
             if name not in current_names:
-                try:
-                    self._ports[name].close_port()
-                except Exception:
-                    pass
+                _release(self._ports[name])
                 del self._ports[name]
                 print(f"[midi-listener] disconnected: {name}")
 

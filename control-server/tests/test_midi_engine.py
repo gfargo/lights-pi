@@ -415,3 +415,91 @@ class TestMidiListenerNoHardware:
         except ImportError:
             expected = False
         assert listener.available is expected
+
+
+# ---------------------------------------------------------------------------
+# MidiListener — port sync against a fake rtmidi (no hardware)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRtMidi:
+    """Stand-in for the rtmidi module that counts live sequencer clients,
+    the way the kernel does: a client exists until delete() is called."""
+
+    def __init__(self, ports, fail_open=False):
+        self.ports = list(ports)
+        self.fail_open = fail_open
+        self.live = 0
+        module = self
+
+        class MidiIn:
+            def __init__(self):
+                module.live += 1
+                self.deleted = False
+
+            def get_ports(self):
+                return list(module.ports)
+
+            def open_port(self, idx):
+                if module.fail_open:
+                    raise RuntimeError("cannot open")
+
+            def ignore_types(self, **kwargs):
+                pass
+
+            def set_callback(self, cb):
+                pass
+
+            def close_port(self):
+                pass
+
+            def delete(self):
+                if not self.deleted:
+                    self.deleted = True
+                    module.live -= 1
+
+        self.MidiIn = MidiIn
+
+
+class TestMidiListenerPortSync:
+    def test_probe_clients_are_released_every_sync(self):
+        fake = _FakeRtMidi(ports=[])
+        listener = MidiListener(dispatch_fn=lambda *a: None)
+        for _ in range(200):
+            listener._sync_ports(fake)
+        assert fake.live == 0
+
+    def test_only_open_ports_hold_a_client(self):
+        fake = _FakeRtMidi(ports=["Pad 20:0"])
+        listener = MidiListener(dispatch_fn=lambda *a: None)
+        for _ in range(50):
+            listener._sync_ports(fake)
+        assert fake.live == 1
+        fake.ports = []
+        listener._sync_ports(fake)
+        assert fake.live == 0
+
+    def test_failed_open_does_not_leak(self):
+        fake = _FakeRtMidi(ports=["Pad 20:0"], fail_open=True)
+        listener = MidiListener(dispatch_fn=lambda *a: None)
+        for _ in range(50):
+            listener._sync_ports(fake)
+        assert fake.live == 0
+
+    def test_stop_releases_open_ports(self):
+        fake = _FakeRtMidi(ports=["Pad 20:0"])
+        listener = MidiListener(dispatch_fn=lambda *a: None)
+        listener._sync_ports(fake)
+        listener.stop()
+        assert fake.live == 0
+
+    def test_repeated_sync_error_is_logged_once(self, capsys):
+        listener = MidiListener(dispatch_fn=lambda *a: None)
+        for _ in range(5):
+            listener._note_sync_result("boom")
+        listener._note_sync_result(None)
+        listener._note_sync_result(None)
+        lines = capsys.readouterr().out.strip().splitlines()
+        assert len(lines) == 2
+        assert "boom" in lines[0]
+        assert "recovered" in lines[1]

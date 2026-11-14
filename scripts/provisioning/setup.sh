@@ -286,14 +286,16 @@ if [[ "\${PI_MODEL}" == "3" ]]; then
     echo "    ✓ Increased swap to 512MB"
   fi
   
-  # Reduce journal size to save SD card writes
+  # Cap the journal. The cap sets how far back logs go, not how much is
+  # written, so it does nothing for SD card wear; 50M held barely a day,
+  # too short to look back at an intermittent fault. 500M keeps weeks.
   mkdir -p /etc/systemd/journald.conf.d
   cat > /etc/systemd/journald.conf.d/pi3-optimize.conf <<JOPT
 [Journal]
-SystemMaxUse=50M
+SystemMaxUse=500M
 RuntimeMaxUse=50M
 JOPT
-  echo "    ✓ Limited journal size to 50MB (reduces SD card wear)"
+  echo "    ✓ Limited journal size to 500MB (weeks of history)"
   
   # Disable unnecessary services
   for service in triggerhappy.service avahi-daemon.socket cups.service; do
@@ -339,6 +341,6 @@ if [[ "$PI_MODEL" == "3" ]]; then
   echo "  • Disabled Bluetooth"
   echo "  • Disabled HDMI output"
   echo "  • Increased swap to 512MB"
-  echo "  • Limited journal size to 50MB"
+  echo "  • Limited journal size to 500MB"
   echo "  • Set CPU governor to performance mode"
 fi
