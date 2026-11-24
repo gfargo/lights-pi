@@ -185,3 +185,35 @@ class TestFlaskAlwaysTrue:
             now=1000.0,
         )
         assert payload["flask"] is True
+
+
+class TestQlcBridge:
+    def test_stalled_bridge_returns_503_even_with_ws_connected(self, tmp_path):
+        # Nov 2026: the WS object stayed "connected" while the loop thread
+        # was wedged; only the timeout count shows the bridge is dead.
+        payload, ok = _healthz_status(
+            qlc_ws=_fake_ws(closed=False),
+            last_dmx_ts=None,
+            workspace_path=_minimal_workspace(tmp_path),
+            dmx_device_glob=[],
+            now=1000.0,
+            qlc_timeouts=3,
+            qlc_loop_restarts=0,
+        )
+        assert ok is False
+        assert payload["qlc_ws"] is True
+        assert payload["qlc_bridge_ok"] is False
+        assert payload["qlc_consecutive_timeouts"] == 3
+
+    def test_reports_loop_restarts(self, tmp_path):
+        payload, ok = _healthz_status(
+            qlc_ws=_fake_ws(closed=False),
+            last_dmx_ts=None,
+            workspace_path=_minimal_workspace(tmp_path),
+            dmx_device_glob=[],
+            now=1000.0,
+            qlc_timeouts=0,
+            qlc_loop_restarts=2,
+        )
+        assert ok is True
+        assert payload["qlc_loop_restarts"] == 2

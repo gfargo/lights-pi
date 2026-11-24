@@ -21,11 +21,18 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_qlc_loop_globals():
-    """_qlc_run()/_wait_for_future() read module-level globals; make sure
+    """_qlc_run() and the hub/loop helpers read module-level globals; make sure
     tests don't leak a loop/thread into each other or into unrelated tests."""
     yield
+    loop = app._qlc_loop
+    if loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(loop.stop)
     app._qlc_loop = None
     app._qlc_loop_thread = None
+    app._qlc_loop_thread_ident = None
+    app._qlc_consecutive_timeouts = 0
+    app._qlc_loop_restarts = 0
+    app._hub_pending.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -76,38 +83,6 @@ class TestNativeThreadingModule:
 
 
 # ---------------------------------------------------------------------------
-# _wait_for_future
-# ---------------------------------------------------------------------------
-
-class TestWaitForFuture:
-    def test_returns_result_once_future_completes(self):
-        future = concurrent.futures.Future()
-        threading.Timer(0.05, lambda: future.set_result(42)).start()
-        assert app._wait_for_future(future, timeout=2) == 42
-
-    def test_propagates_exception(self):
-        future = concurrent.futures.Future()
-        threading.Timer(
-            0.05, lambda: future.set_exception(ValueError("boom"))
-        ).start()
-        with pytest.raises(ValueError, match="boom"):
-            app._wait_for_future(future, timeout=2)
-
-    def test_timeout_raises_and_cancels_future(self):
-        future = concurrent.futures.Future()
-        with pytest.raises(concurrent.futures.TimeoutError):
-            app._wait_for_future(future, timeout=0.05)
-        # _wait_for_future() cancels on timeout so the caller's loop doesn't
-        # keep running an abandoned coroutine.
-        assert future.cancelled() or not future.set_running_or_notify_cancel()
-
-    def test_already_done_future_returns_immediately(self):
-        future = concurrent.futures.Future()
-        future.set_result("done")
-        assert app._wait_for_future(future, timeout=1) == "done"
-
-
-# ---------------------------------------------------------------------------
 # _qlc_run — dispatch path (direct vs. eventlet.tpool.execute)
 # ---------------------------------------------------------------------------
 
@@ -123,6 +98,7 @@ def _running_qlc_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop_holder["loop"] = loop
+        loop_holder["ident"] = threading.get_ident()
         ready.set()
         loop.run_forever()
 
@@ -132,6 +108,7 @@ def _running_qlc_loop():
     loop = loop_holder["loop"]
     app._qlc_loop = loop
     app._qlc_loop_thread = t
+    app._qlc_loop_thread_ident = loop_holder["ident"]
     yield loop
     loop.call_soon_threadsafe(loop.stop)
 
@@ -163,7 +140,8 @@ class TestQlcRunDispatch:
         result = app._qlc_run(_slow_double(5, delay=0.01), timeout=2)
 
         assert result == 10
-        assert calls == [app._wait_for_future]
+        # The blocking wait is an original Event.wait, run off the hub.
+        assert len(calls) == 1 and getattr(calls[0], "__name__", "") == "wait"
 
     def test_propagates_coroutine_exception_under_eventlet(
         self, monkeypatch, _running_qlc_loop
@@ -212,3 +190,140 @@ class TestConcurrency:
         # should complete close to a single call's duration. Generous
         # threshold to keep this from being flaky under CI load.
         assert elapsed < 0.8, f"expected parallel execution, took {elapsed:.2f}s"
+
+
+# ---------------------------------------------------------------------------
+# _LoopTask / _qlc_submit — the handoff that replaced concurrent.futures.Future
+# ---------------------------------------------------------------------------
+
+class TestLoopTask:
+    def test_result(self, _running_qlc_loop):
+        handle = app._qlc_submit(_slow_double(4, delay=0.01))
+        assert handle.wait(2) is True
+        assert handle.done()
+        assert handle.result() == 8
+
+    def test_exception_propagates(self, _running_qlc_loop):
+        async def _boom():
+            raise ValueError("bad reply")
+
+        handle = app._qlc_submit(_boom())
+        assert handle.wait(2) is True
+        with pytest.raises(ValueError, match="bad reply"):
+            handle.result()
+
+    def test_cancel_running_task(self, _running_qlc_loop):
+        handle = app._qlc_submit(asyncio.sleep(10))
+        time.sleep(0.05)
+        handle.cancel()
+        assert handle.wait(2) is True
+        with pytest.raises(asyncio.CancelledError):
+            handle.result()
+
+    def test_cancel_before_start_never_runs(self, _running_qlc_loop):
+        ran = []
+
+        async def _record():
+            ran.append(True)
+
+        # Hold the loop so the submitted start callback queues behind it.
+        _running_qlc_loop.call_soon_threadsafe(time.sleep, 0.2)
+        handle = app._qlc_submit(_record())
+        handle.cancel()
+        assert handle.wait(2) is True
+        assert ran == []
+        with pytest.raises(asyncio.CancelledError):
+            handle.result()
+
+
+# ---------------------------------------------------------------------------
+# _qlc_run guard + loop watchdog
+# ---------------------------------------------------------------------------
+
+class TestQlcRunWatchdog:
+    def test_refuses_to_run_on_the_loop_thread(self, _running_qlc_loop):
+        async def _calls_qlc_run_from_loop():
+            try:
+                app._qlc_run(asyncio.sleep(0), timeout=1)
+            except RuntimeError as e:
+                return str(e)
+            return "no error"
+
+        assert "loop thread" in app._qlc_run(_calls_qlc_run_from_loop(), timeout=2)
+
+    def test_timeouts_with_live_loop_do_not_restart(self, _running_qlc_loop):
+        for _ in range(app.QLC_WEDGE_TIMEOUTS):
+            with pytest.raises(concurrent.futures.TimeoutError):
+                app._qlc_run(asyncio.sleep(5), timeout=0.05)
+        # The probe found the loop alive: counter reset, same loop, no restart.
+        assert app._qlc_loop is _running_qlc_loop
+        assert app._qlc_loop_restarts == 0
+        assert app._qlc_consecutive_timeouts == 0
+
+    def test_success_resets_timeout_count(self, _running_qlc_loop):
+        with pytest.raises(concurrent.futures.TimeoutError):
+            app._qlc_run(asyncio.sleep(5), timeout=0.05)
+        assert app._qlc_consecutive_timeouts == 1
+        assert app._qlc_run(_slow_double(1, delay=0), timeout=2) == 2
+        assert app._qlc_consecutive_timeouts == 0
+
+    def test_wedged_loop_is_replaced(self, _running_qlc_loop):
+        wedged = _running_qlc_loop
+        # Park the loop thread, standing in for a thread stuck on a lock.
+        wedged.call_soon_threadsafe(time.sleep, 4)
+        for _ in range(app.QLC_WEDGE_TIMEOUTS):
+            with pytest.raises(concurrent.futures.TimeoutError):
+                app._qlc_run(asyncio.sleep(0), timeout=0.1)
+
+        assert app._qlc_loop_restarts == 1
+        assert app._qlc_loop is not wedged
+        assert app._qlc_ws is None  # dropped with the old loop; reconnects lazily
+        assert app._qlc_run(_slow_double(3, delay=0), timeout=2) == 6
+
+
+# ---------------------------------------------------------------------------
+# _call_on_hub — keeps the loop thread off green primitives
+# ---------------------------------------------------------------------------
+
+class TestCallOnHub:
+    def test_runs_inline_off_the_loop_thread(self):
+        out = []
+        app._call_on_hub(out.append, 1)
+        assert out == [1]
+        assert len(app._hub_pending) == 0
+
+    def test_defers_from_the_loop_thread_until_drained(self, _running_qlc_loop):
+        out = []
+
+        async def _from_loop():
+            app._call_on_hub(out.append, "deferred")
+
+        app._qlc_run(_from_loop(), timeout=2)
+        # The drainer thread may already have run it; drain whatever is left.
+        app._drain_hub_pending()
+        assert out == ["deferred"]
+
+    def test_emit_from_loop_thread_reaches_subscribers(self, _running_qlc_loop):
+        q = app.EVENT_BUS.subscribe()
+        try:
+            async def _emit_from_loop():
+                app._emit("qlc_reconnect", {"url": "x"})
+
+            app._qlc_run(_emit_from_loop(), timeout=2)
+            app._drain_hub_pending()
+            event = q.get(timeout=2)
+            assert event["type"] == "qlc_reconnect"
+        finally:
+            app.EVENT_BUS.unsubscribe(q)
+
+    def test_drain_survives_a_failing_call(self, capsys):
+        out = []
+
+        def _bad():
+            raise RuntimeError("nope")
+
+        app._hub_pending.append((_bad, (), {}))
+        app._hub_pending.append((out.append, ("after",), {}))
+        assert app._drain_hub_pending() == 2
+        assert out == ["after"]
+        assert "nope" in capsys.readouterr().out
