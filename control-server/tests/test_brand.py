@@ -8,7 +8,7 @@ class TestBrandConfig:
     def test_defaults_when_unset(self):
         b = _brand_config({})
         assert b == {"name": DEFAULT_BRAND_NAME, "short_name": DEFAULT_BRAND_NAME,
-                     "accent": DEFAULT_BRAND_ACCENT}
+                     "accent": DEFAULT_BRAND_ACCENT, "on_accent": "#0a0a0a"}
 
     def test_name_is_trimmed_and_collapsed(self):
         assert _brand_config({"BRAND_NAME": "  North   Studio "})["name"] == "North Studio"
@@ -38,6 +38,16 @@ class TestBrandConfig:
     def test_bad_accent_falls_back(self):
         for bad in ("orange", "#12345", "ff6a1f", "#ggg", "red;}body{display:none"):
             assert _brand_config({"BRAND_ACCENT": bad})["accent"] == DEFAULT_BRAND_ACCENT
+
+
+class TestTextOnAccent:
+    def test_ink_on_light_accents(self):
+        for accent in ("#ff6a1f", "#ffff57", "#00c8b4", "#ffffff"):
+            assert _brand_config({"BRAND_ACCENT": accent})["on_accent"] == "#0a0a0a"
+
+    def test_paper_on_dark_accents(self):
+        for accent in ("#1e50ff", "#dc1e50", "#000000", "#5a1818"):
+            assert _brand_config({"BRAND_ACCENT": accent})["on_accent"] == "#f1f1ee"
 
 
 class TestSwatchIcon:

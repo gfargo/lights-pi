@@ -201,7 +201,20 @@ def _brand_config(env) -> dict:
         accent = DEFAULT_BRAND_ACCENT
     if len(accent) == 4:  # #abc -> #aabbcc, so the template can append alpha
         accent = "#" + "".join(c * 2 for c in accent[1:])
-    return {"name": name, "short_name": short, "accent": accent.lower()}
+    accent = accent.lower()
+    return {"name": name, "short_name": short, "accent": accent,
+            "on_accent": _text_on(accent)}
+
+
+def _text_on(hex_colour: str) -> str:
+    """Ink or paper, whichever reads better on the given #rrggbb background
+    (WCAG relative luminance; the crossover sits near 0.18)."""
+    def channel(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+    lum = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    return "#0a0a0a" if lum > 0.18 else "#f1f1ee"
 
 
 BRAND = _brand_config(os.environ)
