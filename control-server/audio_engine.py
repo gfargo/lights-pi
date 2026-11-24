@@ -151,6 +151,15 @@ class AudioEngine:
         with self._lock:
             return self._bpm
 
+    def bpm_snapshot(self) -> float:
+        """Lock-free read of the current BPM, safe from any OS thread.
+
+        Reading a float attribute is atomic under the GIL. Use this from the
+        QLC+ loop thread, where taking self._lock (a green lock under
+        eventlet) can wedge the loop.
+        """
+        return self._bpm
+
     def calibrate(self) -> dict:
         """Auto-set noise gate from recent ambient audio samples.
 

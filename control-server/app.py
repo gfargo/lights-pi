@@ -6,6 +6,7 @@ Also provides direct fixture/group controls with QLC+ WebSocket integration
 """
 
 import asyncio
+import collections
 import concurrent.futures
 import contextlib
 import hmac
@@ -105,8 +106,14 @@ START_TIME = time.time()
 
 
 def _emit(event_type: str, data: dict) -> None:
-    """Convenience wrapper: publish *data* as *event_type* to all SSE clients."""
-    EVENT_BUS.publish(event_type, data)
+    """Convenience wrapper: publish *data* as *event_type* to all SSE clients.
+
+    Safe from any thread: EVENT_BUS uses (monkey-patched, green) locks and
+    queues, so calls from the QLC+ loop thread are handed to the hub via
+    _call_on_hub() instead of touching them directly. See the eventlet
+    bridge note above _start_qlc_loop.
+    """
+    _call_on_hub(EVENT_BUS.publish, event_type, data)
 
 # ---------------------------------------------------------------------------
 # Security hardening (quick wins from security audit)
@@ -467,19 +474,47 @@ IS_LOCAL = _is_local()
 # The fix used below: run the loop's own thread and its startup handshake on
 # eventlet's *original* (pre-patch) threading module — genuine OS-thread
 # primitives on both ends of the handoff — and bridge the blocking wait for a
-# coroutine's result through eventlet.tpool.execute() using a done-callback +
-# original Event instead of touching the Future's patched Condition. This
-# combination was verified against a real `websockets` server: WS I/O
-# completes correctly and the eventlet hub stays responsive to other
+# coroutine's result through eventlet.tpool.execute() waiting on an original
+# Event. This combination was verified against a real `websockets` server:
+# WS I/O completes correctly and the eventlet hub stays responsive to other
 # greenlets while a QLC+ call is in flight.
+#
+# The rule that keeps it working: the loop thread must NEVER touch a green
+# primitive, and nothing may share one with it. A green Lock/Condition/Queue
+# contended between the loop thread and the hub makes eventlet try to switch
+# to a greenlet that lives on another OS thread ("greenlet.error: Cannot
+# switch to a different thread"); the loop thread is then left parked on that
+# lock forever, every QLC+ call times out, and the UI shows "Failed to apply
+# scene ... via WebSocket". That froze production for three days in Nov 2026
+# (structlog's print lock, EVENT_BUS, and concurrent.futures.Future's
+# internal Condition are all green under the patch). So:
+#   - _qlc_submit()/_LoopTask hand results back with call_soon_threadsafe and
+#     an original Event — no concurrent.futures.Future on the hot path.
+#   - _emit() and loop-thread logging go through _call_on_hub(), which defers
+#     work from the loop thread to a hub greenlet via a lock-free deque.
+#   - If the loop ever wedges anyway, _qlc_run() notices repeated timeouts,
+#     probes the loop, and replaces it (see _note_qlc_timeout).
 
 _qlc_loop: asyncio.AbstractEventLoop = None  # type: ignore
 _qlc_loop_thread: threading.Thread = None  # type: ignore
+_qlc_loop_thread_ident: int = None  # type: ignore  # OS thread id of the loop thread
 _qlc_ws = None  # the actual websocket connection (lives on _qlc_loop)
 _qlc_ws_lock: asyncio.Lock = None  # type: ignore
 _qlc_pending_responses = {}  # request_id -> Future for QLC+API replies
 _last_dmx_write_ts: float = None  # type: ignore  # set after each successful send
 _ws_reconnect_count: int = 0  # monotonic count of successful (re)connections
+
+# Loop-wedge watchdog state. Only touched from hub-side callers of _qlc_run.
+QLC_WEDGE_TIMEOUTS = 3  # consecutive _qlc_run timeouts before probing the loop
+_qlc_consecutive_timeouts: int = 0
+_qlc_loop_restarts: int = 0
+_qlc_restart_lock = threading.Lock()
+
+# Work handed from the loop thread (or any other non-hub OS thread) to the hub.
+# deque.append()/popleft() are atomic in CPython, so no lock is involved.
+_hub_pending: "collections.deque" = collections.deque()
+_hub_thread_ident: int = None  # type: ignore  # OS thread id of the eventlet hub
+_hub_drainer_started = False
 
 
 def _eventlet_active() -> bool:
@@ -499,8 +534,78 @@ def _native_threading_module():
     return threading
 
 
+def _native_ident() -> int:
+    """OS-level thread id (not a greenlet id, even under eventlet)."""
+    return _native_threading_module().get_ident()
+
+
+def _must_defer_to_hub() -> bool:
+    """True when the caller is on a thread that must not touch green primitives:
+    the QLC+ loop thread always, and under eventlet any OS thread other than
+    the hub's (e.g. a tpool worker or a native audio callback thread)."""
+    ident = _native_ident()
+    if _qlc_loop_thread_ident is not None and ident == _qlc_loop_thread_ident:
+        return True
+    return (
+        _hub_thread_ident is not None
+        and ident != _hub_thread_ident
+        and _eventlet_active()
+    )
+
+
+def _call_on_hub(fn, *args, **kwargs) -> None:
+    """Run fn now if this thread may, otherwise queue it for the hub drainer.
+
+    Deferred calls run in order, a few tens of milliseconds later, on a hub
+    greenlet. Their return value is discarded, so use this only for
+    fire-and-forget work (events, logging, cue dispatch).
+    """
+    if _must_defer_to_hub():
+        _hub_pending.append((fn, args, kwargs))
+    else:
+        fn(*args, **kwargs)
+
+
+def _drain_hub_pending(limit: int = 1000) -> int:
+    """Run up to *limit* deferred hub calls. Returns how many ran."""
+    ran = 0
+    while ran < limit:
+        try:
+            fn, args, kwargs = _hub_pending.popleft()
+        except IndexError:
+            break
+        ran += 1
+        try:
+            fn(*args, **kwargs)
+        except Exception as e:
+            print(f"deferred hub call {getattr(fn, '__name__', fn)} failed: "
+                  f"{type(e).__name__}: {e}")
+    return ran
+
+
+def _start_hub_drainer() -> None:
+    """Start the greenlet (plain thread without eventlet) that runs deferred
+    hub calls. Must be called from the hub thread; idempotent."""
+    global _hub_drainer_started, _hub_thread_ident
+    if _hub_drainer_started:
+        return
+    _hub_drainer_started = True
+    _hub_thread_ident = _native_ident()
+
+    def _run():
+        while True:
+            try:
+                _drain_hub_pending()
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    threading.Thread(target=_run, daemon=True, name="hub-drainer").start()
+
+
 def _start_qlc_loop():
     """Start the dedicated background event loop used for QLC+ comms."""
+    _start_hub_drainer()
     if _qlc_loop is not None and _qlc_loop.is_running():
         return
     if _eventlet_active():
@@ -521,9 +626,10 @@ def _start_qlc_loop_sync():
     ready = native_threading.Event()
 
     def _run_loop():
-        global _qlc_loop, _qlc_ws_lock
+        global _qlc_loop, _qlc_ws_lock, _qlc_loop_thread_ident
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        _qlc_loop_thread_ident = _native_ident()
         _qlc_loop = loop
         _qlc_ws_lock = asyncio.Lock()
         ready.set()
@@ -537,34 +643,179 @@ def _start_qlc_loop_sync():
     ready.wait(timeout=5)
 
 
-def _wait_for_future(future: "concurrent.futures.Future", timeout):
-    """Block for *future* without touching its (possibly monkey-patched)
-    internal Condition's wait path. `done_event` is always the *original*
-    Event, and add_done_callback fires it from whichever real thread
-    completes the future — safe cross-thread signaling either way. Once
-    done_event fires, future.result(timeout=0) returns immediately via the
-    already-finished fast path (no further Condition wait)."""
-    done_event = _native_threading_module().Event()
-    future.add_done_callback(lambda _f: done_event.set())
-    if not done_event.wait(timeout):
-        future.cancel()
-        raise concurrent.futures.TimeoutError()
-    return future.result(timeout=0)
+def _native_wait(event, timeout) -> bool:
+    """Wait on an original (non-green) Event without blocking the eventlet hub."""
+    if _eventlet_active():
+        import eventlet.tpool
+        return eventlet.tpool.execute(event.wait, timeout)
+    return event.wait(timeout)
+
+
+class _LoopTask:
+    """Handle for a coroutine running on the QLC+ loop, usable from any thread.
+
+    Replaces the concurrent.futures.Future from run_coroutine_threadsafe():
+    that Future's internal Condition is green under eventlet, and the loop
+    thread completing it while the hub cancels or waits on it is exactly the
+    cross-thread contention that wedges the loop. Here the loop thread only
+    writes plain attributes and sets an original Event; other threads only
+    read those and post work back with call_soon_threadsafe().
+    """
+
+    def __init__(self, loop):
+        self._loop = loop
+        self._task = None
+        self._cancel_requested = False
+        self._done = _native_threading_module().Event()
+        self._result = None
+        self._exc = None
+
+    # -- loop thread ---------------------------------------------------------
+
+    def _start(self, coro) -> None:
+        if self._cancel_requested:
+            coro.close()
+            self._exc = asyncio.CancelledError()
+            self._done.set()
+            return
+        self._task = self._loop.create_task(coro)
+        self._task.add_done_callback(self._finish)
+
+    def _finish(self, task) -> None:
+        if task.cancelled():
+            self._exc = asyncio.CancelledError()
+        else:
+            self._exc = task.exception()
+            if self._exc is None:
+                self._result = task.result()
+        self._done.set()
+
+    def _cancel_on_loop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+
+    # -- any thread ----------------------------------------------------------
+
+    def cancel(self) -> bool:
+        self._cancel_requested = True
+        try:
+            self._loop.call_soon_threadsafe(self._cancel_on_loop)
+        except RuntimeError:  # loop already closed
+            pass
+        return True
+
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self, timeout) -> bool:
+        return _native_wait(self._done, timeout)
+
+    def result(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+def _qlc_submit(coro) -> _LoopTask:
+    """Schedule *coro* on the QLC+ loop without waiting. Returns a _LoopTask."""
+    if _qlc_loop is None or not _qlc_loop.is_running():
+        _start_qlc_loop()
+    loop = _qlc_loop
+    handle = _LoopTask(loop)
+    try:
+        loop.call_soon_threadsafe(handle._start, coro)
+    except RuntimeError as e:  # loop closed between the check and the submit
+        coro.close()
+        handle._exc = RuntimeError(f"QLC+ loop is not running: {e}")
+        handle._done.set()
+    return handle
 
 
 def _qlc_run(coro, timeout=10):
     """Submit a coroutine to the QLC+ background loop and wait for the result."""
-    if _qlc_loop is None:
-        _start_qlc_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
-    if _eventlet_active():
-        import eventlet.tpool
-        return eventlet.tpool.execute(_wait_for_future, future, timeout)
+    if _qlc_loop_thread_ident is not None and _native_ident() == _qlc_loop_thread_ident:
+        # Waiting here would block the very loop that has to run *coro*.
+        coro.close()
+        raise RuntimeError("_qlc_run() called on the QLC+ loop thread; await the coroutine instead")
+    handle = _qlc_submit(coro)
+    if not handle.wait(timeout):
+        handle.cancel()
+        _note_qlc_timeout()
+        raise concurrent.futures.TimeoutError()
+    _note_qlc_completed()
+    return handle.result()
+
+
+def _note_qlc_completed() -> None:
+    global _qlc_consecutive_timeouts
+    _qlc_consecutive_timeouts = 0
+
+
+def _qlc_loop_responsive(timeout: float = 2.0) -> bool:
+    """True if the QLC+ loop runs a trivial callback within *timeout* seconds."""
+    loop = _qlc_loop
+    if loop is None or not loop.is_running():
+        return False
+    ev = _native_threading_module().Event()
     try:
-        return future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        raise
+        loop.call_soon_threadsafe(ev.set)
+    except RuntimeError:
+        return False
+    return _native_wait(ev, timeout)
+
+
+def _note_qlc_timeout() -> None:
+    """Count a _qlc_run timeout; replace the loop if it has stopped running.
+
+    A slow or wedged QLC+ shows up as timeouts *inside* the coroutine (its own
+    2-3 s waits), which still complete the task. An outer timeout means the
+    loop itself never got to finish the task. After a few in a row, probe the
+    loop; if it can't even run a no-op callback, it is wedged for good, so
+    abandon it (and its WebSocket) and start a fresh one.
+    """
+    global _qlc_consecutive_timeouts
+    _qlc_consecutive_timeouts += 1
+    if _qlc_consecutive_timeouts < QLC_WEDGE_TIMEOUTS:
+        return
+    if not _qlc_restart_lock.acquire(blocking=False):
+        return  # another caller is already probing/restarting
+    try:
+        if _qlc_consecutive_timeouts < QLC_WEDGE_TIMEOUTS:
+            return  # a restart finished while we were waiting for the lock
+        if _qlc_loop_responsive():
+            log.warning("qlc_calls_timing_out_loop_alive",
+                        consecutive_timeouts=_qlc_consecutive_timeouts)
+            _qlc_consecutive_timeouts = 0
+            return
+        _restart_qlc_loop(f"{_qlc_consecutive_timeouts} consecutive timeouts; loop unresponsive")
+    finally:
+        _qlc_restart_lock.release()
+
+
+def _restart_qlc_loop(reason: str) -> None:
+    """Abandon a wedged QLC+ loop and start a new one.
+
+    The old thread is stuck and can't be joined; it's a daemon, so it just
+    lingers. Its WebSocket is dropped with it and the next call reconnects.
+    Anything that was running on it (cue lists, audio chases) is lost.
+    """
+    global _qlc_loop, _qlc_loop_thread, _qlc_loop_thread_ident, _qlc_ws
+    global _qlc_pending_responses, _qlc_loop_restarts, _qlc_consecutive_timeouts
+    old_loop = _qlc_loop
+    _qlc_loop = None
+    _qlc_loop_thread = None
+    _qlc_loop_thread_ident = None
+    _qlc_ws = None
+    _qlc_pending_responses = {}
+    _qlc_consecutive_timeouts = 0
+    _qlc_loop_restarts += 1
+    if old_loop is not None:
+        try:
+            old_loop.call_soon_threadsafe(old_loop.stop)
+        except RuntimeError:
+            pass
+    log.error("qlc_loop_restarted", reason=reason, restarts=_qlc_loop_restarts)
+    _start_qlc_loop()
 
 
 async def _ensure_qlc_ws():
@@ -609,11 +860,14 @@ async def _ensure_qlc_ws():
                 # Start a background reader so QLC+ pushes don't fill the recv buffer
                 asyncio.create_task(_qlc_reader(_qlc_ws))
                 _ws_reconnect_count += 1
-                log.info("qlc_ws_connected", url=QLC_WS_URL, reconnect_count=_ws_reconnect_count)
+                # Loop thread: structlog's print lock is green, so log via the hub.
+                _call_on_hub(log.info, "qlc_ws_connected", url=QLC_WS_URL,
+                             reconnect_count=_ws_reconnect_count)
                 _emit("qlc_reconnect", {"url": QLC_WS_URL})
             except Exception as e:
                 _qlc_ws = None
-                log.error("qlc_ws_connect_failed", error_type=type(e).__name__, error=str(e))
+                _call_on_hub(log.error, "qlc_ws_connect_failed",
+                             error_type=type(e).__name__, error=str(e))
                 raise
         return _qlc_ws
 
@@ -742,12 +996,9 @@ async def send_qlc_commands(commands):
         return False
 
 
-def set_channel_values(channel_values):
-    """Set absolute QLC+ channel values via the persistent WebSocket.
-
-    Args:
-        channel_values: iterable of (absolute_channel, value), both 1-based / 0-255
-    """
+def _channel_commands(channel_values) -> list:
+    """Build QLC+ "CH|<abs>|<val>" commands, skipping invalid entries and
+    clamping values to 0-255."""
     commands = []
     for channel, value in channel_values:
         try:
@@ -757,21 +1008,34 @@ def set_channel_values(channel_values):
             continue
         if ch > 0:
             commands.append(f"CH|{ch}|{val}")
+    return commands
+
+
+def _channel_change_payload(commands) -> dict:
+    """Coalesced channel_change event payload for a batch of CH commands
+    (one list event avoids flooding the stream when fades/strobe repeat)."""
+    return {
+        "channels": [{"channel": int(ch), "value": int(val)}
+                     for cmd in commands
+                     for ch, val in [cmd.split("|")[1:3]]]
+    }
+
+
+def set_channel_values(channel_values):
+    """Set absolute QLC+ channel values via the persistent WebSocket.
+
+    Args:
+        channel_values: iterable of (absolute_channel, value), both 1-based / 0-255
+    """
+    commands = _channel_commands(channel_values)
     if not commands:
         return True
     try:
         _qlc_run(_qlc_send_commands(commands), timeout=5)
-        # Emit a single coalesced channel_change event (list payload avoids
-        # flooding the stream when fades/strobe call us repeatedly).
-        _emit("channel_change", {
-            "channels": [{"channel": ch, "value": val}
-                         for cmd in commands
-                         for ch, val in [cmd.split("|")[1:3]]
-                         for ch, val in [(int(ch), int(val))]]
-        })
+        _emit("channel_change", _channel_change_payload(commands))
         return True
     except Exception as e:
-        print(f"set_channel_values error: {e}")
+        print(f"set_channel_values error: {type(e).__name__}: {e}")
         return False
 
 
@@ -1188,7 +1452,7 @@ async def _fetch_channel_values(max_ch):
             timeout=2.0,
         )
     except (TimeoutError, Exception) as e:
-        print(f"channel_values fetch error: {e}")
+        print(f"channel_values fetch error: {type(e).__name__}: {e}")
         return values
 
     parts = msg.split("|")
@@ -1210,7 +1474,7 @@ def get_current_channel_values(max_ch=None):
     try:
         return _qlc_run(_fetch_channel_values(max_ch), timeout=4)
     except Exception as e:
-        print(f"channel_values fetch error: {e}")
+        print(f"channel_values fetch error: {type(e).__name__}: {e}")
         return {}
 
 
@@ -3084,16 +3348,27 @@ def _healthz_status(
     dmx_device_glob=None,
     dmx_readable_fn=None,
     now=None,
+    qlc_timeouts=None,
+    qlc_loop_restarts=None,
 ):
     """Aggregate health of all subsystems. Returns (payload_dict, all_critical_ok).
 
     All parameters are injectable for unit testing; defaults pull from live globals.
     dmx_readable_fn: optional callable(path) -> bool; defaults to os.access(path, os.R_OK).
+    qlc_timeouts: consecutive QLC+ calls that never completed. A connected
+    WebSocket on a wedged loop still looks "connected", so this is what
+    actually shows the bridge has stopped working.
     """
     import glob as _glob
 
     if qlc_ws is _HEALTHZ_UNSET:
         qlc_ws = _qlc_ws
+    # None (not the sentinel) means "read live": tests reload app.py, which
+    # mints a new _HEALTHZ_UNSET that old default args no longer match.
+    if qlc_timeouts is None:
+        qlc_timeouts = _qlc_consecutive_timeouts
+    if qlc_loop_restarts is None:
+        qlc_loop_restarts = _qlc_loop_restarts
     if last_dmx_ts is _HEALTHZ_UNSET:
         last_dmx_ts = _last_dmx_write_ts
     if workspace_path is None:
@@ -3135,15 +3410,20 @@ def _healthz_status(
     except Exception:
         pass
 
+    bridge_ok = qlc_timeouts < QLC_WEDGE_TIMEOUTS
+
     payload = {
         "flask": True,
         "qlc_ws": ws_ok,
+        "qlc_bridge_ok": bridge_ok,
+        "qlc_consecutive_timeouts": qlc_timeouts,
+        "qlc_loop_restarts": qlc_loop_restarts,
         "dmx_device": dmx_device or False,
         "last_dmx_write_age_s": dmx_age,
         "workspace_loaded": workspace_ok,
     }
 
-    all_ok = ws_ok and workspace_ok
+    all_ok = ws_ok and workspace_ok and bridge_ok
     return payload, all_ok
 
 
@@ -7249,11 +7529,13 @@ async def _run_cue_list_async(
     started_at = now()
     fired_indexes: list[int] = []
 
-    with _active_cue_lists_lock:
-        _active_cue_lists[cue_list_id] = {
-            "started_at": started_at,
-            "cues_fired": fired_indexes,
-        }
+    # This runs on the QLC+ loop thread, which must not take green locks
+    # (_active_cue_lists_lock is one under eventlet). Single dict operations
+    # are atomic under the GIL, so mutate the registry without the lock.
+    # setdefault+update keeps the "task" handle _go_cue_list may already
+    # have stored on this entry.
+    entry = _active_cue_lists.setdefault(cue_list_id, {})
+    entry.update(started_at=started_at, cues_fired=fired_indexes)
 
     # Stable order in case caller passed cues out of timestamp order
     sorted_cues = sorted(enumerate(cues), key=lambda item: item[1]["at_ms"])
@@ -7269,14 +7551,11 @@ async def _run_cue_list_async(
                 "action": cue["action"],
                 "parameters": cue["parameters"],
             }
-            try:
-                # execute_lighting_action is sync but does its own _qlc_run
-                # internally for channel writes; it's safe to call from
-                # this async context (it'll just submit further work to the
-                # same event loop without re-entering).
-                execute_lighting_action(action_data, target_groups=cue.get("groups"))
-            except Exception as e:
-                print(f"[cue-list {cue_list_id}] cue #{idx} ({cue['action']}) failed: {e}")
+            # execute_lighting_action is sync and waits on this same loop for
+            # its channel writes, so on the loop thread it must run on the hub
+            # instead (deferred, fire-and-forget). Elsewhere it runs inline.
+            _call_on_hub(_fire_cue, cue_list_id, idx, cue["action"],
+                         action_data, cue.get("groups"))
             fired_indexes.append(idx)
     except asyncio.CancelledError:
         # Normal path for stop_cue_list — just exit cleanly
@@ -7284,8 +7563,18 @@ async def _run_cue_list_async(
     except Exception as e:
         print(f"[cue-list {cue_list_id}] playback engine error: {e}")
     finally:
-        with _active_cue_lists_lock:
+        # Only drop our own registration; a restart may have replaced it.
+        if _active_cue_lists.get(cue_list_id) is entry:
             _active_cue_lists.pop(cue_list_id, None)
+
+
+def _fire_cue(cue_list_id, idx, action, action_data, groups) -> None:
+    """Run one cue's action, reporting (not raising) failures so one bad cue
+    doesn't stop the rest of the list."""
+    try:
+        execute_lighting_action(action_data, target_groups=groups)
+    except Exception as e:
+        print(f"[cue-list {cue_list_id}] cue #{idx} ({action}) failed: {e}")
 
 
 def _go_cue_list(cue_list: dict) -> bool:
@@ -7299,12 +7588,9 @@ def _go_cue_list(cue_list: dict) -> bool:
 
     # Schedule the coroutine on the QLC+ background loop so we share an
     # event loop with the WebSocket writes (no cross-loop weirdness).
-    if _qlc_loop is None:
-        _start_qlc_loop()
-
     cues = list(cue_list.get("cues", []))
     coro = _run_cue_list_async(cl_id, cues)
-    task = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+    task = _qlc_submit(coro)
 
     # Stash the task handle so we can cancel later
     with _active_cue_lists_lock:
@@ -7707,15 +7993,23 @@ async def _run_audio_chase_async(chase_key: str, step_channel_values: list) -> N
         return
 
     current_step = 0
-    with _active_audio_chases_lock:
-        _active_audio_chases.setdefault(chase_key, {})["running"] = True
+    # Runs on the QLC+ loop thread: no green locks (see _run_cue_list_async),
+    # no set_channel_values() (it would wait on this same loop), and no
+    # AudioEngine.get_bpm() (it takes the engine's green lock).
+    entry = _active_audio_chases.setdefault(chase_key, {})
+    entry["running"] = True
 
     try:
         while True:
             cvs = step_channel_values[current_step % n]
-            if cvs:
-                set_channel_values(cvs)
-            bpm = _audio_engine.get_bpm()
+            commands = _channel_commands(cvs) if cvs else []
+            if commands:
+                try:
+                    await _qlc_send_commands(commands)
+                    _emit("channel_change", _channel_change_payload(commands))
+                except Exception as exc:
+                    print(f"[audio-chase {chase_key}] write failed: {type(exc).__name__}: {exc}")
+            bpm = _audio_engine.bpm_snapshot()
             interval_ms = bpm_to_interval_ms(bpm) if bpm > 0 else 500.0
             current_step += 1
             await asyncio.sleep(interval_ms / 1000.0)
@@ -7724,7 +8018,7 @@ async def _run_audio_chase_async(chase_key: str, step_channel_values: list) -> N
     except Exception as exc:
         print(f"[audio-chase {chase_key}] error: {exc}")
     finally:
-        with _active_audio_chases_lock:
+        if _active_audio_chases.get(chase_key) is entry:
             _active_audio_chases.pop(chase_key, None)
 
 
@@ -7753,11 +8047,8 @@ def _start_audio_chase(chase_id_or_name: str, react_to: str = "any") -> dict:
         scene_el = _find_scene_element(scene_ref) if scene_ref else None
         step_cvs.append(scene_to_channel_values(scene_el) if scene_el else [])
 
-    if _qlc_loop is None:
-        _start_qlc_loop()
-
     coro = _run_audio_chase_async(chase_key, step_cvs)
-    task = asyncio.run_coroutine_threadsafe(coro, _qlc_loop)
+    task = _qlc_submit(coro)
 
     with _active_audio_chases_lock:
         _active_audio_chases[chase_key] = {"task": task, "react_to": react_to}
