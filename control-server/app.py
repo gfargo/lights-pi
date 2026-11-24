@@ -178,7 +178,39 @@ _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_LOCKOUT_S = 60
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
-_AUTH_EXEMPT_PATHS = {"/login", "/healthz", "/manifest.json", "/icon.svg", "/sw.js", "/logo"}
+_AUTH_EXEMPT_PATHS = {"/login", "/healthz", "/manifest.json", "/icon.svg", "/sw.js", "/logo", "/theme.css"}
+
+# 5. Per-install branding. BRAND_NAME names the install in the header, the
+# tab title and the installed app; BRAND_ACCENT sets the one action colour.
+# A logo dropped in static/ still wins over the built-in swatch mark, and
+# static/theme.css (when present) loads after the built-in styles.
+DEFAULT_BRAND_NAME = "Lights Pi"
+DEFAULT_BRAND_ACCENT = "#ff6a1f"
+_HEX_COLOUR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _brand_config(env) -> dict:
+    """Branding from an env mapping. Pure: bad or missing values fall back
+    to the defaults rather than raising, so a typo never takes the UI down."""
+    name = " ".join((env.get("BRAND_NAME") or "").split())[:40] or DEFAULT_BRAND_NAME
+    short = " ".join((env.get("BRAND_SHORT_NAME") or "").split())[:12]
+    if not short:
+        short = name if len(name) <= 12 else name.split(" ")[0][:12]
+    accent = (env.get("BRAND_ACCENT") or "").strip()
+    if not _HEX_COLOUR_RE.match(accent):
+        accent = DEFAULT_BRAND_ACCENT
+    if len(accent) == 4:  # #abc -> #aabbcc, so the template can append alpha
+        accent = "#" + "".join(c * 2 for c in accent[1:])
+    return {"name": name, "short_name": short, "accent": accent.lower()}
+
+
+BRAND = _brand_config(os.environ)
+_THEME_CSS = Path(__file__).parent / "static" / "theme.css"
+
+
+@app.context_processor
+def _inject_brand():
+    return {"brand": BRAND, "has_theme_css": _THEME_CSS.exists()}
 
 
 def _verify_password(supplied: str, expected: str | None) -> bool:
@@ -3124,8 +3156,8 @@ def logout():
 def pwa_manifest():
     """Web App Manifest — lets the browser offer "Add to Home Screen"."""
     manifest = {
-        "name": "Lighting Control",
-        "short_name": "Lights",
+        "name": BRAND["name"],
+        "short_name": BRAND["short_name"],
         "description": "Drive a QLC+ DMX rig from the browser.",
         "start_url": "/",
         "scope": "/",
@@ -3152,28 +3184,42 @@ def pwa_manifest():
 
 @app.route("/icon.svg", methods=["GET"])
 def pwa_icon():
-    """SVG icon used by the manifest. Matches the in-app logo (sun with rays)."""
-    svg = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">'
-        '<rect width="192" height="192" fill="#0a0a0a"/>'
-        '<g transform="translate(96 96)">'
-          '<circle r="64" fill="none" stroke="#444" stroke-width="3"/>'
-          '<circle r="20" fill="#f0f0f0" opacity="0.9"/>'
-          '<g stroke="#555" stroke-width="4" stroke-linecap="round">'
-            '<line x1="0" y1="-72" x2="0" y2="-48"/>'
-            '<line x1="0" y1="48" x2="0" y2="72"/>'
-            '<line x1="-72" y1="0" x2="-48" y2="0"/>'
-            '<line x1="48" y1="0" x2="72" y2="0"/>'
-            '<line x1="-50.9" y1="-50.9" x2="-33.9" y2="-33.9"/>'
-            '<line x1="33.9" y1="33.9" x2="50.9" y2="50.9"/>'
-            '<line x1="33.9" y1="-33.9" x2="50.9" y2="-50.9"/>'
-            '<line x1="-50.9" y1="33.9" x2="-33.9" y2="50.9"/>'
-          '</g>'
-        '</g></svg>'
-    )
+    """SVG icon used by the manifest: the eight-cell scene swatch, the same
+    mark the header shows when no custom logo is installed."""
+    svg = _swatch_icon_svg(192)
     response = app.response_class(svg, mimetype="image/svg+xml")
     response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+def _swatch_icon_svg(size: int) -> str:
+    """The swatch mark as a square SVG: eight fixture cells (the Sunset
+    scene) on ink, with a margin so it survives a maskable crop."""
+    cells = ["#ff3c00", "#ffff57", "#ff3c00", "#ff3c00",
+             "#dc1e50", "#ff3c00", "#dc1e50", "#dc1e50"]
+    pad_x, pad_y = size * 0.2, size * 0.28
+    gap = size * 0.02
+    w = (size - 2 * pad_x - gap * 7) / 8
+    rects = "".join(
+        f'<rect x="{pad_x + i * (w + gap):.1f}" y="{pad_y:.1f}" width="{w:.1f}" '
+        f'height="{size - 2 * pad_y:.1f}" fill="{c}"/>'
+        for i, c in enumerate(cells)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}">'
+        f'<rect width="{size}" height="{size}" fill="#0a0a0a"/>{rects}</svg>'
+    )
+
+
+@app.route("/theme.css", methods=["GET"])
+def serve_theme_css():
+    """Optional per-install stylesheet: control-server/static/theme.css,
+    loaded after the built-in styles. 404 when absent."""
+    if not _THEME_CSS.exists():
+        abort(404)
+    response = send_from_directory(str(_THEME_CSS.parent), "theme.css", mimetype="text/css")
+    response.headers["Cache-Control"] = "no-cache"
     return response
 
 
