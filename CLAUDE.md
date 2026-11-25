@@ -69,8 +69,15 @@ the Pi must be edited there directly (`./lightsctl.sh ssh`).
 ```
 control-server/         Flask app — the single writer to QLC+.
   app.py                ~all routes, AI integration, chat agent loop.
+  chat_store.py         SQLite chat history (/api/conversations).
+  event_bus.py          SSE event stream.
+  audio_engine.py, midi_engine.py, osc_backend.py
+                        Audio-reactive, MIDI and OSC inputs.
+  gunicorn.conf.py      Production run config (one eventlet worker).
+  static/               Per-install logo.* / theme.css; deploy.sh skips them.
   templates/index.html  Single-file UI: HTML + CSS tokens + vanilla JS.
-  tests/                pytest suite (195 tests, pure helpers).
+  tests/                pytest suite (~800 tests: pure helpers, integration/,
+                        eventlet stress test).
 mcp-server/             FastMCP wrapper. Calls control-server over localhost.
 scripts/                Provisioning + ops shells.
   deploy.sh             Workstation → Pi sync. See above.
@@ -78,7 +85,7 @@ scripts/                Provisioning + ops shells.
   services/             systemd unit installers (control, mcp, etc.).
 lightsctl.sh            Workstation-side SSH/ops swiss-army knife.
 docs/                   Architecture + roadmap + MCP server docs.
-.github/workflows/      CI (pytest + node --check + HTML tag balance).
+.github/workflows/      CI (test.yml) and the release-triggered www deploy.
 landing/                Static landing page served by nginx on the Pi.
 workspaces/             Versioned `.qxw` workspace files.
 scenes/                 AI-saved / hand-built scene library.
@@ -100,12 +107,17 @@ Sibling repos (not in this tree):
 
 ## Continuous integration
 
-`.github/workflows/test.yml` runs three jobs; all must pass before merge:
+`.github/workflows/test.yml` runs four jobs; all must pass before merge:
 
-1. **pytest matrix** on Python 3.11 and 3.12 (`control-server/tests/`).
+1. **Python** on 3.11, 3.12 and 3.13 (3.13 is what the Pi runs): ruff,
+   pytest (`control-server/tests/`), and a syntax check of
+   `control-server/app.py` and `mcp-server/server.py`. Pinned to
+   `ubuntu-24.04` because `aubio` does not build on newer images.
 2. **`node --check`** on inline JS extracted from `templates/index.html` —
    syntax sanity for the single-file UI.
-3. **HTML tag balance** — counts opening vs closing `<div>`, `<script>`,
+3. **Backup/restore smoke test** (`scripts/test_backup_restore.sh`, uses
+   rclone).
+4. **HTML tag balance** — counts opening vs closing `<div>`, `<script>`,
    `<style>`, `<button>`, `<select>` tags to catch the most common
    template-merging breakage.
 
@@ -124,7 +136,8 @@ cd control-server && python -m pytest -q
   framework. Edits go straight to the file.
 - **Token-driven CSS.** All colours, hairlines, and signal accents are
   declared as CSS custom properties on `:root` (`--ink`, `--paper`, `--rule`,
-  `--amber-tungsten`, `--signal-*`). Add new colours to the token set
+  `--amber-tungsten`, `--signal-*`). `--amber-tungsten` is the brand accent,
+  overridden per install by `BRAND_ACCENT`. Add new colours to the token set
   before using them inline.
 - **Pure-helper unit tests preferred.** Tests target side-effect-free
   functions in `app.py` — colour math, palette parsing, cue normalization,
@@ -134,9 +147,14 @@ cd control-server && python -m pytest -q
 - **The Flask process is the single writer to QLC+.** MCP and any other
   callers go through `lighting-control.service` over localhost HTTP — never
   directly to the QLC+ WebSocket.
-- **Server is stateless; client owns chat history.** `POST /api/chat` is a
-  pure function of (history, message). Persistence lives in the browser's
-  localStorage. Issue #32 will move this server-side.
+- **Chat history is stored server-side.** `POST /api/chat` takes the
+  history plus an optional `conversation_id` and appends new turns to SQLite
+  (`chat_store.py`, `CHAT_DB_PATH`, default `~/.qlcplus/chat_history.db`).
+  The browser keeps only a local copy and the current conversation id.
+- **Production runs under gunicorn + eventlet.** Code on the QLC+ asyncio
+  thread must not touch eventlet-greened primitives (locks, queues, futures,
+  logging). See the run-model section of CONTROL_SERVER_ARCHITECTURE.md and
+  test new loop-thread code with `tests/_eventlet_stress.py`.
 - **AI provider is pluggable.** `AI_PROVIDER=anthropic|openai|ollama` in
   `.env`. Tool-calling currently works for Anthropic and OpenAI; Ollama is
   text-generation only.

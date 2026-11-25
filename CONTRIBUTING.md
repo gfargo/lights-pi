@@ -24,7 +24,7 @@ Before creating an issue, please:
 
 We welcome feature suggestions! Please:
 
-- Check the [Future Enhancements](README.md#-future-enhancements) section first
+- Check the [open issues](https://github.com/gfargo/lights-pi/issues) and [docs/ROADMAP.md](docs/ROADMAP.md) first
 - Describe the use case and expected behavior
 - Consider backward compatibility
 - Explain how it benefits the broader community
@@ -33,8 +33,10 @@ We welcome feature suggestions! Please:
 
 1. **Fork the repository** and create a feature branch:
    ```bash
-   git checkout -b feature/your-feature-name
+   git checkout -b feat/your-feature-name
    ```
+   Use the prefixes `feat/`, `fix/`, `chore/`, `docs/` or `refactor/`. See
+   [CLAUDE.md](CLAUDE.md) for the full branch, commit and release conventions.
 
 2. **Follow existing conventions**:
    - Use bash best practices (`set -euo pipefail`)
@@ -44,7 +46,11 @@ We welcome feature suggestions! Please:
 
 3. **Test your changes**:
    ```bash
-   # Validate syntax
+   # Control server and MCP server (what CI runs)
+   cd control-server && pip install -r requirements-dev.txt
+   python -m pytest -q && (cd .. && ruff check)
+
+   # Shell scripts
    shellcheck lightsctl.sh scripts/*.sh
    
    # Test on actual hardware if possible
@@ -59,7 +65,7 @@ We welcome feature suggestions! Please:
 
 5. **Commit with clear messages**:
    ```bash
-   git commit -m "feat: add new-command for specific purpose
+   git commit -m "feat(scope): add new-command for specific purpose
    
    - Detailed description of what it does
    - Why it's useful
@@ -107,6 +113,15 @@ Before submitting, verify:
 - [ ] Help text is clear and accurate
 - [ ] Makefile shortcut works
 - [ ] No unintended side effects
+
+### Running without hardware
+
+`MOCK_DMX=1` runs the control server against a fake DMX device, so the UI
+and API work with no ENTTEC or QLC+ attached:
+
+```bash
+cd control-server && MOCK_DMX=1 python app.py
+```
 
 ### Test Environment
 

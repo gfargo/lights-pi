@@ -59,14 +59,23 @@ gunicorn -k eventlet -w 1 -b 0.0.0.0:$CONTROL_PORT -c gunicorn.conf.py app:app
   — see the comment block above `_qlc_loop` in `app.py` for why: eventlet's
   green `threading.Event`/`Future` primitives don't signal correctly across
   the boundary between a genuine OS thread (the asyncio loop) and the
-  eventlet hub.
+  eventlet hub. Since v2.16.2 the QLC+ thread touches no green primitive at
+  all: results come back through a native event, and logging and SSE
+  publishing are handed to the hub. After 3 consecutive QLC+ call timeouts
+  the link is probed and, if dead, replaced (`qlc_loop_restarted` in the
+  log). `/healthz` reports `qlc_bridge_ok`, `qlc_consecutive_timeouts` and
+  `qlc_loop_restarts`, and returns 503 while calls are stalling.
+  `tests/_eventlet_stress.py` exercises this under a real monkey-patch.
 - Local dev (`python app.py`) is unaffected — it still runs via
   `socketio.run(...)`, calling the same `init_runtime()` directly instead of
   through a gunicorn hook.
 - `scripts/deploy.sh` does not reinstall the systemd unit, so switching an
   already-provisioned Pi to gunicorn requires one manual re-run of
-  `./lightsctl.sh` control-server install (or equivalent) to pick up the new
-  `ExecStart`.
+  `./lightsctl.sh control-install` followed by `sudo systemctl restart
+  lighting-control` (install uses `systemctl start`, a no-op on a running
+  unit) to pick up the new `ExecStart`.
+- `scripts/deploy.sh` waits for `/healthz` before reporting success. The Pi
+  runs Raspberry Pi OS trixie with Python 3.13, which CI also tests.
 
 ## Why a Single Persistent WebSocket
 
@@ -278,7 +287,12 @@ on the SlimPAR Pro W when asked for "soft warm light".
 The web UI's Chat tab posts the full message history here, the server runs
 an Anthropic `tool_use` or OpenAI function-calling loop (provider selected
 by `AI_PROVIDER`), and returns the updated history plus a trace of which
-tools were dispatched. Stateless — the client owns the conversation.
+tools were dispatched. The client still sends the history, and the server
+also persists each conversation to SQLite (`chat_store.py`, default
+`~/.qlcplus/chat_history.db`, override with `CHAT_DB_PATH`). The Chat tab's
+conversation list uses `/api/conversations` (list, create, search, get,
+delete, fork). Long conversations are summarised every
+`CHAT_SUMMARIZE_EVERY` messages.
 
 Tools internally dispatch via Flask's test client back into our own
 endpoints (`POST /api/blackout`, `POST /api/cue_lists/<id>/go`, etc.), so
