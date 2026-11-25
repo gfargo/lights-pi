@@ -253,9 +253,12 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | POST | `/api/groups/<name>/fixtures` | Append fixtures to a group |
 | DELETE | `/api/groups/<name>/fixtures` | Remove fixtures from a group |
 | POST | `/api/groups/<name>/template` | Apply template to a group |
-| GET | `/api/stage_layout` | Get stored room dimensions + fixture positions (positions returned as-is, no workspace cross-check) |
+| GET | `/api/stage_layout` | Get stored room dimensions + fixture positions (each with an optional `rotation` in degrees, 0 = toward the front), plus `background`, the floor plan's version or null. Positions are returned as-is, no workspace cross-check |
 | POST | `/api/stage_layout` | Save room dimensions + fixture positions |
 | GET | `/api/stage/colors` | Live display colour (`rgb`, or null without colour channels) and peak `level` per fixture, for the Stage tab |
+| GET | `/api/stage/background` | The floor-plan image drawn under the Stage grid (404 when none) |
+| POST | `/api/stage/background` | Upload a floor plan (multipart field `image`; PNG, JPEG or WebP, 8 MB max), replacing any old one |
+| DELETE | `/api/stage/background` | Remove the floor plan |
 | GET | `/api/fixtures` | List fixtures with `channel_info` |
 | GET | `/api/fixture_channels/<id>` | Per-fixture channel breakdown |
 | POST | `/api/fixtures/<id>/identify` | Pulse a fixture so the operator can locate it |
@@ -334,6 +337,14 @@ front end:
   and dispatches directly. Used by the **MCP server** at `:5001/mcp`, where an
   LLM agent is already on the other end of the connection — calling
   `/api/command` would double-LLM.
+
+Both take an optional `fixtures` list of fixture IDs alongside `groups`; the
+targets are the union of the two. The Stage tab's "Light these" uses it.
+Live actions (colour, brightness, Kelvin, strobe, fade) simply touch those
+fixtures. Generated scenes and templates can't be built per fixture, so with
+`fixtures` set they are generated for the whole rig and every other
+fixture's values are dropped before the scene is applied
+(`_filter_scene_xml_fixtures`).
 
 Schema for `POST /api/action`:
 

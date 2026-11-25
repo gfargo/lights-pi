@@ -1310,6 +1310,45 @@
             touch-action: none; user-select: none; -webkit-user-select: none;
         }
         .stage-room.drop-target { border-color: var(--amber-tungsten); }
+        /* Floor-plan image under the grid, dimmed so the fixtures stay the
+           brightest thing; the grid sits on top of it. */
+        .stage-room.has-plan { background-image: none; }
+        .stage-room.has-plan::before, .stage-room.has-plan::after {
+            content: ''; position: absolute; inset: 0; pointer-events: none;
+        }
+        .stage-room.has-plan::before { background: var(--stage-plan-url) center / 100% 100% no-repeat; opacity: 0.5; }
+        .stage-room.has-plan::after {
+            background-image:
+                linear-gradient(to right, var(--rule) 1px, transparent 1px),
+                linear-gradient(to bottom, var(--rule) 1px, transparent 1px);
+            background-size: calc(100% / var(--stage-w, 10)) calc(100% / var(--stage-h, 6));
+        }
+        .stage-room .stage-fx.placed { z-index: 1; }
+        .stage-room .stage-lasso { z-index: 2; }
+        .stage-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-left: auto; }
+        .stage-file { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+        .stage-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+        .stage-file:focus-within { outline: 2px solid var(--paper); outline-offset: 2px; }
+        /* Aim: a small pointer outside the dot. 0deg = toward the front. */
+        .stage-fx-aim { position: absolute; inset: 0; pointer-events: none; transform: rotate(var(--aim, 0deg)); }
+        .stage-fx-aim::after {
+            content: ''; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%);
+            border-left: 6px solid transparent; border-right: 6px solid transparent;
+            border-top: 9px solid var(--paper-80);
+        }
+        .stage-fx.selected .stage-fx-aim::after { border-top-color: var(--amber-tungsten); }
+        .stage-fx:not(.aimed) .stage-fx-aim { display: none; }
+        .stage-fx.aimed .stage-fx-name { top: calc(100% + 6px); }
+        .stage-aim { display: inline-flex; align-items: center; gap: 0.25rem; }
+        .stage-aim-label { font-size: var(--fs-small); color: var(--paper-60); }
+        .stage-target-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: -0.5rem 0 1.25rem; }
+        .stage-target-row[hidden] { display: none; }
+        .stage-target-chip { display: inline-flex; align-items: center; gap: 0.4rem; }
+        .stage-target-chip button {
+            background: none; border: 0; color: inherit; cursor: pointer; padding: 0 0.2rem;
+            font: inherit; min-width: 1.5rem; min-height: 1.5rem;
+        }
+        .stage-pick-link { margin-top: 0.5rem; }
         .stage-front {
             display: flex; justify-content: space-between; gap: 1rem; margin: 0.6rem auto 0;
             width: min(100%, calc(55vh * var(--stage-ratio, 1.667)));
@@ -1434,6 +1473,7 @@
                     <div id="newGroupFixturePicker" class="fixture-picker">
                         <p class="empty-state-inline">Loading fixtures…</p>
                     </div>
+                    <button type="button" class="btn-ghost btn-tiny stage-pick-link" onclick="closeDrawer(); switchTab('stage')">Or select them on the Stage plan</button>
 
                     <label class="field-label">Description (optional)</label>
                     <input type="text" id="newGroupDescription" class="field-input" placeholder="Front three-quarter wash" autocomplete="off">
@@ -1549,6 +1589,14 @@
                 <input type="text" id="commandInput" placeholder="Try: 'make it warmer' or 'party mode'" autocomplete="off" aria-label="Lighting command">
                 <button id="voiceBtn" title="Voice input" aria-label="Voice input">🎤</button>
                 <button id="sendBtn">Send</button>
+            </div>
+            <div class="stage-target-row" id="stageTargetChip" hidden>
+                <span class="target-label">Commands go to</span>
+                <span class="group-chip active stage-target-chip">
+                    <span id="stageTargetLabel"></span>
+                    <button type="button" onclick="clearStageTarget()" aria-label="Send commands to all fixtures again">✕</button>
+                </span>
+                <button type="button" class="btn-ghost btn-tiny" onclick="switchTab('stage')">Back to Stage</button>
             </div>
 
             <div class="section-title">Quick commands</div>
@@ -1749,6 +1797,11 @@
                     <label>Depth (m)<input type="number" id="stageRoomH" class="field-input" min="1" max="200" step="0.5" value="6" onchange="setStageRoom()"></label>
                 </div>
                 <div class="stage-chips" id="stageGroupChips"></div>
+                <div class="stage-tools">
+                    <label class="btn-ghost btn-tiny stage-file" id="stagePlanBtn">Floor plan…<input type="file" id="stagePlanInput" accept="image/png,image/jpeg,image/webp" onchange="uploadStagePlan(this)"></label>
+                    <button class="btn-ghost btn-tiny" id="stagePlanRemoveBtn" onclick="removeStagePlan()" hidden>Remove floor plan</button>
+                    <button class="btn-ghost btn-tiny" onclick="exportStagePng(this)">Save as image</button>
+                </div>
             </div>
             <div class="stage-tray" id="stageTray" hidden>
                 <div class="field-label">Not on the plan yet. Drag each one onto the floor below.</div>
@@ -1763,12 +1816,18 @@
             </div>
             <div class="stage-selbar" id="stageSelBar">
                 <span class="stage-selcount" id="stageSelCount">Tap fixtures to select them, or drag across the floor.</span>
+                <button class="btn-primary btn-tiny" id="stageLightBtn" onclick="lightStageSelection()" disabled>Light these</button>
                 <button class="btn-secondary btn-tiny" id="stageIdentifyBtn" onclick="identifyStageSelection(this)" disabled>Identify</button>
+                <span class="stage-aim" role="group" aria-label="Aim">
+                    <button class="btn-ghost btn-tiny" id="stageAimL" onclick="aimStageSelection(-15)" disabled aria-label="Turn aim 15 degrees anticlockwise" title="Turn aim anticlockwise ( [ )">↺</button>
+                    <span class="stage-aim-label">Aim</span>
+                    <button class="btn-ghost btn-tiny" id="stageAimR" onclick="aimStageSelection(15)" disabled aria-label="Turn aim 15 degrees clockwise" title="Turn aim clockwise ( ] )">↻</button>
+                </span>
                 <button class="btn-ghost btn-tiny" id="stageRemoveBtn" onclick="removeStageSelection()" disabled>Take off plan</button>
                 <button class="btn-ghost btn-tiny" id="stageClearBtn" onclick="clearStageSelection()" disabled>Clear</button>
                 <div class="stage-groupmake">
                     <input type="text" id="stageGroupName" class="field-input" placeholder="Group name" autocomplete="off" aria-label="Name for the new group" onkeydown="if(event.key==='Enter')makeStageGroup()">
-                    <button class="btn-primary btn-tiny" id="stageGroupBtn" onclick="makeStageGroup()" disabled>Make group</button>
+                    <button class="btn-secondary btn-tiny" id="stageGroupBtn" onclick="makeStageGroup()" disabled>Make group</button>
                 </div>
             </div>
             <p class="hint stage-status" id="stageStatus" role="status" aria-live="polite"></p>
@@ -2107,9 +2166,11 @@
            Target Groups (AI tab chips)
            ══════════════════════════════════════ */
         let selectedGroups = new Set(); // empty = all fixtures
+        let stageTargetFixtures = [];   // fixture IDs picked on the Stage tab
 
         function toggleAllGroups() {
             selectedGroups.clear();
+            if (stageTargetFixtures.length) { clearStageTarget(); return; }
             renderGroupChips();
         }
 
@@ -2124,7 +2185,7 @@
 
         function renderGroupChips() {
             const chipAll = document.getElementById('chipAll');
-            chipAll.classList.toggle('active', selectedGroups.size === 0);
+            chipAll.classList.toggle('active', selectedGroups.size === 0 && !stageTargetFixtures.length);
             document.querySelectorAll('.group-chip').forEach(c => {
                 c.classList.toggle('active', selectedGroups.has(c.dataset.group));
             });
@@ -2257,14 +2318,16 @@
             sendBtn.disabled = true;
 
             const groups = selectedGroups.size > 0 ? [...selectedGroups] : null;
-            const label = groups ? `${command} → [${groups.join(', ')}]` : command;
+            const fixtures = stageTargetFixtures.length ? [...stageTargetFixtures] : null;
+            const targetNames = [...(groups || []), ...(fixtures ? [document.getElementById('stageTargetLabel').textContent] : [])];
+            const label = targetNames.length ? `${command} → [${targetNames.join(', ')}]` : command;
             const pendingId = addPendingToHistory(label);
 
             try {
                 const r = await fetch('/api/command', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ command, groups })
+                    body: JSON.stringify({ command, groups, fixtures })
                 });
                 const data = await r.json();
                 resolvePendingHistory(pendingId, label, data);
@@ -2776,7 +2839,7 @@
            corner. Live colour comes from /api/stage/colors, polled every 2 s
            while the tab is open. Pointer events cover mouse and touch alike.
            ══════════════════════════════════════ */
-        const stage = { room: { width: 10, height: 6 }, positions: {}, fixtures: [], selected: new Set() };
+        const stage = { room: { width: 10, height: 6 }, positions: {}, fixtures: [], selected: new Set(), plan: null };
         let stagePollTimer = null;
         let stageSaveTimer = null;
         let stageDrag = null;
@@ -2799,6 +2862,7 @@
                 const room = layout.room || {};
                 stage.room = { width: stagePosNum(room.width, 10), height: stagePosNum(room.height, 6) };
                 stage.positions = layout.positions || {};
+                stage.plan = layout.background || null;
                 stage.fixtures = colors.fixtures || [];
                 status.textContent = colors.error ? 'Could not read the fixtures: ' + colors.error : '';
                 document.getElementById('stageRoomW').value = stage.room.width;
@@ -2846,6 +2910,9 @@
             room.style.setProperty('--stage-h', String(H));
             document.querySelector('.stage-front').style.setProperty('--stage-ratio', String(W / H));
             document.getElementById('stageScale').textContent = `${W} × ${H} m`;
+            room.classList.toggle('has-plan', !!stage.plan);
+            room.style.setProperty('--stage-plan-url', stage.plan ? `url("/api/stage/background?v=${stage.plan}")` : 'none');
+            document.getElementById('stagePlanRemoveBtn').hidden = !stage.plan;
 
             room.querySelectorAll('.stage-fx').forEach(n => n.remove());
             const tray = document.getElementById('stageTrayList');
@@ -2879,7 +2946,7 @@
             el.type = 'button';
             el.className = 'stage-fx' + (placed ? ' placed' : '');
             el.dataset.fid = String(f.id);
-            el.innerHTML = `<span class="stage-fx-dot off"></span><span class="stage-fx-name">${escHtml(f.name || ('Fixture ' + f.id))}</span>`;
+            el.innerHTML = `${placed ? '<span class="stage-fx-aim"></span>' : ''}<span class="stage-fx-dot off"></span><span class="stage-fx-name">${escHtml(f.name || ('Fixture ' + f.id))}</span>`;
             el.addEventListener('pointerdown', stageFxPointerDown);
             el.addEventListener('keydown', stageFxKey);
             // Pointer taps are handled in pointerup; this catches Enter/Space.
@@ -2895,6 +2962,9 @@
             // Near a side wall, hang the name inward so it never leaves the page.
             el.classList.toggle('edge-l', x / W < 0.2);
             el.classList.toggle('edge-r', x / W > 0.8);
+            const aimed = Number.isFinite(p.rotation);
+            el.classList.toggle('aimed', aimed);
+            if (aimed) el.style.setProperty('--aim', p.rotation + 'deg');
         }
 
         function applyStageColors(list) {
@@ -2988,7 +3058,10 @@
                 applyStageColors(stage.fixtures);
                 refreshStageColors();
             } else {
-                stage.positions[d.fid] = stagePointToRoom(e.clientX, e.clientY, true);
+                const old = stage.positions[d.fid] || {};
+                const p = stagePointToRoom(e.clientX, e.clientY, true);
+                if (Number.isFinite(old.rotation)) p.rotation = old.rotation;
+                stage.positions[d.fid] = p;
             }
             saveStageLayout();
         }
@@ -3006,6 +3079,11 @@
             const el = e.currentTarget;
             const p = stage.positions[el.dataset.fid];
             if (!p || !el.classList.contains('placed')) return;
+            if (e.key === '[' || e.key === ']') {
+                e.preventDefault();
+                aimStageFixtures([el.dataset.fid], e.key === '[' ? -15 : 15);
+                return;
+            }
             const step = (e.shiftKey ? 1 : 0.25);
             const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
             if (!d) return;
@@ -3095,6 +3173,9 @@
             document.getElementById('stageClearBtn').disabled = n === 0;
             document.getElementById('stageGroupBtn').disabled = n === 0;
             document.getElementById('stageRemoveBtn').disabled = !anyPlaced;
+            document.getElementById('stageLightBtn').disabled = n === 0;
+            document.getElementById('stageAimL').disabled = !anyPlaced;
+            document.getElementById('stageAimR').disabled = !anyPlaced;
         }
 
         function renderStageGroupChips() {
@@ -3163,6 +3244,175 @@
                 body: JSON.stringify({ duration: 2, pulses: 4 }),
             }).catch(() => null)));
             setTimeout(() => { btn.textContent = 'Identify'; updateStageSelection(); }, 2200);
+        }
+
+        // Turn the aim of placed fixtures. A fixture with no aim yet starts
+        // pointing at the front of the room (0°), then turns by *delta*.
+        function aimStageFixtures(ids, delta) {
+            let changed = false;
+            ids.forEach(id => {
+                const p = stage.positions[id];
+                if (!p) return;
+                const base = Number.isFinite(p.rotation) ? p.rotation + delta : 0;
+                p.rotation = ((Math.round(base) % 360) + 360) % 360;
+                const el = document.querySelector(`#stageRoom .stage-fx[data-fid="${CSS.escape(id)}"]`);
+                if (el) placeStageEl(el, p);
+                changed = true;
+            });
+            if (changed) saveStageLayout();
+        }
+        function aimStageSelection(delta) { aimStageFixtures([...stage.selected], delta); }
+
+        // Hand the selection to the Scenes tab as a command target.
+        function lightStageSelection() {
+            stageTargetFixtures = [...stage.selected].map(Number);
+            renderStageTarget();
+            switchTab('ai');
+            commandInput.focus();
+        }
+        function clearStageTarget() {
+            stageTargetFixtures = [];
+            renderStageTarget();
+        }
+        function renderStageTarget() {
+            const chip = document.getElementById('stageTargetChip');
+            const n = stageTargetFixtures.length;
+            chip.hidden = n === 0;
+            if (n) {
+                const names = stage.fixtures.filter(f => stageTargetFixtures.includes(Number(f.id))).map(f => f.name);
+                document.getElementById('stageTargetLabel').textContent =
+                    n <= 2 && names.length === n ? names.join(', ') : `${n} fixtures from Stage`;
+            }
+            renderGroupChips();
+        }
+
+        async function uploadStagePlan(input) {
+            const file = input.files && input.files[0];
+            const status = document.getElementById('stageStatus');
+            if (!file) return;
+            const body = new FormData();
+            body.append('image', file);
+            status.textContent = 'Uploading the floor plan…';
+            try {
+                const r = await fetch('/api/stage/background', { method: 'POST', body });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok || !data.success) throw new Error(data.error || 'HTTP ' + r.status);
+                stage.plan = data.background;
+                status.textContent = 'Floor plan added. It is stretched to the room’s width and depth.';
+                renderStage();
+                applyStageColors(stage.fixtures);
+            } catch (e) {
+                status.textContent = 'Could not add the floor plan: ' + e.message;
+            } finally {
+                input.value = '';
+            }
+        }
+
+        async function removeStagePlan() {
+            try {
+                await fetch('/api/stage/background', { method: 'DELETE' });
+                stage.plan = null;
+                renderStage();
+                applyStageColors(stage.fixtures);
+                document.getElementById('stageStatus').textContent = 'Floor plan removed.';
+            } catch (e) {
+                document.getElementById('stageStatus').textContent = 'Could not remove the floor plan.';
+            }
+        }
+
+        // Draw the plan to a PNG: room, floor plan, grid, fixtures in their
+        // current colour with aim and name, and the dimensions.
+        async function exportStagePng(btn) {
+            const W = stage.room.width, H = stage.room.height;
+            const css = getComputedStyle(document.documentElement);
+            const v = n => css.getPropertyValue(n).trim();
+            const font = getComputedStyle(document.body).fontFamily;
+            const scale = Math.min(1600 / W, 1100 / H);
+            const pad = 48, top = 72, bottom = 64;
+            const cw = Math.round(W * scale), ch = Math.round(H * scale);
+            const canvas = document.createElement('canvas');
+            const dpr = 2;
+            canvas.width = (cw + pad * 2) * dpr;
+            canvas.height = (ch + top + bottom) * dpr;
+            const g = canvas.getContext('2d');
+            g.scale(dpr, dpr);
+            g.fillStyle = v('--ink') || '#0b0b0c';
+            g.fillRect(0, 0, cw + pad * 2, ch + top + bottom);
+            g.fillStyle = v('--paper') || '#f4f1ea';
+            g.font = `600 22px ${font}`;
+            g.textBaseline = 'alphabetic';
+            g.fillText(`${document.querySelector('.header h1')?.textContent.trim() || 'Stage'} · Stage plan`, pad, 44);
+            g.save();
+            g.translate(pad, top);
+            g.fillStyle = v('--ink-1') || '#141416';
+            g.fillRect(0, 0, cw, ch);
+            if (stage.plan) {
+                try {
+                    const img = new Image();
+                    img.src = `/api/stage/background?v=${stage.plan}`;
+                    await img.decode();
+                    g.globalAlpha = 0.5;
+                    g.drawImage(img, 0, 0, cw, ch);
+                    g.globalAlpha = 1;
+                } catch (e) { /* draw without it */ }
+            }
+            g.strokeStyle = v('--rule') || 'rgba(255,255,255,0.08)';
+            g.lineWidth = 1;
+            for (let x = 1; x < W; x++) { g.beginPath(); g.moveTo(x * scale + 0.5, 0); g.lineTo(x * scale + 0.5, ch); g.stroke(); }
+            for (let y = 1; y < H; y++) { g.beginPath(); g.moveTo(0, y * scale + 0.5); g.lineTo(cw, y * scale + 0.5); g.stroke(); }
+            g.strokeStyle = v('--rule-strong') || 'rgba(255,255,255,0.2)';
+            g.strokeRect(0.5, 0.5, cw - 1, ch - 1);
+
+            const live = new Map();
+            document.querySelectorAll('#stageRoom .stage-fx').forEach(el => {
+                live.set(el.dataset.fid, el.querySelector('.stage-fx-dot').style.backgroundColor || '');
+            });
+            stage.fixtures.forEach(f => {
+                const p = stage.positions[String(f.id)];
+                if (!p) return;
+                const x = Math.min(W, Math.max(0, p.x)) * scale, y = Math.min(H, Math.max(0, p.y)) * scale;
+                const color = live.get(String(f.id));
+                if (Number.isFinite(p.rotation)) {
+                    g.save();
+                    g.translate(x, y);
+                    g.rotate(p.rotation * Math.PI / 180);
+                    g.fillStyle = v('--paper-80') || '#ddd';
+                    g.beginPath(); g.moveTo(-7, 19); g.lineTo(7, 19); g.lineTo(0, 28); g.closePath(); g.fill();
+                    g.restore();
+                }
+                g.beginPath();
+                g.arc(x, y, 15, 0, Math.PI * 2);
+                g.fillStyle = color || v('--ink-2') || '#222';
+                g.fill();
+                g.lineWidth = 2;
+                g.setLineDash(color ? [] : [4, 3]);
+                g.strokeStyle = v('--rule-strong') || '#555';
+                g.stroke();
+                g.setLineDash([]);
+                g.font = `500 14px ${font}`;
+                g.fillStyle = v('--paper') || '#fff';
+                const label = f.name || ('Fixture ' + f.id);
+                const tw = g.measureText(label).width;
+                const lx = Math.min(cw - tw - 4, Math.max(4, x - tw / 2));
+                g.fillText(label, lx, y + (Number.isFinite(p.rotation) ? 46 : 36));
+            });
+            g.restore();
+            g.fillStyle = v('--paper-60') || '#aaa';
+            g.font = `400 15px ${font}`;
+            g.fillText('Front of the room', pad, top + ch + 32);
+            const dims = `${W} × ${H} m · ${new Date().toLocaleDateString()}`;
+            g.fillText(dims, pad + cw - g.measureText(dims).width, top + ch + 32);
+
+            canvas.toBlob(blob => {
+                if (!blob) { document.getElementById('stageStatus').textContent = 'Could not draw the image.'; return; }
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'stage-plan.png';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+            }, 'image/png');
         }
 
         async function makeStageGroup() {

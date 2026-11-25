@@ -67,7 +67,7 @@ class TestStageLayoutRoutes:
         client = self._client(monkeypatch, tmp_path)
         resp = client.get("/api/stage_layout")
         assert resp.status_code == 200
-        assert resp.get_json() == {"room": {}, "positions": {}}
+        assert resp.get_json() == {"room": {}, "positions": {}, "background": None}
 
     def test_post_then_get_round_trip(self, monkeypatch, tmp_path):
         client = self._client(monkeypatch, tmp_path)
@@ -80,7 +80,7 @@ class TestStageLayoutRoutes:
         assert post_resp.get_json()["success"] is True
 
         get_resp = client.get("/api/stage_layout")
-        assert get_resp.get_json() == body
+        assert get_resp.get_json() == {**body, "background": None}
 
     def test_post_drops_unparseable_positions(self, monkeypatch, tmp_path):
         client = self._client(monkeypatch, tmp_path)
@@ -99,7 +99,7 @@ class TestStageLayoutRoutes:
         client = self._client(monkeypatch, tmp_path)
         resp = client.post("/api/stage_layout", json={})
         assert resp.status_code == 200
-        assert resp.get_json() == {"success": True, "room": {}, "positions": {}}
+        assert resp.get_json() == {"success": True, "room": {}, "positions": {}, "background": None}
 
 
 class TestLiveFixtureColors:
@@ -157,3 +157,113 @@ class TestStageColorsRoute:
         r = app.app.test_client().get("/api/stage/colors")
         assert r.status_code == 200
         assert r.get_json()["fixtures"][0]["rgb"] == [0, 255, 0]
+
+
+class TestStageAim:
+    def test_normalize_aim(self):
+        assert app._normalize_aim(None) is None
+        assert app._normalize_aim("north") is None
+        assert app._normalize_aim(True) is None
+        assert app._normalize_aim(float("nan")) is None
+        assert app._normalize_aim(0) == 0
+        assert app._normalize_aim(89.6) == 90
+        assert app._normalize_aim(-90) == 270
+        assert app._normalize_aim(720) == 0
+
+    def test_post_keeps_aim(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(app, "STAGE_LAYOUT_FILE", tmp_path / "stage_layout.json")
+        client = app.app.test_client()
+        body = {"positions": {"0": {"x": 1, "y": 2, "rotation": -45}, "1": {"x": 3, "y": 4, "rotation": "x"}}}
+        data = client.post("/api/stage_layout", json=body).get_json()
+        assert data["positions"] == {"0": {"x": 1.0, "y": 2.0, "rotation": 315}, "1": {"x": 3.0, "y": 4.0}}
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"\x00" * 16
+
+
+class TestStageBackground:
+    def _client(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(app, "STAGE_LAYOUT_FILE", tmp_path / "stage_layout.json")
+        return app.app.test_client()
+
+    def test_image_kind(self):
+        assert app._image_kind(PNG[:16]) == "png"
+        assert app._image_kind(JPG[:16]) == "jpg"
+        assert app._image_kind(WEBP[:16]) == "webp"
+        assert app._image_kind(b"<svg xmlns=") is None
+        assert app._image_kind(b"") is None
+
+    def test_get_without_upload_is_404(self, monkeypatch, tmp_path):
+        assert self._client(monkeypatch, tmp_path).get("/api/stage/background").status_code == 404
+
+    def test_upload_get_replace_delete(self, monkeypatch, tmp_path):
+        import io
+        client = self._client(monkeypatch, tmp_path)
+        resp = client.post("/api/stage/background", data={"image": (io.BytesIO(PNG), "plan.png")},
+                           content_type="multipart/form-data")
+        assert resp.status_code == 200 and resp.get_json()["background"]
+        got = client.get("/api/stage/background")
+        assert got.status_code == 200 and got.mimetype == "image/png" and got.data == PNG
+        assert client.get("/api/stage_layout").get_json()["background"]
+
+        # A new upload of another type replaces the old file.
+        client.post("/api/stage/background", data={"image": (io.BytesIO(JPG), "plan.jpg")},
+                    content_type="multipart/form-data")
+        assert not (tmp_path / "stage_background.png").exists()
+        assert client.get("/api/stage/background").mimetype == "image/jpeg"
+
+        assert client.delete("/api/stage/background").get_json()["background"] is None
+        assert client.get("/api/stage/background").status_code == 404
+
+    def test_rejects_non_images(self, monkeypatch, tmp_path):
+        import io
+        client = self._client(monkeypatch, tmp_path)
+        resp = client.post("/api/stage/background",
+                           data={"image": (io.BytesIO(b"<svg onload=alert(1)>"), "plan.svg")},
+                           content_type="multipart/form-data")
+        assert resp.status_code == 415
+        assert client.post("/api/stage/background", data={}).status_code == 400
+
+    def test_rejects_oversize(self, monkeypatch, tmp_path):
+        import io
+        monkeypatch.setattr(app, "STAGE_BACKGROUND_MAX_BYTES", 64)
+        client = self._client(monkeypatch, tmp_path)
+        resp = client.post("/api/stage/background", data={"image": (io.BytesIO(PNG + b"\x00" * 64), "p.png")},
+                           content_type="multipart/form-data")
+        assert resp.status_code == 413
+
+
+class TestStageTargets:
+    def test_split_targets(self):
+        assert app._split_targets(["front", 3, "back", True, None, 0]) == (["front", "back"], ["3", "0"])
+        assert app._split_targets(None) == ([], [])
+
+    def test_command_targets(self):
+        assert app._command_targets({}) is None
+        assert app._command_targets({"groups": [], "fixtures": []}) is None
+        assert app._command_targets({"groups": ["front"], "fixtures": ["3", 4, "x"]}) == ["front", 3, 4]
+
+    def test_group_fixture_ids_mixes_groups_and_fixtures(self, monkeypatch, tmp_path):
+        groups = tmp_path / "groups.json"
+        groups.write_text(json.dumps({"groups": {"front": {"fixtures": [0, 1]}}}))
+        monkeypatch.setattr(app, "GROUPS_FILE", groups)
+        assert app._group_fixture_ids(["front", 5]) == {"0", "1", "5"}
+        assert app._group_fixture_ids([5]) == {"5"}
+        assert app._group_fixture_ids(None) is None
+
+    def test_fixture_ids_work_without_groups_file(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(app, "GROUPS_FILE", tmp_path / "missing.json")
+        assert app._group_fixture_ids([2, 7]) == {"2", "7"}
+
+    def test_filter_scene_xml_keeps_only_picked(self):
+        xml = (
+            '<Function xmlns="http://www.qlcplus.org/Workspace" Type="Scene" Name="s">'
+            '<FixtureVal ID="0">0,255</FixtureVal><FixtureVal ID="1">0,128</FixtureVal>'
+            '<FixtureVal ID="3">0,64</FixtureVal></Function>'
+        )
+        out = app._filter_scene_xml_fixtures(xml, {"1", "3"})
+        root = app._scene_root_from_xml(out)
+        ids = [fv.get("ID") for fv in app._find_children(root, "FixtureVal")]
+        assert ids == ["1", "3"]

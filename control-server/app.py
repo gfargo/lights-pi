@@ -1917,22 +1917,71 @@ def _parse_level(value, current=None, default=200):
         return default
 
 
+def _split_targets(targets):
+    """Split a target list into (group names, fixture id strings).
+
+    Targets are group names (strings) and, since the Stage tab can pick
+    fixtures directly, bare fixture IDs (ints). A group name is always a
+    string, so the two never collide. Anything else is ignored.
+    """
+    names, ids = [], []
+    for t in targets or []:
+        if isinstance(t, bool):
+            continue
+        if isinstance(t, int):
+            ids.append(str(t))
+        elif isinstance(t, str):
+            names.append(t)
+    return names, ids
+
+
 def _group_fixture_ids(target_groups):
     if not target_groups:
         return None
-    if not GROUPS_FILE.exists():
-        return set()
+    names, ids = _split_targets(target_groups)
+    fixture_ids = set(ids)
+    if not names or not GROUPS_FILE.exists():
+        return fixture_ids
     try:
         groups_data = json.loads(GROUPS_FILE.read_text())
     except Exception:
-        return set()
+        return fixture_ids
     groups_dict = groups_data.get("groups", groups_data)
-    fixture_ids = set()
-    for group_name in target_groups:
+    for group_name in names:
         group = groups_dict.get(group_name)
         if group:
             fixture_ids.update(str(fid) for fid in group.get("fixtures", []))
     return fixture_ids
+
+
+def _filter_scene_xml_fixtures(scene_xml: str, keep_ids) -> str:
+    """Drop every FixtureVal whose fixture isn't in *keep_ids*.
+
+    Used to aim a whole-rig generated scene at a hand-picked set of fixtures
+    (the Stage selection), which the group-based generators can't express.
+    """
+    root = _scene_root_from_xml(scene_xml)
+    keep = {str(i) for i in keep_ids}
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if str(child.tag).rsplit("}", 1)[-1] == "FixtureVal" and str(child.get("ID")) not in keep:
+                parent.remove(child)
+    return ET.tostring(root, encoding="unicode")
+
+
+def _command_targets(data: dict):
+    """Targets for /api/command and /api/action: group names plus fixture IDs.
+
+    ``groups`` is a list of group names; ``fixtures`` (optional) is a list of
+    fixture IDs picked on the Stage tab. Returns None for the whole rig.
+    """
+    targets = [g for g in (data.get("groups") or []) if isinstance(g, str)]
+    for fid in data.get("fixtures") or []:
+        try:
+            targets.append(int(fid))
+        except (TypeError, ValueError):
+            continue
+    return targets or None
 
 
 def _target_fixtures(target_groups=None):
@@ -3006,7 +3055,7 @@ def execute_lighting_action(action_data, target_groups=None):
         fh.close()
         return Path(path)
 
-    def _generate_and_apply_live(cmd, scene_file):
+    def _generate_and_apply_live(cmd, scene_file, keep_ids=None):
         result = execute_command(cmd)
         if not IS_LOCAL or not WORKSPACE_PATH.exists():
             return result
@@ -3019,6 +3068,8 @@ def execute_lighting_action(action_data, target_groups=None):
             return result
         scene_xml_content = scene_file.read_text()
         try:
+            if keep_ids is not None:
+                scene_xml_content = _filter_scene_xml_fixtures(scene_xml_content, keep_ids)
             apply_result = apply_scene_xml_live(scene_xml_content)
         finally:
             scene_file.unlink(missing_ok=True)
@@ -3028,6 +3079,18 @@ def execute_lighting_action(action_data, target_groups=None):
         # Stash the scene XML so the caller can offer a "save" option
         result["scene_xml"] = scene_xml_content
         return result
+
+    # Fixtures picked on the Stage tab can't go through the per-group
+    # generators, so generate for the whole rig and keep only the targets.
+    _names, _picked = _split_targets(target_groups)
+
+    def _generate_for_picked(whole_rig_cmd):
+        if not IS_LOCAL or not WORKSPACE_PATH.exists():
+            return {"success": False, "output": "",
+                    "error": "Targeting single fixtures needs the control server running on the Pi."}
+        scene_file = _temp_scene_file()
+        return _generate_and_apply_live(whole_rig_cmd(scene_file), scene_file,
+                                        keep_ids=_group_fixture_ids(target_groups))
 
     if action == "apply_template":
         template = params.get("template")
@@ -3042,6 +3105,10 @@ def execute_lighting_action(action_data, target_groups=None):
                 "output": "",
                 "error": f"Unknown template: {template}. Valid: {sorted(VALID_TEMPLATES)}",
             }
+        if _picked:
+            return _generate_for_picked(lambda f: (
+                f"{LIGHTSCTL} generate-from-template {template}"
+                f" --workspace '{WORKSPACE_PATH}' --output '{f}'"))
         groups = target_groups if target_groups else []
         if groups:
             # Apply template to each selected group
@@ -3072,6 +3139,8 @@ def execute_lighting_action(action_data, target_groups=None):
 
     elif action == "generate_scene":
         description = params.get("description", "")
+        if _picked:
+            return _generate_for_picked(lambda f: _build_scene_cmd(description, f))
         groups = target_groups if target_groups else []
         if groups:
             combined_output = ""
@@ -3353,7 +3422,8 @@ def handle_command():
 
     data = request.json
     user_input = data.get("command", "").strip()
-    target_groups = data.get("groups") or None  # list of group names, or None = all fixtures
+    # Group names plus any fixture IDs picked on the Stage tab; None = all fixtures
+    target_groups = _command_targets(data)
 
     if not user_input:
         return jsonify({
@@ -3411,7 +3481,8 @@ def handle_action():
         {
             "action": "<adjust_brightness|adjust_color|fade|apply_template|generate_scene|activate_scene>",
             "parameters": { ... action-specific ... },
-            "groups": ["group-name", ...]   # optional, applies to all fixtures if omitted
+            "groups": ["group-name", ...],  # optional, applies to all fixtures if omitted
+            "fixtures": [0, 3]              # optional fixture IDs, added to the groups
         }
 
     Designed for programmatic callers (e.g. the MCP server) that have already
@@ -3430,7 +3501,7 @@ def handle_action():
         "parameters": data.get("parameters", {}) or {},
         "explanation": data.get("explanation", ""),
     }
-    target_groups = data.get("groups") or None
+    target_groups = _command_targets(data)
 
     t0 = _time.time()
     result = execute_lighting_action(action_data, target_groups=target_groups)
@@ -4760,7 +4831,8 @@ def import_workspace():
 # ----------------------------------------------------------------------------
 # Storage: ~/.qlcplus/stage_layout.json, same tolerant load/save pattern as
 #     GROUPS_FILE / CUE_LISTS_FILE. Shape:
-#     {"room": {"width": <num>, "height": <num>}, "positions": {"<fixture_id>": {"x": <num>, "y": <num>}}}
+#     {"room": {"width": <num>, "height": <num>},
+#      "positions": {"<fixture_id>": {"x": <num>, "y": <num>, "rotation": <deg, optional>}}}
 # Fixture IDs are stored as string keys in the "positions" dict (unlike
 # groups, which store fixture IDs as an int list) since JSON object keys are
 # always strings.
@@ -4801,7 +4873,7 @@ def get_stage_layout():
     cross-checks against the workspace fixture list, so it can't crash on a
     stale position entry.
     """
-    return jsonify(_load_stage_layout())
+    return jsonify({**_load_stage_layout(), "background": _stage_background_version()})
 
 
 @app.route("/api/stage_layout", methods=["POST"])
@@ -4834,11 +4906,101 @@ def save_stage_layout():
             y = float(pos["y"])
         except (KeyError, TypeError, ValueError):
             continue
-        positions[str(fid)] = {"x": x, "y": y}
+        entry = {"x": x, "y": y}
+        aim = _normalize_aim(pos.get("rotation"))
+        if aim is not None:
+            entry["rotation"] = aim
+        positions[str(fid)] = entry
 
     layout = {"room": room, "positions": positions}
     _save_stage_layout(layout)
-    return jsonify({"success": True, **layout})
+    return jsonify({"success": True, **layout, "background": _stage_background_version()})
+
+
+def _normalize_aim(value):
+    """Aim of a fixture on the plan, in whole degrees 0–359, or None.
+
+    0 points at the front of the room (down the plan), and angles run
+    clockwise as seen from above. None (or anything non-numeric) means the
+    fixture has no aim set, which the plan draws without an arrow.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        deg = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(deg):
+        return None
+    return int(round(deg)) % 360
+
+
+# Floor-plan image drawn under the Stage grid. One file, kept next to the
+# layout; PNG, JPEG or WebP only (no SVG: it can carry script).
+STAGE_BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
+_STAGE_BACKGROUND_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+
+
+def _image_kind(head: bytes):
+    """Return 'png', 'jpg' or 'webp' from a file's first bytes, else None."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _stage_background_file():
+    for ext in _STAGE_BACKGROUND_TYPES:
+        path = STAGE_LAYOUT_FILE.parent / f"stage_background.{ext}"
+        if path.exists():
+            return path
+    return None
+
+
+def _stage_background_version():
+    """Modification time of the floor-plan image (a cache key), or None."""
+    path = _stage_background_file()
+    return int(path.stat().st_mtime) if path else None
+
+
+@app.route("/api/stage/background", methods=["GET"])
+def get_stage_background():
+    path = _stage_background_file()
+    if not path:
+        return jsonify({"error": "No floor plan uploaded"}), 404
+    ext = path.suffix.lstrip(".")
+    return send_from_directory(str(path.parent), path.name, mimetype=_STAGE_BACKGROUND_TYPES[ext])
+
+
+@app.route("/api/stage/background", methods=["POST"])
+def upload_stage_background():
+    """Store a floor-plan image (multipart field ``image``), replacing any old one."""
+    upload = request.files.get("image")
+    if upload is None:
+        return jsonify({"success": False, "error": "Send the image as the 'image' field"}), 400
+    data = upload.read(STAGE_BACKGROUND_MAX_BYTES + 1)
+    if len(data) > STAGE_BACKGROUND_MAX_BYTES:
+        return jsonify({"success": False, "error": "Image is larger than 8 MB"}), 413
+    kind = _image_kind(data[:16])
+    if kind is None:
+        return jsonify({"success": False, "error": "Use a PNG, JPEG or WebP image"}), 415
+    STAGE_LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    old = _stage_background_file()
+    if old:
+        old.unlink(missing_ok=True)
+    (STAGE_LAYOUT_FILE.parent / f"stage_background.{kind}").write_bytes(data)
+    return jsonify({"success": True, "background": _stage_background_version()})
+
+
+@app.route("/api/stage/background", methods=["DELETE"])
+def delete_stage_background():
+    path = _stage_background_file()
+    if path:
+        path.unlink(missing_ok=True)
+    return jsonify({"success": True, "background": None})
 
 
 def _live_fixture_colors(fixtures: list, values: dict, channel_info_fn) -> list:
