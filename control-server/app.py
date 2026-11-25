@@ -9,6 +9,7 @@ import asyncio
 import collections
 import concurrent.futures
 import contextlib
+import gzip
 import hmac
 import json
 import logging
@@ -273,6 +274,59 @@ def _security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+# Compress text responses. The control page is ~250KB of inline HTML/CSS/JS;
+# over Tailscale from a phone that was ~1.5s on first load, about 5x smaller
+# gzipped. Streams (SSE), files sent from disk and binary types are left alone.
+GZIP_MIN_BYTES = 1024
+GZIP_MIMETYPES = frozenset({
+    "text/html", "text/css", "text/plain", "text/javascript",
+    "application/javascript", "application/json", "application/manifest+json",
+    "image/svg+xml",
+})
+
+
+def _accepts_gzip(accept_encoding: str | None) -> bool:
+    """True when an Accept-Encoding header allows gzip (and doesn't set q=0)."""
+    for part in (accept_encoding or "").split(","):
+        token, _, params = part.strip().partition(";")
+        if token.strip().lower() in ("gzip", "*"):
+            q = params.strip().lower()
+            return not (q.startswith("q=") and q[2:].strip() in ("0", "0.0", "0.00", "0.000"))
+    return False
+
+
+def _should_gzip(status: int, mimetype: str | None, content_encoding: str | None,
+                 streamed: bool, size: int | None) -> bool:
+    """Pure decision for the gzip hook, kept separate so it can be unit tested."""
+    return (
+        status == 200
+        and not streamed
+        and not content_encoding
+        and (mimetype or "") in GZIP_MIMETYPES
+        and size is not None and size >= GZIP_MIN_BYTES
+    )
+
+
+@app.after_request
+def _gzip_response(response):
+    if not _accepts_gzip(request.headers.get("Accept-Encoding")):
+        return response
+    streamed = response.direct_passthrough or response.is_streamed
+    size = None if streamed else response.content_length
+    if size is None and not streamed:
+        size = len(response.get_data())
+    if not _should_gzip(response.status_code, response.mimetype,
+                        response.headers.get("Content-Encoding"), streamed, size):
+        return response
+    response.set_data(gzip.compress(response.get_data(), compresslevel=6))
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(response.get_data()))
+    response.vary.add("Accept-Encoding")
+    if response.headers.get("ETag"):
+        response.headers["ETag"] = response.headers["ETag"].rstrip('"') + '-gz"'
     return response
 
 # Configuration

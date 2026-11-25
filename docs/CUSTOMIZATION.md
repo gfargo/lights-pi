@@ -159,7 +159,7 @@ The `scripts/debug/` directory has tools for workspace diagnostics:
 ./lightsctl.sh deploy-workspace studio.qxw
 
 # Or set as default (copies to ~/.qlcplus/default.qxw):
-./lightsctl.sh set-default studio.qxw
+./lightsctl.sh set-default-workspace studio.qxw
 ```
 
 ---
