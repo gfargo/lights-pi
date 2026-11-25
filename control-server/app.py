@@ -3179,15 +3179,18 @@ def pwa_manifest():
         "background_color": "#0a0a0a",
         "theme_color": "#0a0a0a",
         "categories": ["productivity", "utilities"],
-        # Pure-SVG icon embedded inline. Avoids needing static-file plumbing
-        # for the install flow; the browser will use it at any size.
+        # The swatch mark as SVG for browsers that take it, plus PNGs:
+        # Android's installer wants 192/512 rasters, and iOS ignores the
+        # manifest entirely (index.html links apple-touch-icon.png).
         "icons": [
             {
                 "src": "/icon.svg",
                 "sizes": "any",
                 "type": "image/svg+xml",
                 "purpose": "any maskable",
-            }
+            },
+            {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
         ],
     }
     response = jsonify(manifest)

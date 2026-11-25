@@ -73,6 +73,20 @@ class TestRoutes:
         assert r.mimetype == "image/svg+xml"
         assert r.get_data(as_text=True).count("<rect") == 9
 
+    def test_png_icons_for_installers(self):
+        # Android's installer wants raster icons; iOS only reads apple-touch-icon.
+        data = self.client.get("/manifest.json").get_json()
+        pngs = {i["sizes"]: i["src"] for i in data["icons"] if i["type"] == "image/png"}
+        assert set(pngs) == {"192x192", "512x512"}
+        for src in [*pngs.values(), "/static/icons/apple-touch-icon.png"]:
+            r = self.client.get(src)
+            assert r.status_code == 200, src
+            assert r.get_data()[:8] == b"\x89PNG\r\n\x1a\n", src
+
+    def test_index_links_apple_touch_icon(self):
+        html = self.client.get("/").get_data(as_text=True)
+        assert 'rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"' in html
+
     def test_theme_css_absent_is_404(self, monkeypatch, tmp_path):
         monkeypatch.setattr(app_module, "_THEME_CSS", tmp_path / "theme.css")
         assert self.client.get("/theme.css").status_code == 404
