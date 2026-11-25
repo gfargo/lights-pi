@@ -1,9 +1,8 @@
 """Tests for the OSC settings helpers and /api/osc routes in app.py."""
 import json
 
-import pytest
-
 import app
+import pytest
 from osc_backend import OscConfig, OscFeedbackClient
 
 
