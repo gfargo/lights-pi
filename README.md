@@ -1358,6 +1358,14 @@ LLM agent ──MCP/HTTP──▶  lighting-mcp.service ──HTTP──▶  lig
 
 See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) and [mcp-server/README.md](mcp-server/README.md) for the full tool/resource reference and auth hooks.
 
+### Agent skill
+
+[`skills/lights-pi/`](skills/lights-pi/SKILL.md) is an Agent Skill that teaches Claude Code,
+Claude Desktop or any Agent-Skills-compatible client how to run the rig well: discovery
+first, scenes vs live values, Kelvin, chases and cue lists, blackout as the safe stop, plus
+setup, branding and troubleshooting. Install instructions are in
+[skills/README.md](skills/README.md).
+
 ---
 
 ## 🎯 Fixture Groups/Zones
