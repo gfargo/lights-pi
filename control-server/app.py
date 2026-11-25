@@ -4841,6 +4841,55 @@ def save_stage_layout():
     return jsonify({"success": True, **layout})
 
 
+def _live_fixture_colors(fixtures: list, values: dict, channel_info_fn) -> list:
+    """Turn current DMX values into one display colour per fixture.
+
+    *values* is keyed by absolute 1-based channel number (int or str, as
+    /api/channel_values returns it). *channel_info_fn(fixture)* returns the
+    fixture's resolved channel list (offset + role). A fixture whose channels
+    carry no colour or dimmer role gets ``rgb: None`` so the UI can draw it
+    neutral, and ``level`` is the brightest of its channels (0–255) so a lit
+    fixture without a colour role still reads as on.
+    """
+    lookup = {str(k): v for k, v in (values or {}).items()}
+    out = []
+    for fixture in fixtures:
+        base = int(fixture.get("universe", 0)) * 512 + int(fixture.get("address", 0))
+        channels = []
+        level = 0
+        for ci in channel_info_fn(fixture):
+            offset = int(ci.get("offset", 0))
+            try:
+                value = int(lookup.get(str(base + offset + 1), 0))
+            except (TypeError, ValueError):
+                value = 0
+            level = max(level, value)
+            channels.append({"offset": offset, "role": ci.get("role"), "value": value})
+        rgb = _fixture_values_to_rgb(channels)
+        out.append({
+            "id": fixture.get("id"),
+            "name": fixture.get("name", ""),
+            "rgb": list(rgb) if rgb else None,
+            "level": level,
+        })
+    return out
+
+
+@app.route("/api/stage/colors", methods=["GET"])
+def stage_colors():
+    """Current display colour of every fixture, for the Stage tab.
+
+    Returns ``{"fixtures": [{"id", "name", "rgb": [r, g, b] | null, "level"}]}``.
+    Uses the same colour maths as the scene swatches, applied to live output.
+    """
+    try:
+        fixtures = get_workspace_fixtures()
+    except Exception as e:
+        return jsonify({"fixtures": [], "error": str(e)}), 500
+    values = get_current_channel_values()
+    return jsonify({"fixtures": _live_fixture_colors(fixtures, values, _fixture_channels_info)})
+
+
 # ----------------------------------------------------------------------------
 # Scene management — describe / delete / rename / duplicate
 # ----------------------------------------------------------------------------
