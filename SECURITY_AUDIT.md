@@ -216,13 +216,13 @@ The docs show `tailscale funnel 5000` as a quick way to share access. Combined w
 **Severity:** Medium  
 **Location:** `scripts/services/control_server.sh`, `scripts/services/mcp_server.sh`
 
-The systemd service units run as the `riversway` user (good — not root) but have no additional sandboxing. If the Flask app is compromised, the attacker gets full shell access as the service user.
+The systemd service units run as the Pi's login user (good — not root) but have no additional sandboxing. If the Flask app is compromised, the attacker gets full shell access as the service user.
 
 Current unit:
 ```ini
 [Service]
 Type=simple
-User=riversway
+User=<pi-user>
 ExecStart=...
 Restart=always
 ```
@@ -233,7 +233,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
-ReadWritePaths=/home/riversway/control-server /home/riversway/.qlcplus
+ReadWritePaths=/home/<pi-user>/control-server /home/<pi-user>/.qlcplus
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 ```
@@ -566,7 +566,7 @@ except Exception as e:
 ```
 
 Python exceptions can reveal:
-- **File paths:** `FileNotFoundError: /home/riversway/.qlcplus/default.qxw`
+- **File paths:** `FileNotFoundError: /home/<pi-user>/.qlcplus/default.qxw`
 - **Network details:** `ConnectionRefusedError: [Errno 111] Connection refused` (reveals ports/IPs)
 - **AI response content:** `interpret_command` returns `f"Failed to parse AI response: {response}"` which could echo user input or internal system prompts
 
@@ -799,7 +799,7 @@ Open-ended ranges pull in latest versions on every install. The `mcp` package ha
 **Location:** `control-server/app.py`, `/api/status` endpoint
 
 Unauthenticated endpoint exposes:
-- `WORKSPACE_PATH` — full filesystem path (e.g., `/home/riversway/.qlcplus/default.qxw`)
+- `WORKSPACE_PATH` — full filesystem path (e.g., `/home/<pi-user>/.qlcplus/default.qxw`)
 - `QLC_WS_URL` — internal WebSocket endpoint with host and port
 - `AI_PROVIDER` and `AI_MODEL` — reveals what AI services are configured
 - `is_local` — reveals deployment topology
