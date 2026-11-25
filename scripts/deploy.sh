@@ -48,6 +48,7 @@ rsync -avz --delete -e "$RSYNC_RSH" \
   --exclude='.pytest_cache' \
   --exclude='.ruff_cache' \
   --exclude='static/logo.*' \
+  --exclude='static/theme.css' \
   control-server/ "${PI_USER}@${PI_HOST}:${PI_HOME}/control-server/"
 
 rsync -avz --delete -e "$RSYNC_RSH" \
