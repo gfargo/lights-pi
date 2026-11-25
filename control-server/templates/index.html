@@ -447,7 +447,16 @@
             font-family: inherit; font-size: var(--fs-body);
             transition: border-color 0.15s, box-shadow 0.15s;
         }
-        select.field-input { padding-right: 2rem; }
+        /* Own the select arrow so it sits 0.75rem in from the edge, like the
+           text does, instead of the browser's arrow hard against the border. */
+        select.field-input {
+            -webkit-appearance: none; appearance: none; padding-right: 2.25rem;
+            background-image:
+                linear-gradient(45deg, transparent 50%, var(--paper-60) 50%),
+                linear-gradient(135deg, var(--paper-60) 50%, transparent 50%);
+            background-position: calc(100% - 1.15rem) 52%, calc(100% - 0.8rem) 52%;
+            background-size: 0.35rem 0.35rem; background-repeat: no-repeat;
+        }
         .field-input:focus { outline: none; border-color: var(--amber-tungsten); box-shadow: 0 0 0 1px var(--amber-tungsten); }
         .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
         input[type="checkbox"] { accent-color: var(--amber-tungsten); width: 18px; height: 18px; }
@@ -509,6 +518,12 @@
             display: block; width: 100%; height: 56px;
             background-color: var(--ink-3); background-size: 100% 100%; background-repeat: no-repeat;
         }
+        /* Placeholder tiles shown until /api/scenes answers on first load. */
+        .scene-skeleton { pointer-events: none; }
+        .scene-skeleton .scene-swatch { animation: pulse 1.4s ease-in-out infinite; }
+        .scene-skeleton .scene-name { color: var(--paper-50); }
+        @media (prefers-reduced-motion: reduce) { .scene-skeleton .scene-swatch { animation: none; } }
+        .scene-grid-msg { grid-column: 1 / -1; color: var(--paper-60); font-size: var(--fs-body); padding: 1rem 0; }
         .scene-name {
             display: block; padding: 0.6rem 2.75rem 0.65rem 0.75rem;
             font-size: var(--fs-body); line-height: 1.3;
@@ -743,6 +758,7 @@
         }
         .cue-row .cue-time { font-family: var(--font-mono); }
         .cue-row select.field-input, .cue-row input.field-input { min-height: 40px; padding: 0 0.5rem; font-size: var(--fs-small); }
+        .cue-row select.field-input { padding-right: 1.75rem; background-position: calc(100% - 0.95rem) 52%, calc(100% - 0.6rem) 52%; }
         .cue-row .remove-btn { background: none; border: none; color: var(--paper-50); font-size: 1rem; width: var(--hit); padding: 0; }
         .cue-row .remove-btn:hover { color: var(--signal-red); }
 
@@ -1460,7 +1476,7 @@
             </div>
 
             <div class="section-title">Scenes</div>
-            <div class="scene-grid" id="sceneGrid"></div>
+            <div class="scene-grid" id="sceneGrid" aria-busy="true"><div class="scene-btn-wrap scene-skeleton" aria-hidden="true"><div class="scene-btn"><span class="scene-swatch"></span><span class="scene-name">Loading…</span></div></div><div class="scene-btn-wrap scene-skeleton" aria-hidden="true"><div class="scene-btn"><span class="scene-swatch"></span><span class="scene-name">Loading…</span></div></div><div class="scene-btn-wrap scene-skeleton" aria-hidden="true"><div class="scene-btn"><span class="scene-swatch"></span><span class="scene-name">Loading…</span></div></div><div class="scene-btn-wrap scene-skeleton" aria-hidden="true"><div class="scene-btn"><span class="scene-swatch"></span><span class="scene-name">Loading…</span></div></div><div class="scene-btn-wrap scene-skeleton" aria-hidden="true"><div class="scene-btn"><span class="scene-swatch"></span><span class="scene-name">Loading…</span></div></div><div class="scene-btn-wrap scene-skeleton" aria-hidden="true"><div class="scene-btn"><span class="scene-swatch"></span><span class="scene-name">Loading…</span></div></div></div>
 
             <div id="targetGroupsRow" class="target-groups-row" style="display:none;">
                 <span class="target-label">Target</span>
@@ -2386,8 +2402,14 @@
                             <button class="danger" onclick="deleteScene(${s.id}); toggleSceneMenu(${s.id}, event);">Delete</button>
                         </div>
                     </div>`;
-                }).join('');
-            } catch (e) { console.error('Error loading scenes:', e); }
+                }).join('') || '<p class="scene-grid-msg">No scenes yet. Make one in Chat, or save one from the console.</p>';
+                grid.removeAttribute('aria-busy');
+            } catch (e) {
+                console.error('Error loading scenes:', e);
+                const grid = document.getElementById('sceneGrid');
+                grid.removeAttribute('aria-busy');
+                grid.innerHTML = '<p class="scene-grid-msg">Could not load scenes. <button class="btn-secondary" onclick="loadScenes()">Retry</button></p>';
+            }
         }
 
         async function activateScene(sceneId) {
