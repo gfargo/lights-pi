@@ -34,6 +34,7 @@ single-WebSocket QLC+ bridge, see
 For the MCP server (LLM agent access), see [docs/MCP_SERVER.md](docs/MCP_SERVER.md).
 For remote access via Tailscale, see [docs/TAILSCALE.md](docs/TAILSCALE.md).
 For branding and customization, see [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md).
+To make the lights follow music from a USB mic, see [docs/AUDIO_REACTIVE.md](docs/AUDIO_REACTIVE.md).
 
 ---
 
@@ -1140,6 +1141,7 @@ For the control server architecture, see [docs/CONTROL_SERVER_ARCHITECTURE.md](d
 For WiFi reliability and troubleshooting, see [docs/WIFI_RELIABILITY.md](docs/WIFI_RELIABILITY.md).
 For remote access setup, see [docs/TAILSCALE.md](docs/TAILSCALE.md).
 For branding and customization, see [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md).
+To make the lights follow music from a USB mic, see [docs/AUDIO_REACTIVE.md](docs/AUDIO_REACTIVE.md).
 
 ---
 
