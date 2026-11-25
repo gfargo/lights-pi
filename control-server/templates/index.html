@@ -1280,6 +1280,91 @@
             .tab::after, .tab-more::after, .groups-drawer, .drawer-overlay, .more-sheet, .more-overlay,
             .health-details { transition: none; }
         }
+
+        /* ── Stage tab (issue #36): the rig on a top-down plan of the room.
+           Positions are stored in metres; the plan scales to fit. A grid
+           line every metre. Fixtures are round (lamps seen from above) to
+           set them apart from the square UI chrome. ── */
+        .stage-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; align-items: flex-end; margin-bottom: 1rem; }
+        .stage-dims { display: flex; gap: 0.5rem; align-items: flex-end; }
+        .stage-dims label { display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--fs-small); color: var(--paper-60); }
+        .stage-dims input { width: 5.5rem; font-family: var(--font-mono); }
+        .stage-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+        .stage-chips-label { font-size: var(--fs-small); color: var(--paper-60); margin-right: 0.25rem; }
+        .stage-chip {
+            min-height: var(--hit); padding: 0 0.9rem; background: var(--ink-1); color: var(--paper-80);
+            border: 1px solid var(--rule-strong); font-family: var(--font-sans); font-size: var(--fs-small); cursor: pointer;
+        }
+        .stage-chip:hover { border-color: var(--paper-40); color: var(--paper); }
+        .stage-plan { padding: 14px 24px 8px; }
+        .stage-room {
+            position: relative; margin: 0 auto;
+            width: min(100%, calc(55vh * var(--stage-ratio, 1.667)));
+            aspect-ratio: var(--stage-ar, 10 / 6);
+            background-color: var(--ink-1);
+            background-image:
+                linear-gradient(to right, var(--rule) 1px, transparent 1px),
+                linear-gradient(to bottom, var(--rule) 1px, transparent 1px);
+            background-size: calc(100% / var(--stage-w, 10)) calc(100% / var(--stage-h, 6));
+            border: 1px solid var(--rule-strong);
+            touch-action: none; user-select: none; -webkit-user-select: none;
+        }
+        .stage-room.drop-target { border-color: var(--amber-tungsten); }
+        .stage-front {
+            display: flex; justify-content: space-between; gap: 1rem; margin: 0.6rem auto 0;
+            width: min(100%, calc(55vh * var(--stage-ratio, 1.667)));
+            font-size: var(--fs-meta); color: var(--paper-50);
+        }
+        .stage-front .mono { font-family: var(--font-mono); }
+        .stage-empty {
+            position: absolute; inset: 0; display: grid; place-items: center; padding: 1rem;
+            text-align: center; font-size: var(--fs-body); color: var(--paper-50); pointer-events: none;
+        }
+        .stage-lasso { position: absolute; border: 1px solid var(--amber-tungsten); background: var(--amber-tungsten-soft); pointer-events: none; }
+        .stage-fx {
+            position: relative; width: var(--hit); height: var(--hit); display: grid; place-items: center;
+            padding: 0; margin: 0; background: none; border: 0; color: var(--paper);
+            cursor: grab; touch-action: none; -webkit-tap-highlight-color: transparent;
+        }
+        .stage-fx.placed { position: absolute; transform: translate(-50%, -50%); }
+        .stage-fx.dragging { cursor: grabbing; z-index: 3; }
+        .stage-fx:focus-visible { outline: 2px solid var(--paper); outline-offset: 0; }
+        .stage-fx-dot {
+            width: 28px; height: 28px; border-radius: 50%;
+            background: var(--ink-3); border: 2px solid var(--rule-strong);
+            transition: background-color 0.3s, box-shadow 0.3s;
+        }
+        .stage-fx-dot.off { background: var(--ink-2); border-style: dashed; }
+        .stage-fx.selected .stage-fx-dot { outline: 2px solid var(--amber-tungsten); outline-offset: 3px; }
+        .stage-fx-name {
+            position: absolute; top: calc(100% - 6px); left: 50%; transform: translateX(-50%);
+            white-space: nowrap; font-size: var(--fs-meta); color: var(--paper-80);
+            text-shadow: 0 1px 2px var(--ink), 0 0 4px var(--ink); pointer-events: none;
+        }
+        .stage-fx.selected .stage-fx-name { color: var(--paper); }
+        .stage-fx.edge-l .stage-fx-name { left: 0; transform: none; }
+        .stage-fx.edge-r .stage-fx-name { left: auto; right: 0; transform: none; }
+        .stage-ghost { position: fixed; transform: translate(-50%, -50%); pointer-events: none; z-index: 1000; }
+        .stage-selbar {
+            display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+            margin-top: 1.75rem; padding: 0.75rem; background: var(--ink-1); border: 1px solid var(--rule);
+        }
+        .stage-selcount { font-size: var(--fs-body); color: var(--paper-80); margin-right: auto; }
+        .stage-groupmake { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .stage-groupmake input { width: 11rem; }
+        .stage-tray { margin-bottom: 0.75rem; }
+        .stage-tray-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+        .stage-tray .stage-fx {
+            width: auto; height: auto; min-height: var(--hit); display: flex; gap: 0.6rem;
+            padding: 0.4rem 0.9rem 0.4rem 0.5rem; background: var(--ink-1); border: 1px solid var(--rule-strong);
+        }
+        .stage-tray .stage-fx-name { position: static; transform: none; font-size: var(--fs-small); text-shadow: none; }
+        .stage-status { margin-top: 0.75rem; min-height: 1.5em; }
+        @media (max-width: 600px) {
+            .stage-plan { padding: 12px 18px 4px; }
+            .stage-selcount { flex-basis: 100%; }
+            .stage-groupmake, .stage-groupmake input { flex: 1; width: auto; }
+        }
     </style>
     <style>:root { --amber-tungsten: {{ brand.accent }}; --on-accent: {{ brand.on_accent }}; }</style>
     {% if has_theme_css %}<link rel="stylesheet" href="/theme.css">{% endif %}
@@ -1372,6 +1457,7 @@
             <button class="tab" onclick="switchTab('console', this)" role="tab" aria-selected="false"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 3v18M12 3v18M18 3v18"/><rect x="3.5" y="13" width="5" height="3.5" fill="currentColor" stroke="none"/><rect x="9.5" y="6" width="5" height="3.5" fill="currentColor" stroke="none"/><rect x="15.5" y="10" width="5" height="3.5" fill="currentColor" stroke="none"/></svg><span>Console</span></button>
             <button class="tab" onclick="switchTab('chat', this)" role="tab" aria-selected="false"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5h16v11H10l-4 3.5V16H4z"/></svg><span>Chat</span></button>
             <button class="tab" onclick="switchTab('chases', this)" role="tab" aria-selected="false"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.6M20 12a8 8 0 0 1-13.7 5.6"/><path d="M18 3v4h-4M6 21v-4h4"/></svg><span>Chases</span></button>
+            <button class="tab tab-secondary" onclick="switchTab('stage', this)" role="tab" aria-selected="false"><span>Stage</span></button>
             <button class="tab tab-secondary" onclick="switchTab('cuelists', this)" role="tab" aria-selected="false"><span>Cue lists</span></button>
             <button class="tab tab-secondary" onclick="switchTab('audio', this)" role="tab" aria-selected="false"><span>Audio</span></button>
             <button class="tab tab-secondary" onclick="switchTab('tools', this)" role="tab" aria-selected="false"><span>Tools</span></button>
@@ -1383,6 +1469,7 @@
         <div class="more-overlay" id="moreOverlay" onclick="closeMoreSheet()"></div>
         <div class="more-sheet" id="moreSheet" role="dialog" aria-label="More" aria-hidden="true">
             <div class="more-sheet-head"><span>More</span><button class="drawer-close" onclick="closeMoreSheet()" aria-label="Close">✕</button></div>
+            <button class="more-item" data-tab="stage" onclick="switchTab('stage')"><span class="more-item-text"><span>Stage</span><span class="more-item-hint">Fixtures on a plan of the room, live colour</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="cuelists" onclick="switchTab('cuelists')"><span class="more-item-text"><span>Cue lists</span><span class="more-item-hint">Timed shows, synced to audio</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="audio" onclick="switchTab('audio')"><span class="more-item-text"><span>Audio</span><span class="more-item-hint">BPM detection and onset flash</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="tools" onclick="switchTab('tools')"><span class="more-item-text"><span>Tools</span><span class="more-item-hint">Kelvin, strobe, three-point palette</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
@@ -1648,6 +1735,45 @@
         <!-- ══════════════════════════════════════
              Audio tab — BPM detection + onset visualizer
              ══════════════════════════════════════ -->
+        <!-- ══════════════════════════════════════
+             Stage tab — the rig on a plan of the room (issue #36).
+             Drag fixtures from the list onto the plan; each one shows its
+             live colour. Tap to select, drag across empty floor to select
+             several, then identify them or make a group.
+             ══════════════════════════════════════ -->
+        <div id="stage-tab" class="tab-content">
+            <div class="section-title">Stage</div>
+            <div class="stage-toolbar">
+                <div class="stage-dims">
+                    <label>Width (m)<input type="number" id="stageRoomW" class="field-input" min="1" max="200" step="0.5" value="10" onchange="setStageRoom()"></label>
+                    <label>Depth (m)<input type="number" id="stageRoomH" class="field-input" min="1" max="200" step="0.5" value="6" onchange="setStageRoom()"></label>
+                </div>
+                <div class="stage-chips" id="stageGroupChips"></div>
+            </div>
+            <div class="stage-tray" id="stageTray" hidden>
+                <div class="field-label">Not on the plan yet. Drag each one onto the floor below.</div>
+                <div class="stage-tray-list" id="stageTrayList"></div>
+            </div>
+            <div class="stage-plan">
+                <div class="stage-room" id="stageRoom" aria-label="Plan of the room, seen from above">
+                    <div class="stage-empty" id="stageEmpty">Loading the plan…</div>
+                    <div class="stage-lasso" id="stageLasso" hidden></div>
+                </div>
+                <div class="stage-front"><span>Front of the room</span><span class="mono" id="stageScale">10 × 6 m</span></div>
+            </div>
+            <div class="stage-selbar" id="stageSelBar">
+                <span class="stage-selcount" id="stageSelCount">Tap fixtures to select them, or drag across the floor.</span>
+                <button class="btn-secondary btn-tiny" id="stageIdentifyBtn" onclick="identifyStageSelection(this)" disabled>Identify</button>
+                <button class="btn-ghost btn-tiny" id="stageRemoveBtn" onclick="removeStageSelection()" disabled>Take off plan</button>
+                <button class="btn-ghost btn-tiny" id="stageClearBtn" onclick="clearStageSelection()" disabled>Clear</button>
+                <div class="stage-groupmake">
+                    <input type="text" id="stageGroupName" class="field-input" placeholder="Group name" autocomplete="off" aria-label="Name for the new group" onkeydown="if(event.key==='Enter')makeStageGroup()">
+                    <button class="btn-primary btn-tiny" id="stageGroupBtn" onclick="makeStageGroup()" disabled>Make group</button>
+                </div>
+            </div>
+            <p class="hint stage-status" id="stageStatus" role="status" aria-live="polite"></p>
+        </div>
+
         <div id="audio-tab" class="tab-content">
             <div class="section-title">Audio reactivity</div>
             <div class="panel-grid">
@@ -2021,7 +2147,7 @@
                 — replaceState (vs. pushState) keeps the back button useful
                 because tab clicks don't become history entries.
            ══════════════════════════════════════ */
-        const VALID_TABS = ['chat', 'ai', 'console', 'cuelists', 'chases', 'audio', 'tools', 'diag'];
+        const VALID_TABS = ['chat', 'ai', 'console', 'stage', 'cuelists', 'chases', 'audio', 'tools', 'diag'];
         let currentTab = 'ai';
 
         function switchTab(tabName, btn) {
@@ -2062,8 +2188,12 @@
                 stopConsolePolling();
             }
 
+            // Stage colour polling runs only while the Stage tab is open.
+            if (tabName !== 'stage') stopStagePolling();
+
             // Lazy-load tab content on switch (idempotent — each loader is safe to re-call).
-            if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
+            if (tabName === 'stage') initStage();
+            else if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
             else if (tabName === 'chases') loadChases();
             else if (tabName === 'audio')  initAudio();
             else if (tabName === 'tools') populateToolsGroupSelects();
@@ -2637,6 +2767,428 @@
                     btn.classList.remove('flashing');
                     btn.textContent = 'Identify';
                 }, 2200);
+            }
+        }
+
+        /* ══════════════════════════════════════
+           Stage tab (issue #36)
+           Positions live in /api/stage_layout, in metres from the back-left
+           corner. Live colour comes from /api/stage/colors, polled every 2 s
+           while the tab is open. Pointer events cover mouse and touch alike.
+           ══════════════════════════════════════ */
+        const stage = { room: { width: 10, height: 6 }, positions: {}, fixtures: [], selected: new Set() };
+        let stagePollTimer = null;
+        let stageSaveTimer = null;
+        let stageDrag = null;
+        let stageLasso = null;
+        let stageRoomWired = false;
+
+        function stagePosNum(v, fallback) {
+            const n = parseFloat(v);
+            return Number.isFinite(n) && n > 0 ? Math.min(200, n) : fallback;
+        }
+        function stageRound(n) { return Math.round(n * 100) / 100; }
+
+        async function initStage() {
+            const status = document.getElementById('stageStatus');
+            wireStageRoom();
+            try {
+                const [lr, cr] = await Promise.all([fetch('/api/stage_layout'), fetch('/api/stage/colors')]);
+                const layout = await lr.json();
+                const colors = await cr.json();
+                const room = layout.room || {};
+                stage.room = { width: stagePosNum(room.width, 10), height: stagePosNum(room.height, 6) };
+                stage.positions = layout.positions || {};
+                stage.fixtures = colors.fixtures || [];
+                status.textContent = colors.error ? 'Could not read the fixtures: ' + colors.error : '';
+                document.getElementById('stageRoomW').value = stage.room.width;
+                document.getElementById('stageRoomH').value = stage.room.height;
+                renderStage();
+                applyStageColors(stage.fixtures);
+            } catch (e) {
+                document.getElementById('stageEmpty').textContent = 'Could not load the plan.';
+                status.textContent = 'Check the control server is running, then open the tab again.';
+            }
+            if (!groupsLoaded) await loadGroups();
+            renderStageGroupChips();
+            startStagePolling();
+        }
+
+        function startStagePolling() {
+            stopStagePolling();
+            stagePollTimer = setInterval(refreshStageColors, 2000);
+        }
+        function stopStagePolling() {
+            if (stagePollTimer) { clearInterval(stagePollTimer); stagePollTimer = null; }
+        }
+
+        async function refreshStageColors() {
+            if (currentTab !== 'stage' || document.hidden) return;
+            try {
+                const r = await fetch('/api/stage/colors');
+                const data = await r.json();
+                const list = data.fixtures || [];
+                const ids = list.map(f => String(f.id)).join(',');
+                if (ids !== stage.fixtures.map(f => String(f.id)).join(',') && !stageDrag) {
+                    stage.fixtures = list;
+                    renderStage();
+                }
+                applyStageColors(list);
+            } catch (e) { /* next poll retries */ }
+        }
+
+        function renderStage() {
+            const room = document.getElementById('stageRoom');
+            const W = stage.room.width, H = stage.room.height;
+            room.style.setProperty('--stage-ar', `${W} / ${H}`);
+            room.style.setProperty('--stage-ratio', String(W / H));
+            room.style.setProperty('--stage-w', String(W));
+            room.style.setProperty('--stage-h', String(H));
+            document.querySelector('.stage-front').style.setProperty('--stage-ratio', String(W / H));
+            document.getElementById('stageScale').textContent = `${W} × ${H} m`;
+
+            room.querySelectorAll('.stage-fx').forEach(n => n.remove());
+            const tray = document.getElementById('stageTrayList');
+            tray.innerHTML = '';
+            let placed = 0;
+            stage.fixtures.forEach(f => {
+                const p = stage.positions[String(f.id)];
+                if (p) {
+                    const el = stageFxEl(f, true);
+                    placeStageEl(el, p);
+                    room.appendChild(el);
+                    placed++;
+                } else {
+                    tray.appendChild(stageFxEl(f, false));
+                }
+            });
+            document.getElementById('stageTray').hidden = placed === stage.fixtures.length;
+            const empty = document.getElementById('stageEmpty');
+            empty.hidden = placed > 0;
+            empty.textContent = stage.fixtures.length
+                ? 'Drag fixtures here from the list above.'
+                : 'No fixtures in the workspace.';
+            // Drop selections for fixtures that no longer exist.
+            const known = new Set(stage.fixtures.map(f => String(f.id)));
+            stage.selected.forEach(id => { if (!known.has(id)) stage.selected.delete(id); });
+            updateStageSelection();
+        }
+
+        function stageFxEl(f, placed) {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'stage-fx' + (placed ? ' placed' : '');
+            el.dataset.fid = String(f.id);
+            el.innerHTML = `<span class="stage-fx-dot off"></span><span class="stage-fx-name">${escHtml(f.name || ('Fixture ' + f.id))}</span>`;
+            el.addEventListener('pointerdown', stageFxPointerDown);
+            el.addEventListener('keydown', stageFxKey);
+            // Pointer taps are handled in pointerup; this catches Enter/Space.
+            el.addEventListener('click', e => { if (e.detail === 0) toggleStageSelect(el.dataset.fid); });
+            return el;
+        }
+
+        function placeStageEl(el, p) {
+            const W = stage.room.width, H = stage.room.height;
+            const x = Math.min(W, Math.max(0, p.x)), y = Math.min(H, Math.max(0, p.y));
+            el.style.left = (x / W * 100) + '%';
+            el.style.top = (y / H * 100) + '%';
+            // Near a side wall, hang the name inward so it never leaves the page.
+            el.classList.toggle('edge-l', x / W < 0.2);
+            el.classList.toggle('edge-r', x / W > 0.8);
+        }
+
+        function applyStageColors(list) {
+            const byId = new Map(list.map(f => [String(f.id), f]));
+            document.querySelectorAll('#stage-tab .stage-fx').forEach(el => {
+                const c = byId.get(el.dataset.fid);
+                const dot = el.querySelector('.stage-fx-dot');
+                const name = c ? (c.name || ('Fixture ' + c.id)) : '';
+                let rgb = c && c.rgb;
+                // No colour role (a fog machine, a hazer): show its level as grey.
+                if (c && !rgb && c.level) rgb = [c.level, c.level, c.level];
+                const lit = !!rgb && Math.max(...rgb) >= 10;
+                dot.classList.toggle('off', !lit);
+                dot.style.backgroundColor = lit ? `rgb(${rgb.join(',')})` : '';
+                dot.style.boxShadow = lit ? `0 0 16px rgba(${rgb.join(',')},0.55)` : '';
+                el.setAttribute('aria-label', `${name}, ${lit ? 'on' : 'off'}`);
+            });
+        }
+
+        function stagePointToRoom(cx, cy, clamp) {
+            const r = document.getElementById('stageRoom').getBoundingClientRect();
+            let fx = (cx - r.left) / r.width, fy = (cy - r.top) / r.height;
+            if (!clamp && (fx < 0 || fx > 1 || fy < 0 || fy > 1)) return null;
+            fx = Math.min(1, Math.max(0, fx));
+            fy = Math.min(1, Math.max(0, fy));
+            return { x: stageRound(fx * stage.room.width), y: stageRound(fy * stage.room.height) };
+        }
+
+        function stageFxPointerDown(e) {
+            if (e.button !== 0 || stageDrag) return;
+            const el = e.currentTarget;
+            e.preventDefault();
+            e.stopPropagation();
+            el.setPointerCapture(e.pointerId);
+            stageDrag = {
+                el, fid: el.dataset.fid, pointerId: e.pointerId,
+                x0: e.clientX, y0: e.clientY, moved: false,
+                fromTray: !el.classList.contains('placed'), ghost: null,
+            };
+            el.addEventListener('pointermove', stageFxPointerMove);
+            el.addEventListener('pointerup', stageFxPointerUp);
+            el.addEventListener('pointercancel', stageFxPointerCancel);
+        }
+
+        function stageFxPointerMove(e) {
+            const d = stageDrag;
+            if (!d || e.pointerId !== d.pointerId) return;
+            if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 6) return;
+            d.moved = true;
+            if (d.fromTray) {
+                if (!d.ghost) {
+                    d.ghost = d.el.cloneNode(true);
+                    d.ghost.classList.add('stage-ghost');
+                    document.body.appendChild(d.ghost);
+                }
+                d.ghost.style.left = e.clientX + 'px';
+                d.ghost.style.top = e.clientY + 'px';
+                document.getElementById('stageRoom').classList.toggle('drop-target', !!stagePointToRoom(e.clientX, e.clientY, false));
+            } else {
+                d.el.classList.add('dragging');
+                placeStageEl(d.el, stagePointToRoom(e.clientX, e.clientY, true));
+            }
+        }
+
+        function endStageDrag() {
+            const d = stageDrag;
+            if (!d) return;
+            d.el.removeEventListener('pointermove', stageFxPointerMove);
+            d.el.removeEventListener('pointerup', stageFxPointerUp);
+            d.el.removeEventListener('pointercancel', stageFxPointerCancel);
+            d.el.classList.remove('dragging');
+            if (d.ghost) d.ghost.remove();
+            document.getElementById('stageRoom').classList.remove('drop-target');
+            stageDrag = null;
+        }
+
+        function stageFxPointerUp(e) {
+            const d = stageDrag;
+            if (!d || e.pointerId !== d.pointerId) return;
+            endStageDrag();
+            if (!d.moved) {
+                toggleStageSelect(d.fid);
+                d.el.focus({ preventScroll: true });
+                return;
+            }
+            if (d.fromTray) {
+                const p = stagePointToRoom(e.clientX, e.clientY, false);
+                if (!p) return;
+                stage.positions[d.fid] = p;
+                renderStage();
+                applyStageColors(stage.fixtures);
+                refreshStageColors();
+            } else {
+                stage.positions[d.fid] = stagePointToRoom(e.clientX, e.clientY, true);
+            }
+            saveStageLayout();
+        }
+
+        function stageFxPointerCancel(e) {
+            const d = stageDrag;
+            if (!d || e.pointerId !== d.pointerId) return;
+            endStageDrag();
+            const p = stage.positions[d.fid];
+            if (!d.fromTray && p) placeStageEl(d.el, p);
+        }
+
+        // Arrow keys nudge a placed fixture (Shift for bigger steps).
+        function stageFxKey(e) {
+            const el = e.currentTarget;
+            const p = stage.positions[el.dataset.fid];
+            if (!p || !el.classList.contains('placed')) return;
+            const step = (e.shiftKey ? 1 : 0.25);
+            const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+            if (!d) return;
+            e.preventDefault();
+            p.x = stageRound(Math.min(stage.room.width, Math.max(0, p.x + d[0])));
+            p.y = stageRound(Math.min(stage.room.height, Math.max(0, p.y + d[1])));
+            placeStageEl(el, p);
+            saveStageLayout();
+        }
+
+        // Dragging across empty floor draws a box and selects what is inside;
+        // Shift (or Cmd/Ctrl) adds to the selection. A tap on the floor clears it.
+        function wireStageRoom() {
+            if (stageRoomWired) return;
+            stageRoomWired = true;
+            const room = document.getElementById('stageRoom');
+            const lasso = document.getElementById('stageLasso');
+            room.addEventListener('pointerdown', e => {
+                if (e.button !== 0 || e.target.closest('.stage-fx') || stageDrag) return;
+                e.preventDefault();
+                room.setPointerCapture(e.pointerId);
+                const r = room.getBoundingClientRect();
+                stageLasso = { pointerId: e.pointerId, x0: e.clientX - r.left, y0: e.clientY - r.top, moved: false,
+                               additive: e.shiftKey || e.metaKey || e.ctrlKey, rect: null };
+            });
+            room.addEventListener('pointermove', e => {
+                const l = stageLasso;
+                if (!l || e.pointerId !== l.pointerId) return;
+                const r = room.getBoundingClientRect();
+                const x = Math.min(r.width, Math.max(0, e.clientX - r.left));
+                const y = Math.min(r.height, Math.max(0, e.clientY - r.top));
+                if (!l.moved && Math.hypot(x - l.x0, y - l.y0) < 6) return;
+                l.moved = true;
+                l.rect = { left: Math.min(l.x0, x), top: Math.min(l.y0, y), right: Math.max(l.x0, x), bottom: Math.max(l.y0, y) };
+                Object.assign(lasso.style, {
+                    left: l.rect.left + 'px', top: l.rect.top + 'px',
+                    width: (l.rect.right - l.rect.left) + 'px', height: (l.rect.bottom - l.rect.top) + 'px',
+                });
+                lasso.hidden = false;
+            });
+            const finish = e => {
+                const l = stageLasso;
+                if (!l || e.pointerId !== l.pointerId) return;
+                stageLasso = null;
+                lasso.hidden = true;
+                if (!l.additive) stage.selected.clear();
+                if (l.moved && l.rect && e.type === 'pointerup') {
+                    const r = room.getBoundingClientRect();
+                    Object.entries(stage.positions).forEach(([fid, p]) => {
+                        const px = p.x / stage.room.width * r.width, py = p.y / stage.room.height * r.height;
+                        if (px >= l.rect.left && px <= l.rect.right && py >= l.rect.top && py <= l.rect.bottom
+                            && stage.fixtures.some(f => String(f.id) === fid)) {
+                            stage.selected.add(fid);
+                        }
+                    });
+                }
+                updateStageSelection();
+            };
+            room.addEventListener('pointerup', finish);
+            room.addEventListener('pointercancel', finish);
+        }
+
+        function toggleStageSelect(fid) {
+            fid = String(fid);
+            if (stage.selected.has(fid)) stage.selected.delete(fid); else stage.selected.add(fid);
+            updateStageSelection();
+        }
+
+        function clearStageSelection() {
+            stage.selected.clear();
+            updateStageSelection();
+        }
+
+        function updateStageSelection() {
+            document.querySelectorAll('#stage-tab .stage-fx').forEach(el => {
+                const on = stage.selected.has(el.dataset.fid);
+                el.classList.toggle('selected', on);
+                el.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            const n = stage.selected.size;
+            const names = stage.fixtures.filter(f => stage.selected.has(String(f.id))).map(f => f.name);
+            document.getElementById('stageSelCount').textContent = n === 0
+                ? 'Tap fixtures to select them, or drag across the floor.'
+                : (n <= 3 ? names.join(', ') : `${n} fixtures selected`);
+            const anyPlaced = [...stage.selected].some(id => stage.positions[id]);
+            document.getElementById('stageIdentifyBtn').disabled = n === 0;
+            document.getElementById('stageClearBtn').disabled = n === 0;
+            document.getElementById('stageGroupBtn').disabled = n === 0;
+            document.getElementById('stageRemoveBtn').disabled = !anyPlaced;
+        }
+
+        function renderStageGroupChips() {
+            const box = document.getElementById('stageGroupChips');
+            const groups = (allGroupsData || []).filter(g => (g.fixtures || []).length);
+            if (!groups.length) { box.innerHTML = ''; return; }
+            box.innerHTML = '<span class="stage-chips-label">Select a group</span>' + groups.map((g, i) =>
+                `<button type="button" class="stage-chip" onclick="selectStageGroup(${i})">${escHtml(g.name)}</button>`
+            ).join('');
+            box.dataset.groups = JSON.stringify(groups.map(g => (g.fixtures || []).map(String)));
+        }
+
+        function selectStageGroup(i) {
+            const all = JSON.parse(document.getElementById('stageGroupChips').dataset.groups || '[]');
+            stage.selected = new Set(all[i] || []);
+            updateStageSelection();
+        }
+
+        function setStageRoom() {
+            stage.room = {
+                width: stagePosNum(document.getElementById('stageRoomW').value, stage.room.width),
+                height: stagePosNum(document.getElementById('stageRoomH').value, stage.room.height),
+            };
+            document.getElementById('stageRoomW').value = stage.room.width;
+            document.getElementById('stageRoomH').value = stage.room.height;
+            renderStage();
+            applyStageColors(stage.fixtures);
+            saveStageLayout();
+        }
+
+        function saveStageLayout() {
+            clearTimeout(stageSaveTimer);
+            stageSaveTimer = setTimeout(async () => {
+                const status = document.getElementById('stageStatus');
+                try {
+                    const r = await fetch('/api/stage_layout', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ room: stage.room, positions: stage.positions }),
+                    });
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    if (status.dataset.kind === 'save-error') { status.textContent = ''; delete status.dataset.kind; }
+                } catch (e) {
+                    status.textContent = 'Could not save the plan. Your last change may be lost on reload.';
+                    status.dataset.kind = 'save-error';
+                }
+            }, 400);
+        }
+
+        function removeStageSelection() {
+            stage.selected.forEach(id => { delete stage.positions[id]; });
+            renderStage();
+            applyStageColors(stage.fixtures);
+            refreshStageColors();
+            saveStageLayout();
+        }
+
+        async function identifyStageSelection(btn) {
+            const ids = [...stage.selected];
+            if (!ids.length) return;
+            btn.disabled = true;
+            btn.textContent = 'Flashing…';
+            await Promise.all(ids.map(id => fetch(`/api/fixtures/${encodeURIComponent(id)}/identify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ duration: 2, pulses: 4 }),
+            }).catch(() => null)));
+            setTimeout(() => { btn.textContent = 'Identify'; updateStageSelection(); }, 2200);
+        }
+
+        async function makeStageGroup() {
+            const input = document.getElementById('stageGroupName');
+            const status = document.getElementById('stageStatus');
+            const name = input.value.trim();
+            const ids = [...stage.selected].map(Number);
+            if (!ids.length) return;
+            if (!name) { input.focus(); status.textContent = 'Give the group a name first.'; return; }
+            try {
+                const r = await fetch('/api/groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, fixtures: ids }),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok || !data.success) {
+                    status.textContent = data.error || `Could not create the group (HTTP ${r.status}).`;
+                    return;
+                }
+                input.value = '';
+                status.textContent = `Made group “${name}” with ${ids.length} fixture${ids.length === 1 ? '' : 's'}.`;
+                await loadGroups();
+                renderStageGroupChips();
+            } catch (e) {
+                status.textContent = 'Could not create the group. Check the connection and try again.';
             }
         }
 

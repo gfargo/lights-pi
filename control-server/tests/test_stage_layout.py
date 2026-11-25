@@ -100,3 +100,60 @@ class TestStageLayoutRoutes:
         resp = client.post("/api/stage_layout", json={})
         assert resp.status_code == 200
         assert resp.get_json() == {"success": True, "room": {}, "positions": {}}
+
+
+class TestLiveFixtureColors:
+    """_live_fixture_colors: live DMX values → one display colour per fixture."""
+
+    RGB_INFO = [
+        {"offset": 0, "role": "dimmer"},
+        {"offset": 1, "role": "red"},
+        {"offset": 2, "role": "green"},
+        {"offset": 3, "role": "blue"},
+    ]
+
+    def _info(self, fixture):
+        return fixture["_info"]
+
+    def test_rgb_fixture_at_address(self):
+        fx = [{"id": 0, "name": "Par", "universe": 0, "address": 7, "_info": self.RGB_INFO}]
+        values = {"8": 255, "9": 255, "10": 0, "11": 0}
+        out = app._live_fixture_colors(fx, values, self._info)
+        assert out == [{"id": 0, "name": "Par", "rgb": [255, 0, 0], "level": 255}]
+
+    def test_dimmer_scales_colour(self):
+        fx = [{"id": 1, "name": "Par", "universe": 0, "address": 0, "_info": self.RGB_INFO}]
+        out = app._live_fixture_colors(fx, {1: 0, 2: 255, 3: 255, 4: 255}, self._info)
+        assert out[0]["rgb"] == [0, 0, 0]
+        assert out[0]["level"] == 255
+
+    def test_missing_values_read_as_zero(self):
+        fx = [{"id": 2, "name": "Par", "universe": 0, "address": 0, "_info": self.RGB_INFO}]
+        out = app._live_fixture_colors(fx, {}, self._info)
+        assert out[0]["rgb"] == [0, 0, 0]
+        assert out[0]["level"] == 0
+
+    def test_no_colour_roles_gives_none(self):
+        info = [{"offset": 0, "role": None}, {"offset": 1, "role": "strobe"}]
+        fx = [{"id": 3, "name": "Fog", "universe": 0, "address": 0, "_info": info}]
+        out = app._live_fixture_colors(fx, {"1": 200}, self._info)
+        assert out[0]["rgb"] is None
+        assert out[0]["level"] == 200
+
+    def test_second_universe_offsets_by_512(self):
+        info = [{"offset": 0, "role": "dimmer"}]
+        fx = [{"id": 4, "name": "Dim", "universe": 1, "address": 0, "_info": info}]
+        out = app._live_fixture_colors(fx, {"513": 128, "1": 255}, self._info)
+        assert out[0]["level"] == 128
+
+
+class TestStageColorsRoute:
+    def test_returns_colour_per_fixture(self, monkeypatch):
+        fixtures = [{"id": 0, "name": "Par", "universe": 0, "address": 0, "channels": 4,
+                     "manufacturer": "", "model": "", "mode": ""}]
+        monkeypatch.setattr(app, "get_workspace_fixtures", lambda: fixtures)
+        monkeypatch.setattr(app, "get_current_channel_values", lambda *a, **k: {1: 255, 2: 0, 3: 255, 4: 0})
+        monkeypatch.setattr(app, "_fixture_channels_info", lambda f: TestLiveFixtureColors.RGB_INFO)
+        r = app.app.test_client().get("/api/stage/colors")
+        assert r.status_code == 200
+        assert r.get_json()["fixtures"][0]["rgb"] == [0, 255, 0]
