@@ -193,6 +193,12 @@ Env vars (set in `/home/<user>/mcp-server/.env`, loaded by the systemd unit):
 }
 ```
 
+### Agent skill
+
+Pair the endpoint with the [`lights-pi` Agent Skill](../skills/lights-pi/SKILL.md) so the
+agent knows how to use these tools (discover first, blackout as the safe stop, lighting
+craft). Install steps: [skills/README.md](../skills/README.md).
+
 ### MCP Inspector
 
 ```bash
