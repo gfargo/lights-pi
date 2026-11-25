@@ -2,7 +2,7 @@
 
 > Headless Raspberry Pi lighting controller for studio environments. Control
 > DMX fixtures from any device on your network via QLC+'s web interface, the
-> custom Virtual Console at port `5000`, natural-language voice/chat commands
+> phone-first control UI at port `5000`, natural-language voice/chat commands
 > powered by OpenAI / Anthropic / Ollama, **or any MCP-compatible LLM agent
 > over the Streamable HTTP MCP server at port `5001`**.
 
@@ -141,9 +141,9 @@ WIFI2_SSID="StudioNet" WIFI2_PSK="studio-pass" \
 
 | Software | Purpose |
 | -------- | ------- |
-| Raspberry Pi OS (Bookworm) | Lightweight OS |
+| Raspberry Pi OS Lite (Bookworm or Trixie; the reference Pi runs Trixie with Python 3.13) | Lightweight OS |
 | QLC+ 4.14.x | Lighting control engine + DMX output |
-| `lighting-control` (Flask + Flask-SocketIO) | Custom control server (port 5000): AI chat, live UI, group/fixture API, `.qxf`-derived channel labels |
+| `lighting-control` (Flask + Flask-SocketIO, run by gunicorn with one eventlet worker) | Custom control server (port 5000): AI chat, live UI, group/fixture API, `.qxf`-derived channel labels |
 | `lighting-mcp` (FastMCP + httpx) | MCP server (port 5001): Streamable HTTP endpoint exposing lights as tools/resources to LLM agents — see [MCP_SERVER.md](docs/MCP_SERVER.md) |
 | `websockets` (Python) | Single persistent QLC+ WebSocket on a dedicated asyncio loop — see [CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md) |
 | Avahi | mDNS (`lights.local`) |
@@ -558,6 +558,14 @@ cp .env.example .env
 | `AI_SCENE_VARIATIONS`   | `1`                      | Default number of variations         |
 | `LIGHTS_PASSWORD`       | _(none)_                 | Shared login password. Unset = open mode (no auth) |
 | `FLASK_SECRET_KEY`      | _(random per restart)_   | Session-signing key — set this alongside `LIGHTS_PASSWORD` so restarts don't log everyone out |
+| `BRAND_NAME`            | `Lights Pi`              | Install name in the header, tab title and installed app (Pi `.env`) |
+| `BRAND_SHORT_NAME`      | _(derived)_              | Home-screen label, 12 characters max (Pi `.env`) |
+| `BRAND_ACCENT`          | `#ff6a1f`                | Action colour as a hex value (Pi `.env`) |
+
+The control server reads its own settings (`AI_*`, `LIGHTS_PASSWORD`,
+`BRAND_*`, `MOCK_DMX`, `OSC_*`, `CHAT_DB_PATH`, ...) from
+`~/control-server/.env` on the Pi. See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)
+for branding.
 
 > **Note:** Use `PI_HOSTNAME`, not `HOSTNAME` — the latter is a macOS shell builtin that will silently override your value.
 
@@ -704,26 +712,30 @@ Backups include `.config/qlcplus` and `.qlcplus` directories from the Pi.
 
 ## 🎨 Customization & Branding
 
-Both the landing page and control server support custom logos and branding
-without modifying tracked source files. See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)
+Each install can carry its own name, accent colour, logo and extra CSS
+without editing tracked files. See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)
 for the full guide.
 
-### Custom Logo (Quick Start)
+### Name, colour and logo
 
-Drop a logo file into the standard locations:
+Set these in `~/control-server/.env` on the Pi, then restart the control
+server (`./lightsctl.sh control-restart`):
 
 ```bash
-# Control server (port 5000)
-cp your-logo.webp control-server/static/logo.webp
-
-# Landing page (port 80)
-cp your-logo.webp landing/logo.webp
+BRAND_NAME="Your Studio"
+BRAND_SHORT_NAME="Studio"
+BRAND_ACCENT="#ff6a1f"
 ```
 
-Supported formats: `.webp`, `.png`, `.svg`, `.jpg` (checked in that priority order).
+Logos and `theme.css` go straight onto the Pi; `deploy.sh` never overwrites or
+removes them:
 
-Logo files are **gitignored** — each deployment maintains its own branding.
-If no logo is present, both interfaces show the default light-bulb SVG icon.
+```bash
+scp your-logo.webp <pi-user>@<pi-host>:~/control-server/static/logo.webp
+```
+
+Supported logo formats: `.webp`, `.png`, `.svg`, `.jpg` (checked in that
+order). Without a logo the UI shows the default swatch mark.
 
 ### Landing Page Text
 
@@ -788,10 +800,18 @@ lights-pi/
 ├── .env                      # Local configuration (gitignored)
 ├── control-server/           # Flask control server (deployed to Pi at port 5000)
 │   ├── app.py                # Routes, persistent QLC+ WebSocket, AI dispatch
+│   ├── chat_store.py         # SQLite chat history
+│   ├── event_bus.py          # SSE event stream
+│   ├── audio_engine.py       # Audio-reactive / BPM engine
+│   ├── midi_engine.py        # MIDI input
+│   ├── osc_backend.py        # OSC input and feedback
 │   ├── fixture_definitions.py # .qxf parser → authoritative channel roles
-│   ├── static/               # Custom branding assets (gitignored logo.*)
-│   ├── templates/index.html  # Live control UI (AI chat, virtual console, groups)
+│   ├── gunicorn.conf.py      # gunicorn + eventlet worker config
+│   ├── static/               # Per-install overrides (logo.*, theme.css; kept across deploys)
+│   ├── templates/index.html  # Single-file control UI (HTML + CSS + JS)
+│   ├── tests/                # pytest suite
 │   └── requirements.txt      # Python dependencies
+├── mcp-server/               # FastMCP server (port 5001), calls the control server
 ├── scripts/
 │   ├── lib/                  # Utility libraries (sourced by lightsctl.sh)
 │   │   ├── ai_scene.sh       # AI scene-generation prompts and API calls
@@ -809,13 +829,13 @@ lights-pi/
 │   ├── provisioning/         # One-time setup scripts (run on Pi)
 │   │   ├── setup.sh          # Base installation
 │   │   └── harden.sh         # Security hardening
-│   ├── services/             # Service deployment scripts
-│   │   ├── control_server.sh # Control server installer
-│   │   ├── landing.sh        # Landing page setup
-│   │   └── wifi-watchdog.sh  # WiFi auto-recovery watchdog
+│   ├── services/             # systemd service installers (control, MCP, landing,
+│   │                         #   Wi-Fi watchdog, Tailscale HTTPS, backups, ...)
 │   └── debug/                # One-off diagnostic scripts
 ├── landing/                  # Landing page HTML (deployed to nginx)
 ├── scenes/examples/          # Reference AI-generated scene XML
+├── workspaces/               # Versioned .qxw workspaces
+├── studio.qxw                # Default studio workspace
 ├── docs/                     # Architecture and feature documentation
 ├── backups/                  # QLC+ configuration backups (gitignored)
 └── certs/                    # TLS certificates (gitignored)
@@ -1110,28 +1130,10 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="6001", MODE="0666", 
 
 ---
 
-## 🚀 Future Enhancements
+## 🚀 Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the complete product roadmap.
-
-**Completed:**
-- ✅ Auto-load default workspace
-- ✅ AI scene generation with complete/modular styles
-- ✅ Natural language control server (port 5000)
-- ✅ Fixture groups/zones with per-group scene targeting
-- ✅ `.qxf`-aware fixture channel parsing (no more guessing RGB vs warm/cool)
-- ✅ Persistent WebSocket architecture (no CLOSE_WAIT leaks)
-- ✅ WiFi watchdog for auto-recovery
-- ✅ Custom branding/logo support (control server + landing page)
-- ✅ Tailscale remote access documentation
-- ✅ QLC+ workspace v4/v5 compatibility tooling
-
-**Planned:**
-- Multi-device fleet management
-- Studio ecosystem integration (camera, video, audio)
-- Advanced AI features (scene evolution, video analysis)
-- Professional show management tools
-- Plugin system and API access
+The live backlog is in [GitHub issues](https://github.com/gfargo/lights-pi/issues);
+[docs/ROADMAP.md](docs/ROADMAP.md) summarises what has shipped and what is open.
 
 For detailed information on AI scene generation, see [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md).
 For the control server architecture, see [docs/CONTROL_SERVER_ARCHITECTURE.md](docs/CONTROL_SERVER_ARCHITECTURE.md).
@@ -1212,38 +1214,32 @@ See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete docu
 
 ## 🆕 Recent Releases
 
-The web UI and platform layer have evolved quickly since the original v1.x roadmap.
-Below is a quick orientation to the most recent ground covered — see the
-[full release notes on GitHub](https://github.com/gfargo/lights-pi/releases)
-for everything else.
+The [GitHub releases page](https://github.com/gfargo/lights-pi/releases) is
+the source of truth. Recent highlights:
 
-**v2.13.2 — Tab URL persistence.** Active tab now syncs to a `?tab=<name>`
-query param via `history.replaceState`, so tab links are bookmarkable and the
-back button stays clean.
+**v2.17.0 — Branded, thumb-first control UI.** `BRAND_NAME`,
+`BRAND_SHORT_NAME` and `BRAND_ACCENT` name and colour each install; an
+optional `static/theme.css` loads after the built-in styles and survives
+deploys. Phones get a one-line header, a bottom tab bar (Scenes, Console,
+Chat, Chases, More) and a full-width Blackout bar. Tabs were renamed: Quick
+Commands is now Scenes, Virtual Console is Console, Quick Tools is Tools.
 
-**v2.13.1 — Boot init + diagnostics fix.** Restores `loadScenes()`,
-`checkStatus()`, and the 15-second status poll on page load (regression from
-v2.13.0). Pi-health now distinguishes `not_installed` from `inactive` via a
-new `_systemd_unit_state` helper that inspects `LoadState` before `ActiveState`.
+**v2.16.2 — QLC+ link can no longer freeze.** Fixes a wedge where every
+scene change timed out under the eventlet worker; adds a self-healing
+watchdog and link-health fields on `/healthz`.
 
-**v2.13.0 — Visual identity pass.** Geist Sans + Mono via Google Fonts; a
-`:root` CSS token system (`--ink`, `--paper`, `--rule`, `--amber-tungsten`,
-`--signal-*`); amber-tungsten replaces white for active/selected states; a
-filament dot in the header; animated tab indicator; eyebrow labels on tool
-panels; redesigned BLACKOUT button with theatrical hover; hairlines instead
-of literal greys.
+**v2.16.0 — Multi-workspace switching, HTTPS over Tailscale.** Switch
+between per-production workspaces; `lightsctl.sh tailscale-https install`
+serves trusted HTTPS on `:5443`/`:9443`. The control server moved to
+gunicorn + eventlet, CI added Python 3.13, and `deploy.sh` waits for
+`/healthz`.
 
-**v2.12.0 — Mobile audit, installable PWA, tests + CI.**
-- **Mobile redesign:** 44 px touch targets, 16 px form inputs (prevents iOS
-  zoom), safe-area insets, horizontal-scroll tabs, full-screen modals on
-  phones.
-- **Installable PWA:** `/manifest.json`, `/icon.svg`, `/sw.js` service worker,
-  Apple-touch meta tags. iOS and Android "Add to Home Screen" gives a
-  chromeless app shell.
-- **Test suite + CI:** ~195 pytest tests cover the pure helpers under
-  `control-server/tests/`. `.github/workflows/test.yml` runs pytest on
-  Python 3.11 + 3.12, `node --check` on inline JS, and an HTML tag-balance
-  check on the single-page template.
+**v2.15.0 — MIDI and OSC backends.** MIDI and OSC listeners, cue-list
+preview/waveform and stage-layout persistence (backend only; the matching
+UI is still open).
+
+**v2.14.x — Events, chat history, auth.** SSE event stream, server-side chat
+history, and an optional shared password (`LIGHTS_PASSWORD`).
 
 ---
 
@@ -1259,8 +1255,9 @@ operations autonomously:
 
 Implementation lives server-side in `POST /api/chat` — runs an Anthropic
 `tool_use` or OpenAI function-calling loop, dispatches tools via the same
-endpoints the MCP server uses. Stateless; the client owns the conversation
-history (persisted in localStorage).
+endpoints the MCP server uses. Conversations are stored server-side in
+SQLite (`~/.qlcplus/chat_history.db`), so they survive reloads and show up
+across devices.
 
 Set `AI_PROVIDER=anthropic` or `openai` in `.env` plus your `AI_API_KEY`.
 Ollama tool-calling isn't supported yet — it varies too much by model.
@@ -1335,6 +1332,8 @@ LLM agent ──MCP/HTTP──▶  lighting-mcp.service ──HTTP──▶  lig
 - *Cue lists (audio-synced shows):* `list_cue_lists`, `describe_cue_list`,
   `get_active_cue_lists`, `create_cue_list`, `update_cue_list`,
   `delete_cue_list`, `go_cue_list`, `stop_cue_list`
+- *Workspaces:* `list_workspaces`, `get_current_workspace`, `load_workspace`,
+  `create_workspace`, `delete_workspace`
 - *Diagnostics:* `test_dmx`, `get_logs`, `get_system_info`
 - *Resource:* `lights://workspace` — one-shot snapshot of fixtures, groups,
   scenes, templates, and status for LLM context
@@ -1410,7 +1409,8 @@ Groups are bidirectionally synced with QLC+ workspace, making them visible in QL
 
 The control server ships a pytest suite for its pure-function helpers (time
 parsing, CCT-to-RGB, palette / cue / strobe normalization, run-order
-parsing). About 180 tests, runs in under a second.
+parsing), plus integration tests and an eventlet stress test. About 800
+tests.
 
 ```bash
 cd control-server
@@ -1419,8 +1419,9 @@ pytest -v
 ```
 
 CI runs the same suite on every PR via `.github/workflows/test.yml` —
-matrix on Python 3.11 + 3.12, plus `ast.parse` on both servers, `node --check`
-on the inline JS, and HTML tag-balance verification on the Flask template.
+ruff plus pytest on Python 3.11, 3.12 and 3.13 (the Pi runs 3.13), a syntax
+check on both servers, `node --check` on the inline JS, a backup/restore
+smoke test, and HTML tag-balance verification on the Flask template.
 
 ---
 

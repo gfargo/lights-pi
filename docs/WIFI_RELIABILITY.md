@@ -95,7 +95,7 @@ $ ./lightsctl.sh wifi-test
 
 wlan0 interface up:                ✓
 IPv4 address assigned:             ✓ 192.168.1.7
-Connected to SSID:                 ✓ Turbo
+Connected to SSID:                 ✓ <your-ssid>
 Signal strength:                   ✓ 70% (good)
 Default gateway reachable:         ✓ 192.168.1.1
 DNS resolution:                    ✓

@@ -86,6 +86,13 @@ LLM Client  ──HTTP/MCP──▶  lighting-mcp.service  ──HTTP/REST──
 - `get_logs(service, n?)` — last N lines of a service's systemd journal (allowlisted: qlcplus-web, lighting-control, lighting-mcp, nginx)
 - `get_system_info()` — Pi-level health: CPU temp, load, memory, disk, uptime, USB, service status
 
+**Workspaces:**
+- `list_workspaces()` — workspace files on the Pi, active one flagged
+- `get_current_workspace()` — name and path of the active workspace
+- `load_workspace(name)` — switch the active workspace
+- `create_workspace(name, ...)` — new workspace, empty or copied from another
+- `delete_workspace(name)` — delete a workspace (refuses the active one)
+
 **Resources:**
 - `lights://workspace` — one-shot dump of fixtures + groups + scenes + templates + status
 

@@ -173,8 +173,8 @@ A probe script is available at `scripts/debug/probe_qlc_ws.py`. Copy it to the
 Pi and run it to inspect raw WS responses:
 
 ```bash
-scp scripts/debug/probe_qlc_ws.py riversway@lights.local:/tmp/
-ssh riversway@lights.local "python3 /tmp/probe_qlc_ws.py"
+scp scripts/debug/probe_qlc_ws.py <pi-user>@lights.local:/tmp/
+ssh <pi-user>@lights.local "python3 /tmp/probe_qlc_ws.py"
 ```
 
 ---
@@ -204,8 +204,8 @@ curl -s http://lights.local:9999/simpleDesk | head -20
 A diagnostic/fix script is available:
 
 ```bash
-scp scripts/debug/fix_qlc_workspace_autoload.sh riversway@lights.local:/tmp/
-ssh riversway@lights.local "bash /tmp/fix_qlc_workspace_autoload.sh"
+scp scripts/debug/fix_qlc_workspace_autoload.sh <pi-user>@lights.local:/tmp/
+ssh <pi-user>@lights.local "bash /tmp/fix_qlc_workspace_autoload.sh"
 ```
 
 ### The `--open` flag

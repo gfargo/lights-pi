@@ -143,6 +143,19 @@ in the workspace XML, played back via QLC+'s native chase engine.
 | `start_chase`     | Begin playback (loops forever unless run_order is SingleShot) |
 | `stop_chase`      | Halt playback; fixtures hold their current state              |
 
+### Workspaces
+
+Each workspace is a separate `.qxw` with its own fixtures, scenes, groups and
+last-look snapshot (v2.16.0).
+
+| Tool                    | Effect                                                  |
+|-------------------------|---------------------------------------------------------|
+| `list_workspaces`       | List workspace files on the Pi, active one flagged      |
+| `get_current_workspace` | Name and path of the active workspace                   |
+| `load_workspace`        | Switch the active workspace                             |
+| `create_workspace`      | New workspace, empty or copied from an existing one     |
+| `delete_workspace`      | Delete a workspace (refuses the active one)             |
+
 ### Resources
 
 | URI                  | Payload                                                      |
@@ -162,7 +175,8 @@ Env vars (set in `/home/<user>/mcp-server/.env`, loaded by the systemd unit):
 | `MCP_HOST`         | *(empty)*               | Bind address; empty = all interfaces, IPv4+IPv6 |
 | `MCP_PORT`         | `5001`                  | Listen port                                   |
 | `MCP_PATH`         | `/mcp`                  | Streamable HTTP mount path                    |
-| `MCP_BEARER_TOKEN` | _(unset)_               | Reserved for auth — scaffolded, not enforced  |
+| `LIGHTS_PASSWORD`  | _(unset)_               | When set, `/mcp` requires `Authorization: Bearer <LIGHTS_PASSWORD>` |
+| `MCP_BEARER_TOKEN` | _(unset)_               | Fallback token for older installs without `LIGHTS_PASSWORD` |
 | `MCP_HTTP_TIMEOUT` | `30`                    | Seconds for upstream Flask calls              |
 
 ## Client Wiring

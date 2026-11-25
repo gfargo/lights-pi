@@ -80,6 +80,27 @@ or MagicDNS hostname:
 
 ---
 
+## Trusted HTTPS over Tailscale
+
+```bash
+./lightsctl.sh tailscale-https install   # or: status | remove
+```
+
+This uses `tailscale serve` and a Tailscale certificate for the Pi's
+`ts.net` name:
+
+| URL | Service |
+|---|---|
+| `https://<pi-name>.<tailnet>.ts.net` | Landing page (nginx, `:443`) |
+| `https://<pi-name>.<tailnet>.ts.net:5443` | Control server |
+| `https://<pi-name>.<tailnet>.ts.net:9443` | QLC+ web UI |
+
+The plain `:5000` and `:9999` ports keep working, and `https://lights.local`
+keeps its mkcert certificate. A weekly systemd timer renews the certificate.
+HTTPS is what lets phones install the PWA and
+use the microphone when you are off the LAN. MagicDNS and HTTPS certificates
+must be enabled for the tailnet in the Tailscale admin console.
+
 ## Firewall Considerations
 
 Tailscale traffic uses the `tailscale0` virtual interface and bypasses `ufw`
@@ -97,9 +118,9 @@ If you want to restrict which tailnet devices can access specific ports, use
 You can also SSH to the Pi from anywhere on your tailnet:
 
 ```bash
-ssh riversway@100.x.x.x
+ssh <pi-user>@100.x.x.x
 # or with MagicDNS:
-ssh riversway@lights.<tailnet>.ts.net
+ssh <pi-user>@lights.<tailnet>.ts.net
 ```
 
 This is useful when your Pi isn't on the same local network (e.g., it's at the

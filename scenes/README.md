@@ -31,7 +31,7 @@ cat scenes/examples/warm-sunset-complete.xml
 
 # Then manually inject or use workspace tools
 source scripts/lib/workspace.sh
-workspace_inject_scene RiversWayStudio.qxw scenes/my-scene.xml RiversWayStudio-modified.qxw
+workspace_inject_scene studio.qxw scenes/my-scene.xml studio-modified.qxw
 ```
 
 ### Generate New Scenes
@@ -88,7 +88,7 @@ Various AI-generated test scenes demonstrating different styles and colors.
 ### Method 2: Extract from Workspace
 ```bash
 source scripts/lib/workspace.sh
-workspace_extract_scene RiversWayStudio.qxw 0 > scenes/extracted.xml
+workspace_extract_scene studio.qxw 0 > scenes/extracted.xml
 ```
 
 ### Method 3: Manual Creation
@@ -124,5 +124,3 @@ Scenes that respond to audio or sensor inputs.
 
 For more information, see:
 - [AI Scene Generation](../docs/AI_SCENE_GENERATION.md)
-- [Quick Start Guide](../docs/AI_SCENE_QUICK_START.md)
-- [Implementation Status](../docs/AI_IMPLEMENTATION_STATUS.md)
