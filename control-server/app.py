@@ -61,10 +61,13 @@ from audio_engine import _engine as _audio_engine
 from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
 from osc_backend import (
+    FEEDBACK_MODES,
     OscConfig,
+    OscFeedbackClient,
+    OscMonitor,
     OscStateEmitter,
-    build_udp_client,
     drain_event_bus,
+    osc_slug,
     start_listener,
 )
 
@@ -10025,12 +10028,33 @@ def handle_chat():
 # module the tests can import without touching app.py's startup side effects.
 # ----------------------------------------------------------------------------
 
+def _resolve_osc_ref(ref, items):
+    """Match an OSC address segment to a scene/chase ref: ID, name or slug.
+
+    *items* is a list of {"id", "name"} dicts. Returns the ID to hand to the
+    existing lookup helpers, or *ref* unchanged when nothing matches (so the
+    helper reports "not found" in its usual way).
+    """
+    ref = str(ref)
+    for item in items:
+        if str(item.get("id")) == ref or (item.get("name") or "").lower() == ref.lower():
+            return item.get("id")
+    slug = osc_slug(ref)
+    for item in items:
+        if slug and osc_slug(item.get("name")) == slug:
+            return item.get("id")
+    return ref
+
+
 class _OscActions:
     def activate_scene(self, name):
-        apply_existing_scene_live(name)
+        apply_existing_scene_live(_resolve_osc_ref(name, get_workspace_scenes()))
 
     def start_chase(self, name):
-        _start_chase_by_ref(name)
+        _start_chase_by_ref(_resolve_osc_ref(name, get_workspace_chases()))
+
+    def stop_chase(self, name):
+        _stop_chase_by_ref(_resolve_osc_ref(name, get_workspace_chases()))
 
     def set_channel(self, fixture_id, channel, value):
         fixtures = {str(f["id"]): f for f in get_workspace_fixtures()}
@@ -10073,6 +10097,167 @@ class _OscActions:
         return None
 
 
+# OSC runtime state, shared by init_runtime() and the /api/osc routes.
+OSC_SETTINGS_FILE = Path.home() / ".qlcplus" / "osc.json"
+_osc_config = OscConfig.from_env()
+_osc_monitor = OscMonitor()
+_osc_feedback = None    # OscFeedbackClient once the backend starts
+_osc_server = None      # the bound UDP server, or None
+
+
+def _make_osc_udp_client(host, port):
+    from pythonosc.udp_client import SimpleUDPClient
+    return SimpleUDPClient(host, port)
+
+
+def _osc_available() -> bool:
+    try:
+        import pythonosc  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _validate_osc_settings(data, default_port=9000):
+    """Check a feedback settings body. Returns (settings, error)."""
+    mode = (data.get("mode") or "").strip()
+    if mode not in FEEDBACK_MODES:
+        return None, f"mode must be one of: {', '.join(FEEDBACK_MODES)}"
+    host = (data.get("host") or "").strip()
+    try:
+        port = int(data.get("port", default_port))
+    except (TypeError, ValueError):
+        return None, "port must be a number"
+    if not 1 <= port <= 65535:
+        return None, "port must be between 1 and 65535"
+    if mode == "fixed":
+        if not host:
+            return None, "a fixed address needs a host"
+        if not re.fullmatch(r"[A-Za-z0-9.\-:]{1,253}", host):
+            return None, "host must be an IP address or hostname"
+    return {"mode": mode, "host": host, "port": port}, None
+
+
+def _load_osc_settings(config: OscConfig) -> dict:
+    """Saved feedback settings, else defaults from the environment.
+
+    Without a saved file, feedback replies to the sender on OSC_OUT_PORT,
+    unless OSC_OUT_HOST is set, in which case it goes there.
+    """
+    default = {
+        "mode": "fixed" if config.out_host_set else "sender",
+        "host": config.out_host if config.out_host_set else "",
+        "port": config.out_port,
+    }
+    try:
+        saved = json.loads(OSC_SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return default
+    settings, err = _validate_osc_settings(saved if isinstance(saved, dict) else {}, config.out_port)
+    return settings if settings else default
+
+
+def _osc_on_message(source, address, args, result):
+    if _osc_feedback is not None:
+        _osc_feedback.note_sender(source)
+    _osc_monitor.note_received(source, address, args, result)
+
+
+def _osc_status() -> dict:
+    settings = _load_osc_settings(_osc_config)
+    fb = _osc_feedback
+    return {
+        "available": _osc_available(),
+        "enabled": _osc_config.enabled,
+        "listening": _osc_server is not None,
+        "listen_port": _osc_config.listen_port,
+        "addresses": _local_ipv4_addresses(),
+        "feedback": {
+            **settings,
+            "last_sender": fb.last_sender if fb else None,
+            "destination": (":".join(map(str, fb.destination())) if fb and fb.destination() else None),
+        },
+        "received": _osc_monitor.received,
+        "sent": _osc_monitor.sent,
+        "last_sent_to": _osc_monitor.last_sent_to,
+        "recent": _osc_monitor.recent(),
+    }
+
+
+def _local_ipv4_addresses() -> list:
+    """Non-loopback IPv4 addresses of this machine, best effort."""
+    addrs = []
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=2).stdout
+        addrs = [a for a in out.split() if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", a)]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not addrs:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("192.0.2.1", 9))  # TEST-NET; nothing is sent
+                addrs = [s.getsockname()[0]]
+        except OSError:
+            pass
+    return [a for a in addrs if not a.startswith("127.")]
+
+
+def _osc_address_book() -> dict:
+    """The addresses a layout can use for this workspace's scenes and chases."""
+    def entries(items, kind):
+        return [{"id": i["id"], "name": i["name"],
+                 "address": f"/{kind}/{i['id']}",
+                 "alias": f"/{kind}/{osc_slug(i['name'])}" if osc_slug(i["name"]) else None}
+                for i in items]
+    return {"scenes": entries(get_workspace_scenes(), "scene"),
+            "chases": entries(get_workspace_chases(), "chase")}
+
+
+@app.route("/api/osc", methods=["GET"])
+def osc_status():
+    """OSC listener state, feedback settings and recent inbound messages."""
+    return jsonify(_osc_status())
+
+
+@app.route("/api/osc/addresses", methods=["GET"])
+def osc_addresses():
+    """OSC addresses for this workspace's scenes and chases."""
+    try:
+        return jsonify(_osc_address_book())
+    except Exception as e:
+        return jsonify({"scenes": [], "chases": [], "error": str(e)}), 500
+
+
+@app.route("/api/osc/settings", methods=["POST"])
+def osc_settings():
+    """Set where feedback goes: {"mode": "sender"|"fixed"|"off", "host", "port"}."""
+    settings, err = _validate_osc_settings(request.get_json(silent=True) or {}, _osc_config.out_port)
+    if err:
+        return jsonify({"success": False, "error": err}), 400
+    OSC_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OSC_SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+    if _osc_feedback is not None:
+        _osc_feedback.configure(settings["mode"], settings["host"], settings["port"])
+    return jsonify({"success": True, **_osc_status()})
+
+
+@app.route("/api/osc/test", methods=["POST"])
+def osc_test():
+    """Send /state/test 1 to the current feedback destination."""
+    if _osc_feedback is None:
+        return jsonify({"success": False, "error": "The OSC backend is not running"}), 503
+    dest = _osc_feedback.destination()
+    if dest is None:
+        why = ("Feedback is off." if _osc_feedback.mode == "off"
+               else "No device has sent a message yet, so there is no one to reply to.")
+        return jsonify({"success": False, "error": why}), 409
+    try:
+        _osc_feedback.send_message("/state/test", 1)
+    except OSError as e:
+        return jsonify({"success": False, "error": str(e)}), 502
+    return jsonify({"success": True, "sent_to": f"{dest[0]}:{dest[1]}"})
+
+
 _runtime_initialized = False
 
 
@@ -10085,7 +10270,7 @@ def init_runtime() -> None:
     correctly and the QLC+ loop thread/bridge take the eventlet-safe path
     (see #47). In local dev it's called from the __main__ block below.
     """
-    global _runtime_initialized
+    global _runtime_initialized, _osc_feedback, _osc_server
     if _runtime_initialized:
         return
     _runtime_initialized = True
@@ -10136,11 +10321,15 @@ def init_runtime() -> None:
     # OSC backend — inbound UDP listener + outbound /state/* feedback.
     # Fails soft: a busy port or missing python-osc logs a warning, never
     # blocks boot (the QLC+ single-writer path never depends on this).
-    _osc_config = OscConfig.from_env()
     if _osc_config.enabled:
         try:
-            start_listener(_osc_config, _OscActions())
-            _osc_emitter = OscStateEmitter(build_udp_client(_osc_config))
+            settings = _load_osc_settings(_osc_config)
+            _osc_feedback = OscFeedbackClient(
+                _make_osc_udp_client, settings["mode"], settings["host"], settings["port"],
+                monitor=_osc_monitor,
+            )
+            _osc_server = start_listener(_osc_config, _OscActions(), on_message=_osc_on_message)
+            _osc_emitter = OscStateEmitter(_osc_feedback)
             threading.Thread(
                 target=drain_event_bus, args=(EVENT_BUS, _osc_emitter),
                 daemon=True, name="osc-state-emitter",

@@ -91,6 +91,9 @@ EOF
   # Add firewall rule for control server port
   echo "Configuring firewall..."
   run_sudo ufw allow ${CONTROL_PORT}/tcp comment "'Control Server'"
+  # OSC input (TouchOSC, QLab) listens on UDP; without this rule only
+  # Tailscale peers can reach it. See docs/OSC.md.
+  run_sudo ufw allow ${OSC_LISTEN_PORT:-8000}/udp comment "'OSC (TouchOSC, QLab)'"
   
   echo "✓ Control server installed and started"
   echo ""

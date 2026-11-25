@@ -259,6 +259,10 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | GET | `/api/stage/background` | The floor-plan image drawn under the Stage grid (404 when none) |
 | POST | `/api/stage/background` | Upload a floor plan (multipart field `image`; PNG, JPEG or WebP, 8 MB max), replacing any old one |
 | DELETE | `/api/stage/background` | Remove the floor plan |
+| GET | `/api/osc` | OSC listener state, local addresses, feedback destination and the last 25 inbound messages |
+| GET | `/api/osc/addresses` | OSC address (`/scene/<id>`, `/scene/<slug>`) of every scene and chase |
+| POST | `/api/osc/settings` | Where OSC feedback goes: `sender` (reply to the last sender), `fixed` host:port, or `off`; saved to `~/.qlcplus/osc.json` |
+| POST | `/api/osc/test` | Send `/state/test 1` to the feedback destination |
 | GET | `/api/fixtures` | List fixtures with `channel_info` |
 | GET | `/api/fixture_channels/<id>` | Per-fixture channel breakdown |
 | POST | `/api/fixtures/<id>/identify` | Pulse a fixture so the operator can locate it |

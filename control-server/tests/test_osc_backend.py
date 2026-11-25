@@ -6,7 +6,15 @@ python-osc transport classes involved.
 """
 import pytest
 from event_bus import EventBus
-from osc_backend import OscConfig, OscStateEmitter, dispatch_osc, drain_event_bus
+from osc_backend import (
+    OscConfig,
+    OscFeedbackClient,
+    OscMonitor,
+    OscStateEmitter,
+    dispatch_osc,
+    drain_event_bus,
+    osc_slug,
+)
 
 
 class RecordingActions:
@@ -18,6 +26,9 @@ class RecordingActions:
 
     def start_chase(self, name):
         self.calls.append(("start_chase", name))
+
+    def stop_chase(self, name):
+        self.calls.append(("stop_chase", name))
 
     def set_channel(self, fixture_id, channel, value):
         self.calls.append(("set_channel", fixture_id, channel, value))
@@ -199,25 +210,46 @@ class TestOscStateEmitter:
         client = StubOscClient()
         emitter = OscStateEmitter(client)
         emitter.on_event("scene_activated", {"scene_name": "warm-wash"})
-        assert client.sent == [("/state/scene-active", "warm-wash")]
+        assert client.sent == [("/state/scene-active", "warm-wash"), ("/scene/warm-wash", 1.0)]
+
+    def test_scene_feedback_lights_new_and_clears_previous(self):
+        client = StubOscClient()
+        emitter = OscStateEmitter(client)
+        emitter.on_event("scene_activated", {"scene_id": "3", "scene_name": "Lights ON"})
+        assert client.sent == [("/state/scene-active", "Lights ON"),
+                               ("/scene/3", 1.0), ("/scene/lights-on", 1.0)]
+        client.sent.clear()
+        emitter.on_event("scene_activated", {"scene_id": "7", "scene_name": "Red"})
+        assert client.sent == [("/state/scene-active", "Red"),
+                               ("/scene/3", 0.0), ("/scene/lights-on", 0.0),
+                               ("/scene/7", 1.0), ("/scene/red", 1.0)]
+
+    def test_same_scene_again_is_not_cleared(self):
+        client = StubOscClient()
+        emitter = OscStateEmitter(client)
+        emitter.on_event("scene_activated", {"scene_id": "3", "scene_name": "Red"})
+        client.sent.clear()
+        emitter.on_event("scene_activated", {"scene_id": "3", "scene_name": "Red"})
+        assert ("/scene/3", 0.0) not in client.sent
 
     def test_master_changed_emits_state(self):
         client = StubOscClient()
         emitter = OscStateEmitter(client)
-        emitter.on_event("master_changed", {"value": 180})
-        assert client.sent == [("/state/master", 180)]
+        emitter.on_event("master_changed", {"value": 51})
+        assert client.sent == [("/state/master", 51), ("/master", 0.2)]
 
     def test_chase_started_emits_state(self):
         client = StubOscClient()
         emitter = OscStateEmitter(client)
-        emitter.on_event("chase_started", {"chase_name": "strobe"})
-        assert client.sent == [("/state/chase-active", "strobe")]
+        emitter.on_event("chase_started", {"chase_id": 12, "chase_name": "Rainbow Fade"})
+        assert client.sent == [("/state/chase-active", "Rainbow Fade"),
+                               ("/chase/12", 1.0), ("/chase/rainbow-fade", 1.0)]
 
     def test_chase_stopped_emits_empty_state(self):
         client = StubOscClient()
         emitter = OscStateEmitter(client)
-        emitter.on_event("chase_stopped", {"chase_name": "strobe"})
-        assert client.sent == [("/state/chase-active", "")]
+        emitter.on_event("chase_stopped", {"chase_id": 12, "chase_name": "strobe"})
+        assert client.sent == [("/state/chase-active", ""), ("/chase/12", 0.0), ("/chase/strobe", 0.0)]
 
     def test_unrelated_event_is_ignored(self):
         client = StubOscClient()
@@ -258,7 +290,7 @@ class TestDrainEventBus:
                 if client.sent:
                     break
                 threading.Event().wait(0.01)
-            assert client.sent == [("/state/scene-active", "warm-wash")]
+            assert client.sent[0] == ("/state/scene-active", "warm-wash")
         finally:
             stop_event.set()
             thread.join(timeout=2)
@@ -309,3 +341,127 @@ class TestCleanStartSafety:
         result = dispatch_osc("", (), actions)
         assert result["ok"] is False
         assert actions.calls == []
+
+
+# ---------------------------------------------------------------------------
+# TouchOSC buttons: press vs release
+# ---------------------------------------------------------------------------
+
+class TestButtonRelease:
+    @pytest.mark.parametrize("address", ["/scene/red", "/blackout", "/cue/go", "/cue/stop", "/cue/pause"])
+    def test_release_is_ignored(self, address):
+        actions = RecordingActions()
+        result = dispatch_osc(address, (0.0,), actions)
+        assert actions.calls == []
+        assert result == {"ok": True, "address": address, "action": "release"}
+
+    def test_press_fires(self):
+        actions = RecordingActions()
+        dispatch_osc("/scene/red", (1.0,), actions)
+        dispatch_osc("/blackout", (1,), actions)
+        assert actions.calls == [("activate_scene", "red"), ("blackout",)]
+
+    def test_chase_toggle_off_stops(self):
+        actions = RecordingActions()
+        dispatch_osc("/chase/rainbow", (1.0,), actions)
+        dispatch_osc("/chase/rainbow", (0.0,), actions)
+        assert actions.calls == [("start_chase", "rainbow"), ("stop_chase", "rainbow")]
+
+    def test_cue_numeric_arg_is_not_a_ref(self):
+        actions = RecordingActions()
+        dispatch_osc("/cue/go", (1.0,), actions)
+        assert actions.calls == [("cue_go", None)]
+
+    def test_string_zero_is_not_a_release(self):
+        actions = RecordingActions()
+        dispatch_osc("/cue/go", ("0",), actions)
+        assert actions.calls == [("cue_go", "0")]
+
+
+class TestSlug:
+    @pytest.mark.parametrize("name,slug", [
+        ("Lights ON", "lights-on"), ("White - Cool", "white-cool"),
+        ("  Red!! ", "red"), ("", ""), (None, ""), (12, "12"),
+    ])
+    def test_slug(self, name, slug):
+        assert osc_slug(name) == slug
+
+
+class TestFeedbackClient:
+    def _client(self, **kw):
+        made = []
+
+        def make(host, port):
+            stub = StubOscClient()
+            made.append(((host, port), stub))
+            return stub
+        return OscFeedbackClient(make, **kw), made
+
+    def test_sender_mode_waits_for_a_sender(self):
+        fb, made = self._client(mode="sender", port=9000)
+        fb.send_message("/x", 1)
+        assert made == []
+        fb.note_sender("192.168.1.20")
+        fb.send_message("/x", 1)
+        assert made[0][0] == ("192.168.1.20", 9000)
+        assert made[0][1].sent == [("/x", 1)]
+
+    def test_sender_mode_follows_the_latest_sender(self):
+        fb, made = self._client(mode="sender", port=9000)
+        fb.note_sender("10.0.0.2")
+        fb.send_message("/x", 1)
+        fb.note_sender("10.0.0.3")
+        fb.send_message("/x", 2)
+        assert [m[0] for m in made] == [("10.0.0.2", 9000), ("10.0.0.3", 9000)]
+
+    def test_fixed_mode_ignores_senders(self):
+        fb, made = self._client(mode="fixed", host="10.0.0.9", port=9100)
+        fb.note_sender("10.0.0.2")
+        fb.send_message("/x", 1)
+        fb.send_message("/y", 2)
+        assert len(made) == 1 and made[0][0] == ("10.0.0.9", 9100)
+        assert made[0][1].sent == [("/x", 1), ("/y", 2)]
+
+    def test_off_sends_nothing(self):
+        fb, made = self._client(mode="off")
+        fb.note_sender("10.0.0.2")
+        fb.send_message("/x", 1)
+        assert made == [] and fb.destination() is None
+
+    def test_configure_validates_mode(self):
+        fb, _ = self._client()
+        with pytest.raises(ValueError):
+            fb.configure("broadcast", "", 9000)
+        fb.configure("fixed", "10.0.0.9", "9001")
+        assert fb.destination() == ("10.0.0.9", 9001)
+
+    def test_monitor_counts_sends(self):
+        monitor = OscMonitor()
+        fb = OscFeedbackClient(lambda h, p: StubOscClient(), mode="fixed", host="h", port=1, monitor=monitor)
+        fb.send_message("/x", 1)
+        assert monitor.sent == 1 and monitor.last_sent_to == "h:1"
+
+
+class TestMonitor:
+    def test_keeps_recent_newest_first_and_bounded(self):
+        monitor = OscMonitor(size=3)
+        for i in range(5):
+            monitor.note_received("10.0.0.2", f"/scene/{i}", (1.0,), {"ok": True, "action": "activate_scene"})
+        recent = monitor.recent()
+        assert monitor.received == 5
+        assert [r["address"] for r in recent] == ["/scene/4", "/scene/3", "/scene/2"]
+        assert recent[0]["from"] == "10.0.0.2" and recent[0]["args"] == [1.0] and recent[0]["ok"] is True
+
+    def test_records_errors(self):
+        monitor = OscMonitor()
+        monitor.note_received(None, "/nope", (), {"ok": False, "error": "unknown address: /nope"})
+        assert monitor.recent()[0]["error"] == "unknown address: /nope"
+
+
+class TestOscConfigOutHost:
+    def test_out_host_set_flag(self, monkeypatch):
+        monkeypatch.delenv("OSC_OUT_HOST", raising=False)
+        assert OscConfig.from_env().out_host_set is False
+        monkeypatch.setenv("OSC_OUT_HOST", "10.0.0.5")
+        config = OscConfig.from_env()
+        assert config.out_host_set is True and config.out_host == "10.0.0.5"
