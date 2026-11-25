@@ -21,7 +21,8 @@ details are on the [releases page](https://github.com/gfargo/lights-pi/releases)
 | Per-install branding, thumb-first phone UI | v2.17.0 |
 | Gzip responses, audio-reactivity guide | v2.17.2 |
 | Stage tab (#36): room plan in live colour, select, make group | v2.18.0 |
-| Stage: aim scene commands at picked fixtures, aim arrows, floor-plan image, PNG export | next |
+| Stage: aim scene commands at picked fixtures, aim arrows, floor-plan image, PNG export | v2.18.x |
+| OSC panel, feedback to the sender, TouchOSC button handling, setup guide (#27) | next |
 
 ## Open
 
@@ -29,7 +30,6 @@ Several open issues have their backend shipped and are waiting on UI work
 that needs hands-on review with real hardware:
 
 - [#26 MIDI controller input](https://github.com/gfargo/lights-pi/issues/26): web UI tab and learn/bind flow.
-- [#27 OSC support](https://github.com/gfargo/lights-pi/issues/27): TouchOSC layout and testing with QLab.
 - [#29 Visual cue list timeline editor](https://github.com/gfargo/lights-pi/issues/29): timeline UI on top of the preview/waveform endpoints.
 - [#12 Audio-reactive mode](https://github.com/gfargo/lights-pi/issues/12) and [#34 Mock DMX device](https://github.com/gfargo/lights-pi/issues/34): partly shipped (`audio_engine.py`, `MOCK_DMX=1`); see the issues for what remains.
 - [#24 Integration test layer](https://github.com/gfargo/lights-pi/issues/24) and [#31 Automated workspace backups](https://github.com/gfargo/lights-pi/issues/31): first versions shipped; check the issues before closing.

@@ -1349,6 +1349,33 @@
             font: inherit; min-width: 1.5rem; min-height: 1.5rem;
         }
         .stage-pick-link { margin-top: 0.5rem; }
+        /* ── OSC panel (Tools) ── */
+        .osc-where { font-size: var(--fs-body); color: var(--paper-80); margin: 0 0 0.9rem; }
+        .osc-where .mono, .osc-feedback .mono { font-family: var(--font-mono); color: var(--paper); }
+        .osc-feedback .tool-actions { flex-wrap: wrap; }
+        .osc-feedback select { flex: 1 1 16rem; }
+        .osc-host { flex: 1 1 9rem; font-family: var(--font-mono); }
+        .osc-port { flex: 0 0 6.5rem; width: 6.5rem; font-family: var(--font-mono); }
+        .osc-recent { list-style: none; margin: 0.4rem 0 0.9rem; padding: 0; border-top: 1px solid var(--rule); }
+        .osc-recent li {
+            display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto; gap: 0.25rem 0.9rem;
+            padding: 0.5rem 0; border-bottom: 1px solid var(--rule); font-size: var(--fs-small); align-items: baseline;
+        }
+        .osc-recent li.err .osc-what { color: var(--signal-red); }
+        .osc-recent .osc-empty { display: block; color: var(--paper-50); }
+        .osc-addr { font-family: var(--font-mono); color: var(--paper); overflow-wrap: anywhere; }
+        .osc-args { color: var(--paper-60); }
+        .osc-what { color: var(--paper-80); }
+        .osc-meta { font-family: var(--font-mono); color: var(--paper-50); font-size: var(--fs-meta); white-space: nowrap; }
+        .osc-book summary { cursor: pointer; font-size: var(--fs-body); color: var(--paper-80); min-height: var(--hit); display: flex; align-items: center; }
+        .osc-table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1rem; font-size: var(--fs-small); }
+        .osc-table th { text-align: left; color: var(--paper-60); font-weight: 500; padding: 0.3rem 0.5rem 0.3rem 0; border-bottom: 1px solid var(--rule); }
+        .osc-table td { padding: 0.35rem 0.5rem 0.35rem 0; border-bottom: 1px solid var(--rule); color: var(--paper-80); overflow-wrap: anywhere; }
+        .osc-table .mono { font-family: var(--font-mono); }
+        @media (max-width: 600px) {
+            .osc-recent li { grid-template-columns: 1fr auto; }
+            .osc-recent .osc-what { grid-column: 1; }
+        }
         .stage-front {
             display: flex; justify-content: space-between; gap: 1rem; margin: 0.6rem auto 0;
             width: min(100%, calc(55vh * var(--stage-ratio, 1.667)));
@@ -2050,6 +2077,36 @@
                 </label>
             </div>
 
+            <div class="tool-panel span-2" data-eyebrow="TouchOSC, QLab">
+                <div class="tool-header">
+                    <span class="tool-title">OSC</span>
+                    <span class="tool-value" id="oscState">…</span>
+                </div>
+                <p class="osc-where" id="oscWhere">Loading…</p>
+                <div class="osc-feedback">
+                    <label class="field-label" for="oscMode">Send feedback</label>
+                    <div class="tool-actions">
+                        <select id="oscMode" class="field-input" onchange="syncOscFields()">
+                            <option value="sender">Back to the device that sent the last message</option>
+                            <option value="fixed">To a fixed address</option>
+                            <option value="off">Off</option>
+                        </select>
+                        <input type="text" id="oscHost" class="field-input osc-host" placeholder="192.168.1.40" autocomplete="off" aria-label="Feedback host">
+                        <input type="number" id="oscPort" class="field-input osc-port" min="1" max="65535" value="9000" aria-label="Feedback port">
+                        <button class="btn-primary btn-tiny" onclick="saveOscSettings()">Save</button>
+                        <button class="btn-secondary btn-tiny" onclick="testOscFeedback()">Send test</button>
+                    </div>
+                    <p class="hint" id="oscFeedbackNote"></p>
+                </div>
+                <div class="result-bar" id="oscResult"></div>
+                <div class="field-label">Recent messages</div>
+                <ul class="osc-recent" id="oscRecent"><li class="osc-empty">Nothing received yet.</li></ul>
+                <details class="osc-book" ontoggle="if(this.open) loadOscAddresses()">
+                    <summary>Addresses for this workspace</summary>
+                    <div id="oscBook"><p class="hint">Loading…</p></div>
+                </details>
+            </div>
+
             <div class="tool-panel span-2" data-eyebrow="journalctl">
                 <div class="tool-header">
                     <span class="tool-title">Service logs</span>
@@ -2258,8 +2315,9 @@
             else if (tabName === 'chases') loadChases();
             else if (tabName === 'audio')  initAudio();
             else if (tabName === 'tools') populateToolsGroupSelects();
-            else if (tabName === 'diag')  { loadSystemInfo(); loadRfSettings(); loadWorkspaces(); }
+            else if (tabName === 'diag')  { loadSystemInfo(); loadRfSettings(); loadWorkspaces(); loadOscStatus(); }
             else if (tabName === 'chat')  { renderChatHistory(); loadConversations(); }
+            if (tabName === 'diag') startOscPolling(); else stopOscPolling();
 
             // Persist the active tab in the URL so refresh / share-link works.
             try {
@@ -4231,6 +4289,130 @@
         /* ══════════════════════════════════════
            Workspaces
            ══════════════════════════════════════ */
+        /* ══════════════════════════════════════
+           OSC (Diagnostics tab): where the listener is, where feedback goes, and
+           what has arrived recently. Polls every 3 s while Diagnostics is open so a
+           button pressed in TouchOSC shows up here.
+           ══════════════════════════════════════ */
+        let oscPollTimer = null;
+        let oscFormDirty = false;
+        function oscResult(text, ok) {
+            const el = document.getElementById('oscResult');
+            el.className = 'result-bar ' + (ok ? 'ok' : 'err');
+            el.textContent = text;
+        }
+
+        function startOscPolling() {
+            stopOscPolling();
+            oscPollTimer = setInterval(() => { if (!document.hidden) loadOscStatus(); }, 3000);
+        }
+        function stopOscPolling() {
+            if (oscPollTimer) { clearInterval(oscPollTimer); oscPollTimer = null; }
+        }
+
+        function syncOscFields() {
+            oscFormDirty = true;
+            const mode = document.getElementById('oscMode').value;
+            document.getElementById('oscHost').hidden = mode !== 'fixed';
+            document.getElementById('oscPort').hidden = mode === 'off';
+        }
+
+        async function loadOscStatus() {
+            let d;
+            try {
+                d = await (await fetch('/api/osc')).json();
+            } catch (e) {
+                document.getElementById('oscState').textContent = 'unreachable';
+                return;
+            }
+            const state = document.getElementById('oscState');
+            const where = document.getElementById('oscWhere');
+            if (!d.available) {
+                state.textContent = 'not installed';
+                where.textContent = 'python-osc is missing. Run bash scripts/deploy.sh to install it.';
+            } else if (!d.enabled) {
+                state.textContent = 'off';
+                where.textContent = 'OSC is turned off (OSC_ENABLED=false in the Pi’s .env).';
+            } else if (!d.listening) {
+                state.textContent = 'not listening';
+                where.textContent = `Could not open UDP port ${d.listen_port}. Another program may be using it; see the service logs below.`;
+            } else {
+                state.textContent = `UDP ${d.listen_port}`;
+                const ips = (d.addresses || []).join(' or ') || 'this Pi’s address';
+                where.innerHTML = `Point TouchOSC or QLab at <span class="mono">${escHtml(ips)}</span>, port <span class="mono">${d.listen_port}</span>.`;
+                if (!d.received) where.innerHTML += ` Nothing has arrived yet. If a device is sending and this stays empty, the Pi’s firewall is probably blocking UDP ${d.listen_port}: run <span class="mono">sudo ufw allow ${d.listen_port}/udp</span> on the Pi (docs/OSC.md).`;
+            }
+            const fb = d.feedback || {};
+            if (!oscFormDirty) {
+                document.getElementById('oscMode').value = fb.mode || 'sender';
+                document.getElementById('oscHost').value = fb.host || '';
+                document.getElementById('oscPort').value = fb.port || 9000;
+                syncOscFields();
+                oscFormDirty = false;
+            }
+            const note = document.getElementById('oscFeedbackNote');
+            if (fb.mode === 'off') note.textContent = 'Controls in TouchOSC won’t light up or move when something else changes the lights.';
+            else if (fb.destination) note.innerHTML = `Feedback goes to <span class="mono">${escHtml(fb.destination)}</span>.`;
+            else note.textContent = 'Feedback starts once a device sends its first message.';
+
+            const list = document.getElementById('oscRecent');
+            const recent = d.recent || [];
+            list.innerHTML = recent.length ? recent.slice(0, 10).map(m => {
+                const t = new Date(m.at * 1000).toLocaleTimeString();
+                const args = (m.args || []).map(a => typeof a === 'number' ? +a.toFixed(3) : a).join(' ');
+                const what = m.ok ? (m.action === 'release' ? 'button released' : (m.action || '').replace(/_/g, ' ')) : (m.error || 'failed');
+                return `<li class="${m.ok ? '' : 'err'}"><span class="mono osc-addr">${escHtml(m.address)}${args ? ' <span class="osc-args">' + escHtml(String(args)) + '</span>' : ''}</span>`
+                     + `<span class="osc-what">${escHtml(what)}</span><span class="mono osc-meta">${escHtml(m.from || '')} · ${t}</span></li>`;
+            }).join('') : '<li class="osc-empty">Nothing received yet.</li>';
+        }
+
+        async function saveOscSettings() {
+            const body = {
+                mode: document.getElementById('oscMode').value,
+                host: document.getElementById('oscHost').value.trim(),
+                port: document.getElementById('oscPort').value,
+            };
+            try {
+                const r = await fetch('/api/osc/settings', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+                });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || 'HTTP ' + r.status);
+                oscFormDirty = false;
+                oscResult('Saved.', true);
+                loadOscStatus();
+            } catch (e) {
+                oscResult('Could not save: ' + e.message, false);
+            }
+        }
+
+        async function testOscFeedback() {
+            try {
+                const r = await fetch('/api/osc/test', { method: 'POST' });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || 'HTTP ' + r.status);
+                oscResult(`Sent /state/test 1 to ${d.sent_to}.`, true);
+                loadOscStatus();
+            } catch (e) {
+                oscResult(e.message, false);
+            }
+        }
+
+        async function loadOscAddresses() {
+            const box = document.getElementById('oscBook');
+            try {
+                const d = await (await fetch('/api/osc/addresses')).json();
+                const rows = (items, note) => items.length ? items.map(i =>
+                    `<tr><td>${escHtml(i.name)}</td><td class="mono">${escHtml(i.address)}</td><td class="mono">${i.alias ? escHtml(i.alias) : ''}</td></tr>`
+                ).join('') : `<tr><td colspan="3" class="hint">${note}</td></tr>`;
+                box.innerHTML = `<table class="osc-table"><thead><tr><th>Scene</th><th>Address</th><th>Or</th></tr></thead><tbody>${rows(d.scenes || [], 'No scenes')}</tbody></table>`
+                    + `<table class="osc-table"><thead><tr><th>Chase</th><th>Address</th><th>Or</th></tr></thead><tbody>${rows(d.chases || [], 'No chases')}</tbody></table>`
+                    + `<p class="hint">Also: <span class="mono">/master</span> (0–1), <span class="mono">/blackout</span>, <span class="mono">/fixture/&lt;id&gt;/&lt;channel&gt;</span> (channel from 0), <span class="mono">/cue/go</span> and <span class="mono">/cue/stop</span>. Setup guide: docs/OSC.md.</p>`;
+            } catch (e) {
+                box.innerHTML = '<p class="hint">Could not load the addresses.</p>';
+            }
+        }
+
         async function loadWorkspaces(keepMessage = false) {
             const sel = document.getElementById('workspaceSelect');
             const result = document.getElementById('workspaceResult');
