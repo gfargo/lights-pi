@@ -27,7 +27,7 @@ and the phone.
 | 7 | The title is hard-coded "Lighting Control" with a generic sunburst icon; nothing about the deployment can be named without editing the template | `<title>`, `<h1>`, manifest, `/icon.svg` | Every install looks the same and the home-screen app is called "Lighting Control". |
 | 8 | The accent is `#d97757`; the marketing site's is `#FF6A1F`. A comment claims they match | `--amber-tungsten` | The product and its site look like two products. |
 | 9 | Scenes on the phone are text buttons with a 6px swatch strip above them | `.scene-btn` | The colour is the information; it is drawn as decoration. |
-| 10 | Fonts load from Google Fonts | `@import` at the top of the style block | Without internet the type silently changes mid-show. Not fixed in this pass; see "Later". |
+| 10 | Fonts load from Google Fonts | `@import` at the top of the style block | Without internet the type silently changes mid-show. Fixed later: fonts now ship in `control-server/static/fonts/` (see "Later"). |
 
 ## Rules for the redesign
 
@@ -57,6 +57,7 @@ and the phone.
 
 ## Later
 
-- Serve the fonts from the Pi (finding 10). Geist is OFL-licensed, so its
-  files can ship in `control-server/static/fonts/`.
+- ~~Serve the fonts from the Pi (finding 10).~~ Done: Geist and Geist Mono
+  (400/500/600, latin, OFL) live in `control-server/static/fonts/` with
+  `fonts.css` and `OFL.txt`; both templates import that instead of Google Fonts.
 - A light theme for daylight rooms.
