@@ -3400,6 +3400,56 @@ def _dmx_device_readable(dev):
     return os.access(dev, os.R_OK)
 
 
+# USB vendor:product of the FTDI FT232 inside the ENTTEC DMX USB Pro.
+DMX_USB_IDS = (("0403", "6001"),)
+_USB_SYSFS_ROOT = "/sys/bus/usb/devices"
+
+
+def _find_usb_device_sysfs(sysfs_root=_USB_SYSFS_ROOT, ids=DMX_USB_IDS):
+    """Return "vvvv:pppp" for the first enumerated USB device matching `ids`
+    under `sysfs_root` (each entry holding idVendor / idProduct files), else None.
+
+    QLC+ claims the FT232 through libftdi, which detaches ftdi_sio, so
+    /dev/ttyUSB* is gone in normal operation while the device itself is
+    still enumerated. That makes the USB ids the reliable presence signal.
+    """
+    wanted = {(v.lower(), p.lower()) for v, p in ids}
+    try:
+        entries = sorted(os.listdir(sysfs_root))
+    except OSError:
+        return None
+    for name in entries:
+        base = os.path.join(sysfs_root, name)
+        try:
+            with open(os.path.join(base, "idVendor")) as fh:
+                vid = fh.read().strip().lower()
+            with open(os.path.join(base, "idProduct")) as fh:
+                pid = fh.read().strip().lower()
+        except OSError:
+            continue
+        if (vid, pid) in wanted:
+            return f"{vid}:{pid}"
+    return None
+
+
+_LSUSB_ID_RE = re.compile(r"\bID\s+([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\b")
+
+
+def _count_dmx_usb_lsusb(lsusb_text, ids=DMX_USB_IDS):
+    """Count `lsusb` lines whose "ID vvvv:pppp" matches a DMX interface id.
+
+    Matches by id rather than by name: lsusb names the ENTTEC's chip
+    "Future Technology Devices International, Ltd FT232 Serial (UART) IC".
+    """
+    wanted = {(v.lower(), p.lower()) for v, p in ids}
+    count = 0
+    for line in (lsusb_text or "").splitlines():
+        m = _LSUSB_ID_RE.search(line)
+        if m and (m.group(1).lower(), m.group(2).lower()) in wanted:
+            count += 1
+    return count
+
+
 def _healthz_status(
     qlc_ws=_HEALTHZ_UNSET,
     last_dmx_ts=_HEALTHZ_UNSET,
@@ -3407,6 +3457,7 @@ def _healthz_status(
     dmx_device_glob=None,
     dmx_readable_fn=None,
     now=None,
+    usb_sysfs_root=None,
     qlc_timeouts=None,
     qlc_loop_restarts=None,
 ):
@@ -3456,6 +3507,15 @@ def _healthz_status(
             dmx_device = dev if dmx_readable_fn(dev) else None
     except Exception:
         pass
+    if dmx_device is None:
+        # No tty node is normal while QLC+ holds the FT232 via libftdi;
+        # fall back to "is the ENTTEC enumerated on USB?".
+        try:
+            usb_id = _find_usb_device_sysfs(usb_sysfs_root or _USB_SYSFS_ROOT)
+            if usb_id:
+                dmx_device = f"usb:{usb_id}"
+        except Exception:
+            pass
 
     dmx_age = None
     if last_dmx_ts is not None:
@@ -5686,6 +5746,7 @@ def diagnostics_system():
             out["usb"] = {
                 "all_count": len(all_lines),
                 "dmx_related": _filter_dmx_usb_lines(all_lines),
+                "dmx_count": _count_dmx_usb_lsusb(usb["output"]),
             }
         else:
             out["usb"] = None
