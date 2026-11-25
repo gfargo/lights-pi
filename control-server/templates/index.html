@@ -1867,7 +1867,7 @@
             </div>
         </div>
 
-        <footer>lights.local</footer>
+        <footer>{{ request.host or "lights.local" }}</footer>
     </div>
 
     <!-- Socket.IO client — served by flask-socketio at this path -->
