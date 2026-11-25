@@ -11,6 +11,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="{{ brand.short_name }}">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
     <title>{{ brand.name }}</title>
     <style>
         /* ══════════════════════════════════════════════════════════════
@@ -28,7 +30,7 @@
 
         /* Geist fonts — CDN-hosted; gracefully degrades to system stack
            if the Pi is offline or the browser blocks third-party fonts. */
-        @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+        @import url("/static/fonts/fonts.css");
 
         :root {
             /* ── Surface palette ── */
@@ -1867,7 +1869,7 @@
             </div>
         </div>
 
-        <footer>lights.local</footer>
+        <footer>{{ request.host or "lights.local" }}</footer>
     </div>
 
     <!-- Socket.IO client — served by flask-socketio at this path -->
