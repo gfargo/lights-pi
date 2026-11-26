@@ -26,6 +26,21 @@ if str(_MCP_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(_MCP_SERVER_DIR))
 
 
+# Module-level paths in app.py that point into ~/.qlcplus.
+_DATA_FILES = (
+    "AUDIO_CHASES_FILE",
+    "CUE_AUDIO_DIR",
+    "CUE_LISTS_FILE",
+    "GROUPS_FILE",
+    "LAST_LOOK_FILE",
+    "MIDI_MAPPINGS_FILE",
+    "OSC_SETTINGS_FILE",
+    "RF_HISTORY_FILE",
+    "RF_SETTINGS_FILE",
+    "STAGE_LAYOUT_FILE",
+)
+
+
 @pytest.fixture(scope="session")
 def test_workspace():
     """Minimal .qxw fixture with two test fixtures (dimmer + RGB)."""
@@ -35,23 +50,38 @@ def test_workspace():
 @pytest.fixture
 def patched_app(monkeypatch, tmp_path, test_workspace):
     """Flask app module with:
-    - WORKSPACE_PATH → test fixture
-    - CUE_LISTS_FILE / GROUPS_FILE → isolated tmp_path files
+    - WORKSPACE_PATH → a tmp_path copy of the test fixture
+    - every ~/.qlcplus data file and the chat DB → tmp_path
     - _qlc_run → local asyncio.run (no background thread)
     - _qlc_send_commands → recording mock (appends CH|… strings to a list)
     Returns (flask_app_object, recorded_commands_list).
     """
+    import shutil
+
     import app as app_module
+    import chat_store
 
-    # Redirect workspace and data files away from ~/.qlcplus
-    monkeypatch.setattr(app_module, "WORKSPACE_PATH", test_workspace)
+    # Everything the app keeps under ~/.qlcplus goes to tmp_path instead, so
+    # a route test can create, save and delete without touching the
+    # developer's real rig data. The workspace is a copy, so writes are safe.
+    data_dir = tmp_path / ".qlcplus"
+    data_dir.mkdir()
+    workspace = data_dir / test_workspace.name
+    shutil.copy(test_workspace, workspace)
+    monkeypatch.setattr(app_module, "WORKSPACE_DIR", data_dir)
+    monkeypatch.setattr(app_module, "WORKSPACE_PATH", workspace)
+    monkeypatch.setattr(app_module, "_WORKSPACE_POINTER", data_dir / "current_workspace")
+    for name in _DATA_FILES:
+        if hasattr(app_module, name):
+            original = getattr(app_module, name)
+            monkeypatch.setattr(app_module, name, data_dir / Path(original).name)
 
-    groups_file = tmp_path / "fixture_groups.json"
-    cue_lists_file = tmp_path / "cue_lists.json"
-    groups_file.write_text("{}")
-    cue_lists_file.write_text('{"cue_lists": []}')
-    monkeypatch.setattr(app_module, "GROUPS_FILE", groups_file)
-    monkeypatch.setattr(app_module, "CUE_LISTS_FILE", cue_lists_file)
+    chat_db = data_dir / "chat_history.db"
+    chat_store.init_db(chat_db)
+    monkeypatch.setattr(app_module, "CHAT_DB_PATH", chat_db)
+
+    (data_dir / "fixture_groups.json").write_text("{}")
+    (data_dir / "cue_lists.json").write_text('{"cue_lists": []}')
 
     recorded: list[str] = []
 

@@ -23,7 +23,8 @@ details are on the [releases page](https://github.com/gfargo/lights-pi/releases)
 | Stage tab (#36): room plan in live colour, select, make group | v2.18.0 |
 | Stage: aim scene commands at picked fixtures, aim arrows, floor-plan image, PNG export | v2.18.x |
 | OSC panel, feedback to the sender, TouchOSC button handling, setup guide (#27) | v2.18.x |
-| Audio: flash that fades back, kick/snare, colour follows loudness, MCP tools (#12) | next |
+| Audio: flash that fades back, kick/snare, colour follows loudness, MCP tools (#12) | v2.18.x |
+| Integration tests: every route smoke-tested, every MCP tool checked against Flask (#24) | next |
 
 ## Open
 
@@ -33,7 +34,7 @@ that needs hands-on review with real hardware:
 - [#26 MIDI controller input](https://github.com/gfargo/lights-pi/issues/26): web UI tab and learn/bind flow.
 - [#29 Visual cue list timeline editor](https://github.com/gfargo/lights-pi/issues/29): timeline UI on top of the preview/waveform endpoints.
 - [#34 Mock DMX device](https://github.com/gfargo/lights-pi/issues/34): partly shipped (`MOCK_DMX=1`); see the issue for what remains.
-- [#24 Integration test layer](https://github.com/gfargo/lights-pi/issues/24) and [#31 Automated workspace backups](https://github.com/gfargo/lights-pi/issues/31): first versions shipped; check the issues before closing.
+- [#31 Automated workspace backups](https://github.com/gfargo/lights-pi/issues/31): first version shipped; check the issue before closing.
 - [#61 CI test isolation](https://github.com/gfargo/lights-pi/issues/61): `importlib.reload` in `test_mock_dmx` affecting `test_tempo`.
 
 New ideas go to GitHub issues rather than this file.
