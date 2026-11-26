@@ -126,6 +126,9 @@ From a computer you can also fetch the layout for any running server:
 python control-server/touchosc_layout.py http://lights.local:5000 my-rig.tosc
 ```
 
+This doesn't work when `LIGHTS_PASSWORD` is set (the command has no way to
+sign in); download the layout from the web UI instead.
+
 ## QLab
 
 1. In **Workspace Settings → Network**, add a destination: type **OSC**,

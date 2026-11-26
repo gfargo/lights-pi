@@ -9,6 +9,7 @@ structure checked here is what made that work.
 import xml.etree.ElementTree as ET
 import zlib
 
+import touchosc_layout as tl
 from touchosc_layout import FADERS, build_layout, channel_faders, layout_xml
 
 SCENES = [{"name": "Lights ON", "address": "/scene/1"}, {"name": "Red", "address": "/scene/0"}]
@@ -143,3 +144,48 @@ def test_channel_faders_walks_fixtures_in_order():
         {"name": "Wash\nRed", "address": "/fixture/3/0"},
     ]
     assert len(channel_faders([{"id": 1, "name": "Big", "channel_info": [{"offset": i} for i in range(20)]}])) == 8
+
+
+class _Resp:
+    def __init__(self, data): self.data = data
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def read(self): return self.data
+
+
+def _http_error(code, body=b""):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError("http://x/api/osc/touchosc", code, "err", {}, io.BytesIO(body))
+
+
+def test_cli_writes_the_layout(tmp_path, monkeypatch):
+    import urllib.request
+    blob = tl.build_layout([], [], [])
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: _Resp(blob))
+    out = tmp_path / "x.tosc"
+    assert tl.main(["http://pi:5000/", str(out)]) == 0
+    assert out.read_bytes() == blob
+
+
+def test_cli_explains_the_password_gate(tmp_path, monkeypatch, capsys):
+    import urllib.request
+
+    def refuse(url, timeout):
+        raise _http_error(401, b'{"error": "unauthorized"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    assert tl.main(["http://pi:5000", str(tmp_path / "x.tosc")]) == 1
+    assert "Download layout" in capsys.readouterr().err
+    assert not (tmp_path / "x.tosc").exists()
+
+
+def test_cli_reports_server_errors(tmp_path, monkeypatch, capsys):
+    import urllib.request
+
+    def fail(url, timeout):
+        raise _http_error(500, b'{"error": "workspace is broken"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    assert tl.main(["http://pi:5000", str(tmp_path / "x.tosc")]) == 1
+    assert "HTTP 500: workspace is broken" in capsys.readouterr().err

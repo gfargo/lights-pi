@@ -253,6 +253,8 @@ def main(argv=None) -> int:
     """Write a layout for a running control server: ``python touchosc_layout.py URL OUT``."""
     import argparse
     import json
+    import sys
+    import urllib.error
     import urllib.request
 
     parser = argparse.ArgumentParser(description=main.__doc__)
@@ -260,10 +262,26 @@ def main(argv=None) -> int:
     parser.add_argument("out", help="where to write the .tosc file")
     args = parser.parse_args(argv)
     base = args.server.rstrip("/")
-    with urllib.request.urlopen(f"{base}/api/osc/touchosc", timeout=30) as response:
-        data = response.read()
+    url = f"{base}/api/osc/touchosc"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data = response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            print("The server asks for a password (LIGHTS_PASSWORD is set). Download the layout "
+                  "from the web UI instead: Diagnostics → OSC → Download layout.", file=sys.stderr)
+            return 1
+        try:
+            message = json.loads(exc.read()).get("error")
+        except ValueError:
+            message = None
+        print(f"{url}: HTTP {exc.code}{': ' + message if message else ''}", file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"Could not reach {url}: {getattr(exc, 'reason', exc)}", file=sys.stderr)
+        return 1
     if not data.startswith(b"\x78"):  # zlib header; anything else is an error page
-        print(json.loads(data).get("error", "unexpected response"))
+        print(f"{url} did not return a layout", file=sys.stderr)
         return 1
     with open(args.out, "wb") as fh:
         fh.write(data)
