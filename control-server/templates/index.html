@@ -762,6 +762,80 @@
         .cue-row .remove-btn { background: none; border: none; color: var(--paper-50); font-size: 1rem; width: var(--hit); padding: 0; }
         .cue-row .remove-btn:hover { color: var(--signal-red); }
 
+        /* ── Cue list timeline editor (#29) ── */
+        .tl-editor[hidden] { display: none; }
+        .tl-head {
+            display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem 1rem;
+            align-items: center; margin-bottom: 1rem;
+        }
+        .tl-title { min-width: 0; }
+        .tl-title .section-title { margin-bottom: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tl-head-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+        .tl-dirty { font-size: var(--fs-small); color: var(--signal-amber); }
+        .tl-toolbar {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+            padding: 0.6rem 0.75rem; background: var(--ink-1); border: 1px solid var(--rule-strong); border-bottom: none;
+        }
+        .tl-toolbar .tl-group { display: flex; align-items: center; gap: 0.35rem; }
+        .tl-toolbar .tl-label { font-size: var(--fs-meta); color: var(--paper-50); }
+        .tl-clock { font-family: var(--font-mono); font-size: var(--fs-body); color: var(--paper-80); min-width: 9ch; }
+        .tl-clock.running { color: var(--signal-green); }
+        .tl-audio-name { font-size: var(--fs-small); color: var(--paper-80); max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tl-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+        .tl-frame { position: relative; background: var(--ink); border: 1px solid var(--rule-strong); }
+        .tl-canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+        .tl-scroller {
+            position: relative; overflow-x: auto; overflow-y: hidden; touch-action: pan-x;
+            overscroll-behavior-x: contain;
+        }
+        .tl-scroller:focus-visible { outline: 2px solid var(--amber-tungsten); outline-offset: -2px; }
+        .tl-content { position: relative; height: 176px; }
+        .tl-scrub { position: absolute; left: 0; right: 0; top: 0; height: 96px; cursor: col-resize; touch-action: none; }
+        .tl-lane { position: absolute; left: 0; right: 0; top: 100px; height: 72px; }
+        .tl-cue {
+            position: absolute; top: 0; height: 100%; min-width: 6px;
+            background: var(--ink-3) center / cover no-repeat; border: 1px solid var(--rule-strong);
+            border-left: 3px solid var(--paper-60); color: var(--paper); text-align: left;
+            padding: 0 0 0 0.45rem; overflow: hidden; cursor: grab; user-select: none; -webkit-user-select: none;
+            display: flex; flex-direction: column; justify-content: flex-end; touch-action: pan-x;
+        }
+        .tl-cue::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, rgba(10,10,10,0.82), rgba(10,10,10,0.15) 70%); pointer-events: none; }
+        .tl-cue > span { position: relative; z-index: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 0.35rem; }
+        .tl-cue .tl-cue-name { font-size: var(--fs-small); font-weight: 600; }
+        .tl-cue .tl-cue-time { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--paper-60); margin-bottom: 0.35rem; }
+        .tl-cue.kind-chase { background-image: repeating-linear-gradient(135deg, var(--ink-3) 0 8px, var(--ink-2) 8px 16px); }
+        .tl-cue.kind-blackout { background: var(--ink); }
+        .tl-cue.selected { border-color: var(--amber-tungsten); border-left-color: var(--amber-tungsten); box-shadow: inset 0 0 0 1px var(--amber-tungsten); z-index: 2; }
+        .tl-cue.dragging { cursor: grabbing; z-index: 3; }
+        .tl-cue.error { border-color: var(--signal-red); border-left-color: var(--signal-red); }
+        .tl-cue:focus-visible { outline: 2px solid var(--amber-tungsten); outline-offset: 1px; }
+        .tl-grip {
+            position: absolute; left: -3px; top: 0; bottom: 0; width: 14px; z-index: 2;
+            cursor: ew-resize; touch-action: none;
+        }
+        .tl-grip::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: transparent; }
+        .tl-cursor, .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; z-index: 4; }
+        .tl-cursor { border-left: 1px dashed var(--paper-80); }
+        .tl-playhead { border-left: 2px solid var(--signal-green); }
+        .tl-cursor[hidden], .tl-playhead[hidden] { display: none; }
+        .tl-status { min-height: 1.5em; margin: 0.5rem 0 0; font-size: var(--fs-small); color: var(--paper-60); }
+        .tl-status.error { color: var(--signal-red); }
+        .tl-inspector {
+            margin-top: 1rem; background: var(--ink-1); border: 1px solid var(--rule-strong); padding: 0.85rem 1rem;
+        }
+        .tl-inspector-row { display: grid; grid-template-columns: 8rem 8rem 1fr; gap: 0.5rem; align-items: end; }
+        .tl-inspector .field-label { margin-top: 0; }
+        .tl-inspector .field-input { min-height: 40px; }
+        .tl-inspector-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+        .tl-menu {
+            position: fixed; z-index: 300; min-width: 10rem; background: var(--ink-2); border: 1px solid var(--rule-strong);
+            display: flex; flex-direction: column; padding: 0.25rem 0; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+        .tl-menu[hidden] { display: none; }
+        .tl-menu button { background: none; border: none; color: var(--paper); text-align: left; min-height: var(--hit); padding: 0 1rem; font-size: var(--fs-body); }
+        .tl-menu button:hover, .tl-menu button:focus-visible { background: var(--ink-3); }
+        .tl-menu button.danger:hover { color: var(--signal-red); }
+
         /* ── Chase step list ── */
         .step-list { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.5rem 0; }
         .step-row {
@@ -1165,6 +1239,13 @@
             .modal-footer { padding: 0.75rem 1rem; flex-direction: column-reverse; }
             .modal-footer .btn-primary, .modal-footer .btn-ghost { width: 100%; }
 
+            .tl-head { grid-template-columns: 1fr; }
+            .tl-head > .btn-ghost { justify-self: start; }
+            .tl-toolbar .btn-tiny, .tl-head-actions .btn-tiny, .tl-inspector .btn-tiny { min-height: var(--hit); }
+            .tl-head-actions { justify-content: flex-start; }
+            .tl-inspector-row { grid-template-columns: 1fr 1fr; }
+            .tl-inspector-row > :last-child { grid-column: 1 / -1; }
+            .tl-grip { width: 28px; left: -8px; }
             .cue-row {
                 grid-template-columns: 1fr auto;
                 grid-template-areas: "time remove" "kind remove" "value remove";
@@ -1687,6 +1768,72 @@
             <div id="cuelistsList" class="resource-list">
                 <p class="empty-state">Loading cue lists…</p>
             </div>
+
+            <!-- Timeline editor (#29): replaces the list while a cue list is open -->
+            <section id="cuelistEditor" class="tl-editor" hidden aria-labelledby="tlName">
+                <div class="tl-head">
+                    <button class="btn-ghost btn-tiny" onclick="closeTimeline()">‹ Cue lists</button>
+                    <div class="tl-title">
+                        <div id="tlName" class="section-title"></div>
+                        <div id="tlMeta" class="hint"></div>
+                    </div>
+                    <div class="tl-head-actions">
+                        <span id="tlDirty" class="tl-dirty" hidden>Unsaved changes</span>
+                        <button id="tlRevert" class="btn-ghost btn-tiny" onclick="revertTimeline()" disabled>Revert</button>
+                        <button id="tlSave" class="btn-primary btn-tiny" onclick="saveTimeline()" disabled>Save</button>
+                    </div>
+                </div>
+
+                <div class="tl-toolbar">
+                    <div class="tl-group">
+                        <button id="tlGo" class="btn-go btn-tiny" onclick="timelineGo()">▶ Go</button>
+                        <button id="tlStop" class="btn-stop btn-tiny" onclick="timelineStop()" hidden>■ Stop</button>
+                        <span id="tlClock" class="tl-clock" aria-live="off">0:00.000</span>
+                    </div>
+                    <div class="tl-group" role="group" aria-label="Zoom">
+                        <span class="tl-label">Zoom</span>
+                        <button class="btn-ghost btn-tiny" onclick="timelineZoomBy(1/1.6)" aria-label="Zoom out">−</button>
+                        <button class="btn-ghost btn-tiny" onclick="timelineZoomBy(1.6)" aria-label="Zoom in">+</button>
+                        <button class="btn-ghost btn-tiny" onclick="timelineFit()">Fit</button>
+                        <span id="tlSnap" class="tl-label"></span>
+                    </div>
+                    <div class="tl-group">
+                        <button class="btn-secondary btn-tiny" onclick="timelineAddCue()">+ Cue at cursor</button>
+                    </div>
+                    <div class="tl-group">
+                        <span class="tl-label">Audio</span>
+                        <span id="tlAudioName" class="tl-audio-name">None</span>
+                        <label class="btn-ghost btn-tiny" style="display:inline-flex;align-items:center;cursor:pointer;">
+                            <span id="tlAudioPick">Attach…</span>
+                            <input id="tlAudioInput" class="tl-file" type="file" accept="audio/*" onchange="timelineAttachAudio(this)">
+                        </label>
+                        <button id="tlAudioRemove" class="btn-ghost btn-tiny" onclick="timelineDetachAudio()" hidden aria-label="Remove audio">✕</button>
+                    </div>
+                </div>
+
+                <div class="tl-frame" id="tlFrame">
+                    <canvas id="tlCanvas" class="tl-canvas" aria-hidden="true"></canvas>
+                    <div id="tlScroller" class="tl-scroller" tabindex="0"
+                         aria-label="Cue timeline. Arrow keys move the selected cues, Delete removes them.">
+                        <div id="tlContent" class="tl-content">
+                            <div id="tlScrub" class="tl-scrub" title="Click or drag to preview this moment on the rig"></div>
+                            <div id="tlLane" class="tl-lane"></div>
+                            <div id="tlCursor" class="tl-cursor" hidden></div>
+                            <div id="tlPlayhead" class="tl-playhead" hidden></div>
+                        </div>
+                    </div>
+                </div>
+                <p id="tlStatus" class="tl-status" role="status"></p>
+                <p class="hint">Click or drag along the ruler or waveform to preview that moment on the rig. Drag a cue to re-time it; Shift-click to select several and move them together. Right-click or long-press a cue for more. Zoom with Ctrl/⌘ + scroll or a pinch.</p>
+
+                <div id="tlInspector" class="tl-inspector"></div>
+
+                <div id="tlMenu" class="tl-menu" role="menu" hidden>
+                    <button role="menuitem" onclick="timelineMenu('edit')">Edit</button>
+                    <button role="menuitem" onclick="timelineMenu('duplicate')">Duplicate</button>
+                    <button role="menuitem" class="danger" onclick="timelineMenu('delete')">Delete</button>
+                </div>
+            </section>
 
             <!-- Builder modal -->
             <div id="cuelistBuilderModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="cuelistBuilderTitle">
@@ -3755,7 +3902,7 @@
                             ${playing
                                 ? `<button class="btn-stop btn-tiny" onclick="stopCueList(${cl.id})">■ Stop</button>`
                                 : `<button class="btn-go btn-tiny" onclick="goCueList(${cl.id})">▶ Go</button>`}
-                            <button class="btn-ghost btn-tiny" onclick="describeCueList(${cl.id})">View</button>
+                            <button class="btn-ghost btn-tiny" onclick="openTimeline(${cl.id})">Edit</button>
                             <button class="btn-ghost btn-tiny" onclick="deleteCueListConfirm(${cl.id}, '${escJsAttr(cl.name)}')">✕</button>
                         </div>
                     </div>`;
@@ -3964,11 +4111,884 @@
                 if (data.success) {
                     closeCueListBuilder();
                     await loadCueLists();
+                    if (data.cue_list && data.cue_list.id != null) openTimeline(data.cue_list.id);
                 } else {
                     const detail = data.cue_errors ? '\n\n' + data.cue_errors.map(e => `Cue ${e.index}: ${e.error}`).join('\n') : '';
                     alert((data.error || 'Create failed') + detail);
                 }
             } catch (e) { alert('Create failed: ' + e.message); }
+        }
+
+        /* ══════════════════════════════════════
+           Cue list timeline editor (#29)
+           Time runs left to right. Each cue is a block from its start to the
+           next cue's start: the look that holds until the next cue, which is
+           also what preview applies at any instant. Edits stay local until
+           Save; preview and scrub send the unsaved cues with the request.
+           ══════════════════════════════════════ */
+        const TL = {
+            PAD: 16,            // px of empty floor before 0:00
+            RULER_H: 24,        // ruler band at the top of the canvas
+            WAVE_TOP: 28, WAVE_H: 64,
+            MIN_K: 0.0005,      // px per ms when fully zoomed out (30 min ≈ 900 px)
+            MAX_K: 8,           // 8 px per ms: snaps to single milliseconds
+            WAVE_MAX_BUCKETS: 15000,
+        };
+        let tl = null;          // editor state while a cue list is open
+        let tlKeySeq = 0;
+
+        function tlNewKey() { tlKeySeq += 1; return 'c' + tlKeySeq; }
+
+        function tlFromServer(cue) {
+            return {
+                key: tlNewKey(),
+                at_ms: cue.at_ms,
+                action: cue.action,
+                parameters: { ...(cue.parameters || {}) },
+                groups: cue.groups || null,
+            };
+        }
+
+        function tlToApi(cue) {
+            const out = { at_ms: Math.max(0, Math.round(cue.at_ms)), action: cue.action, parameters: cue.parameters || {} };
+            if (cue.groups && cue.groups.length) out.groups = cue.groups;
+            return out;
+        }
+
+        function tlCueLabel(cue) {
+            if (cue.action === 'activate_scene') return cue.parameters.scene || '(no scene)';
+            if (cue.action === 'start_chase') return '↻ ' + (cue.parameters.chase || '(no chase)');
+            const params = Object.entries(cue.parameters || {}).map(([k, v]) => `${k}=${v}`).join(' ');
+            return params ? `${cue.action} ${params}` : cue.action;
+        }
+
+        function tlCueKind(cue) {
+            if (cue.action === 'activate_scene') return 'scene';
+            if (cue.action === 'start_chase') return 'chase';
+            return 'action';
+        }
+
+        // "1:23.500", "1:02:03", "32s", "32.5s", "1500ms", "1500" → ms (or null)
+        function tlParseTime(text) {
+            const s = String(text || '').trim().toLowerCase();
+            if (!s) return null;
+            let m;
+            if ((m = s.match(/^(\d+(?:\.\d+)?)\s*ms$/))) return Math.round(parseFloat(m[1]));
+            if ((m = s.match(/^(\d+(?:\.\d+)?)\s*s$/))) return Math.round(parseFloat(m[1]) * 1000);
+            if ((m = s.match(/^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/))) return Math.round((+m[1] * 3600 + +m[2] * 60 + parseFloat(m[3])) * 1000);
+            if ((m = s.match(/^(\d+):(\d{1,2}(?:\.\d+)?)$/))) return Math.round((+m[1] * 60 + parseFloat(m[2])) * 1000);
+            if ((m = s.match(/^\d+$/))) return parseInt(s, 10);
+            return null;
+        }
+
+        function tlSorted() { return [...tl.cues].sort((a, b) => a.at_ms - b.at_ms); }
+
+        function tlTotalMs() {
+            const last = tl.cues.reduce((mx, c) => Math.max(mx, c.at_ms), 0);
+            const audio = tl.wave ? tl.wave.audio_duration_ms || 0 : 0;
+            return Math.max(10000, last + 5000, audio + 1000);
+        }
+
+        function tlX(ms) { return TL.PAD + ms * tl.k; }
+        function tlMs(x) { return Math.max(0, (x - TL.PAD) / tl.k); }
+
+        // Snap step for the current zoom: the finest step that's still ≥ 8 px.
+        function tlSnapStep() {
+            const steps = [1, 5, 10, 50, 100, 250, 500, 1000, 5000];
+            for (const s of steps) if (s * tl.k >= 8) return s;
+            return 5000;
+        }
+        function tlSnap(ms) { const s = tlSnapStep(); return Math.max(0, Math.round(ms / s) * s); }
+
+        function tlFormat(ms) { return formatMs(Math.round(ms)); }
+
+        /* ── open / close ── */
+        async function openTimeline(cueListId) {
+            try {
+                const r = await fetch(`/api/cue_lists/${cueListId}`);
+                const data = await r.json();
+                if (!data.success) { alert(data.error || 'Could not open the cue list'); return; }
+                if (!allScenesData.length) { try { await loadScenes(); } catch (e) { /* names still show */ } }
+                tl = {
+                    id: data.cue_list.id,
+                    name: data.cue_list.name,
+                    saved: data.cue_list.cues.map(tlFromServer),
+                    cues: [],
+                    selected: new Set(),
+                    k: 0.05,
+                    cursorMs: null,
+                    wave: null,
+                    audioFile: data.cue_list.audio_file || null,
+                    dirty: false,
+                    runtime: null,
+                    errorKeys: new Set(),
+                };
+                tl.cues = tl.saved.map(c => ({ ...c, parameters: { ...c.parameters } }));
+                document.getElementById('cuelistsList').hidden = true;
+                document.querySelector('#cuelists-tab > .cuelists-header').hidden = true;
+                document.getElementById('cuelistEditor').hidden = false;
+                document.getElementById('tlName').textContent = tl.name;
+                tlSetStatus('');
+                tlLoadWaveform();
+                tlBindOnce();
+                timelineFit();
+                requestAnimationFrame(() => { if (tl && !tl.userZoomed) timelineFit(); });
+                tlRenderInspector();
+                tlPollRuntime();
+                document.getElementById('tlScroller').focus({ preventScroll: true });
+            } catch (e) { alert('Could not open the cue list: ' + e.message); }
+        }
+
+        function closeTimeline() {
+            if (tl && tl.dirty && !confirm('Discard unsaved changes to this cue list?')) return;
+            tlCloseMenu();
+            tl = null;
+            document.getElementById('cuelistEditor').hidden = true;
+            document.getElementById('cuelistsList').hidden = false;
+            document.querySelector('#cuelists-tab > .cuelists-header').hidden = false;
+            loadCueLists();
+        }
+
+        function revertTimeline() {
+            if (!tl || !tl.dirty) return;
+            if (!confirm('Throw away the changes since the last save?')) return;
+            tl.cues = tl.saved.map(c => ({ ...c, key: tlNewKey(), parameters: { ...c.parameters } }));
+            tl.selected.clear();
+            tl.errorKeys.clear();
+            tlSetDirty(false);
+            tlRender();
+            tlRenderInspector();
+            tlSetStatus('Reverted to the saved version.');
+        }
+
+        async function saveTimeline() {
+            if (!tl) return false;
+            const sorted = tlSorted();
+            if (!sorted.length) { tlSetStatus('A cue list needs at least one cue.', true); return false; }
+            try {
+                const r = await fetch(`/api/cue_lists/${tl.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cues: sorted.map(tlToApi) }),
+                });
+                const data = await r.json();
+                if (!data.success) {
+                    tl.errorKeys = new Set((data.cue_errors || []).map(e => sorted[e.index] && sorted[e.index].key).filter(Boolean));
+                    const first = (data.cue_errors || [])[0];
+                    if (first && sorted[first.index]) { tl.selected = new Set([sorted[first.index].key]); }
+                    tlRender(); tlRenderInspector();
+                    tlSetStatus((data.error || 'Save failed') + (first ? `: ${first.error}` : ''), true);
+                    return false;
+                }
+                tl.saved = data.cue_list.cues.map(tlFromServer);
+                // Keep selection across the reload by matching time + action.
+                const selectedSig = new Set(tl.cues.filter(c => tl.selected.has(c.key)).map(c => `${Math.round(c.at_ms)}|${c.action}|${JSON.stringify(c.parameters)}`));
+                tl.cues = tl.saved.map(c => ({ ...c, parameters: { ...c.parameters } }));
+                tl.selected = new Set(tl.cues.filter(c => selectedSig.has(`${c.at_ms}|${c.action}|${JSON.stringify(c.parameters)}`)).map(c => c.key));
+                tl.errorKeys.clear();
+                tlSetDirty(false);
+                tlRender(); tlRenderInspector();
+                tlSetStatus('Saved.');
+                return true;
+            } catch (e) { tlSetStatus('Save failed: ' + e.message, true); return false; }
+        }
+
+        function tlSetDirty(dirty) {
+            tl.dirty = dirty;
+            document.getElementById('tlDirty').hidden = !dirty;
+            document.getElementById('tlSave').disabled = !dirty;
+            document.getElementById('tlRevert').disabled = !dirty;
+            document.getElementById('tlGo').textContent = dirty ? '▶ Save & Go' : '▶ Go';
+        }
+
+        function tlSetStatus(text, isError = false) {
+            const el = document.getElementById('tlStatus');
+            el.textContent = text;
+            el.classList.toggle('error', !!isError);
+        }
+
+        /* ── layout + drawing ── */
+        function tlViewportWidth() { return document.getElementById('tlScroller').clientWidth || 600; }
+
+        function tlSetZoom(k, anchorScreenX) {
+            const sc = document.getElementById('tlScroller');
+            const ax = anchorScreenX == null ? sc.clientWidth / 2 : anchorScreenX;
+            const anchorMs = tlMs(sc.scrollLeft + ax);
+            tl.k = Math.min(TL.MAX_K, Math.max(TL.MIN_K, k));
+            tl.userZoomed = true;
+            tlRender();
+            sc.scrollLeft = Math.max(0, tlX(anchorMs) - ax);
+            tlDraw();
+        }
+
+        function timelineZoomBy(factor) { if (tl) tlSetZoom(tl.k * factor); }
+
+        function timelineFit() {
+            if (!tl) return;
+            const w = tlViewportWidth() - TL.PAD * 2;
+            tl.k = Math.min(TL.MAX_K, Math.max(TL.MIN_K, w / tlTotalMs()));
+            tl.userZoomed = false;
+            tlRender();
+            document.getElementById('tlScroller').scrollLeft = 0;
+            tlDraw();
+        }
+
+        function tlRender() {
+            if (!tl) return;
+            const total = tlTotalMs();
+            const content = document.getElementById('tlContent');
+            content.style.width = `${Math.ceil(tlX(total) + TL.PAD)}px`;
+            const lane = document.getElementById('tlLane');
+            const sorted = tlSorted();
+            const sceneByName = new Map(allScenesData.map(s => [String(s.name).toLowerCase(), s]));
+            lane.innerHTML = sorted.map((cue, i) => {
+                const next = sorted[i + 1];
+                const endMs = next ? next.at_ms : total;
+                const left = tlX(cue.at_ms);
+                const width = Math.max(6, tlX(endMs) - left);
+                const kind = tlCueKind(cue);
+                const label = tlCueLabel(cue);
+                let style = `left:${left}px;width:${width}px;`;
+                if (kind === 'scene') {
+                    const scene = sceneByName.get(String(cue.parameters.scene || '').toLowerCase());
+                    if (scene && scene.swatch) style += `background-image:url('${escHtml(scene.swatch)}');`;
+                }
+                const cls = ['tl-cue', `kind-${kind}`];
+                if (cue.action === 'blackout') cls.push('kind-blackout');
+                if (tl.selected.has(cue.key)) cls.push('selected');
+                if (tl.errorKeys.has(cue.key)) cls.push('error');
+                const aria = `Cue ${i + 1} at ${tlFormat(cue.at_ms)}: ${label}`;
+                return `<button type="button" class="${cls.join(' ')}" style="${style}" data-key="${cue.key}"
+                            aria-pressed="${tl.selected.has(cue.key)}" aria-label="${escHtml(aria)}" title="${escHtml(aria)}">
+                        <span class="tl-grip" data-grip="1" aria-hidden="true"></span>
+                        <span class="tl-cue-name">${escHtml(label)}</span>
+                        <span class="tl-cue-time">${tlFormat(cue.at_ms)}</span>
+                    </button>`;
+            }).join('');
+            const cursor = document.getElementById('tlCursor');
+            cursor.hidden = tl.cursorMs == null;
+            if (tl.cursorMs != null) cursor.style.left = `${tlX(tl.cursorMs)}px`;
+            const step = tlSnapStep();
+            document.getElementById('tlSnap').textContent = `Snap ${step >= 1000 ? step / 1000 + ' s' : step + ' ms'}`;
+            const last = sorted.length ? sorted[sorted.length - 1].at_ms : 0;
+            document.getElementById('tlMeta').textContent = `${sorted.length} cue${sorted.length === 1 ? '' : 's'} · ${tlFormat(last)}`;
+            tlPlaceTransport();
+            tlDraw();
+        }
+
+        function tlCss(name, fallback) {
+            const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+            return v || fallback;
+        }
+
+        // Ruler + waveform for the visible range only, on a canvas behind the scroller.
+        function tlDraw() {
+            if (!tl) return;
+            const canvas = document.getElementById('tlCanvas');
+            const frame = document.getElementById('tlFrame');
+            const sc = document.getElementById('tlScroller');
+            const dpr = window.devicePixelRatio || 1;
+            const w = frame.clientWidth, h = frame.clientHeight;
+            if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+                canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+            }
+            const g = canvas.getContext('2d');
+            g.setTransform(dpr, 0, 0, dpr, 0, 0);
+            g.clearRect(0, 0, w, h);
+            const scroll = sc.scrollLeft;
+            const fromMs = tlMs(scroll), toMs = Math.min(tlMs(scroll + w), tlTotalMs());
+            const rule = tlCss('--rule-strong', 'rgba(241,241,238,0.16)');
+            const faint = tlCss('--rule', 'rgba(241,241,238,0.08)');
+            const text = tlCss('--paper-50', 'rgba(241,241,238,0.54)');
+            const mono = tlCss('--font-mono', 'monospace');
+
+            // Ruler: major ticks at least 90 px apart, with labels.
+            const majors = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000];
+            const major = majors.find(m => m * tl.k >= 90) || 600000;
+            const minor = major / 5;
+            g.font = `12px ${mono}`;
+            g.textBaseline = 'middle';
+            g.fillStyle = text;
+            g.strokeStyle = faint;
+            g.lineWidth = 1;
+            g.beginPath();
+            for (let t = Math.floor(fromMs / minor) * minor; t <= toMs; t += minor) {
+                const x = Math.round(tlX(t) - scroll) + 0.5;
+                const isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
+                g.moveTo(x, isMajor ? 6 : 16); g.lineTo(x, TL.RULER_H);
+                if (isMajor) { g.moveTo(x, TL.RULER_H); g.lineTo(x, h); }
+            }
+            g.stroke();
+            for (let t = Math.floor(fromMs / major) * major; t <= toMs; t += major) {
+                const x = tlX(t) - scroll;
+                const label = major < 1000 ? tlFormat(t) : tlFormat(t).replace(/\.000$/, '');
+                g.fillText(label, x + 4, 11);
+            }
+            g.strokeStyle = rule;
+            g.beginPath(); g.moveTo(0, TL.RULER_H + 0.5); g.lineTo(w, TL.RULER_H + 0.5); g.stroke();
+
+            // Waveform band
+            const mid = TL.WAVE_TOP + TL.WAVE_H / 2;
+            const wave = tl.wave;
+            if (wave && wave.peaks && wave.peaks.length) {
+                const res = wave.resolution_ms;
+                const peakCol = tlCss('--paper-30', 'rgba(241,241,238,0.3)');
+                const rmsCol = tlCss('--paper-60', 'rgba(241,241,238,0.64)');
+                for (let px = 0; px < w; px++) {
+                    const a = tlMs(scroll + px), b = tlMs(scroll + px + 1);
+                    let i0 = Math.floor(a / res), i1 = Math.max(i0 + 1, Math.ceil(b / res));
+                    if (i0 >= wave.peaks.length) break;
+                    i1 = Math.min(i1, wave.peaks.length);
+                    let pk = 0, rm = 0;
+                    for (let i = Math.max(0, i0); i < i1; i++) { const p = wave.peaks[i]; if (p.peak > pk) pk = p.peak; if (p.rms > rm) rm = p.rms; }
+                    if (tlX(0) - scroll > px) continue;
+                    const hp = pk * TL.WAVE_H / 2, hr = rm * TL.WAVE_H / 2;
+                    g.fillStyle = peakCol; g.fillRect(px, mid - hp, 1, hp * 2 || 1);
+                    g.fillStyle = rmsCol; g.fillRect(px, mid - hr, 1, hr * 2 || 0);
+                }
+            } else {
+                g.fillStyle = text;
+                g.font = `13px ${tlCss('--font-sans', 'sans-serif')}`;
+                g.textAlign = 'center';
+                g.fillText(tl.audioFile ? `${tl.audioFile}: re-attach to see the waveform` : 'No audio attached', w / 2, mid);
+                g.textAlign = 'start';
+            }
+            g.strokeStyle = faint;
+            g.beginPath(); g.moveTo(0, TL.WAVE_TOP + TL.WAVE_H + 4.5); g.lineTo(w, TL.WAVE_TOP + TL.WAVE_H + 4.5); g.stroke();
+        }
+
+        /* ── inspector ── */
+        function tlRenderInspector() {
+            const box = document.getElementById('tlInspector');
+            if (!tl) { box.innerHTML = ''; return; }
+            const sel = tl.cues.filter(c => tl.selected.has(c.key));
+            if (!sel.length) {
+                box.innerHTML = `<p class="hint" style="margin:0;">Select a cue to edit it. <strong>+ Cue at cursor</strong> adds one where you last previewed.</p>`;
+                return;
+            }
+            if (sel.length > 1) {
+                box.innerHTML = `<p class="hint" style="margin:0 0 0.5rem;">${sel.length} cues selected. Drag any of them, or use ← → (Shift for ×10), to move them together.</p>
+                    <div class="tl-inspector-actions">
+                        <button class="btn-secondary btn-tiny" onclick="timelineDuplicate()">Duplicate</button>
+                        <button class="btn-danger btn-tiny" onclick="timelineDelete()">Delete ${sel.length} cues</button>
+                        <button class="btn-ghost btn-tiny" onclick="timelineSelectNone()">Clear selection</button>
+                    </div>`;
+                return;
+            }
+            const cue = sel[0];
+            const kind = tlCueKind(cue);
+            const sceneOpts = allScenesData.map(s => `<option value="${escHtml(s.name)}" ${s.name === cue.parameters.scene ? 'selected' : ''}>${escHtml(s.name)}</option>`).join('');
+            const actionText = kind === 'action' ? tlCueLabel(cue) : '';
+            const value = kind === 'scene'
+                ? `<select id="tlInsValue" class="field-input" onchange="timelineEditValue(this.value)"><option value="">— pick a scene —</option>${sceneOpts}</select>`
+                : kind === 'chase'
+                    ? `<select id="tlInsValue" class="field-input" onchange="timelineEditValue(this.value)"><option value="">— pick a chase —</option></select>`
+                    : `<input id="tlInsValue" class="field-input" value="${escHtml(actionText)}" placeholder="blackout  or  strobe rate=8" onchange="timelineEditValue(this.value)">`;
+            const groups = cue.groups && cue.groups.length ? `<p class="hint" style="margin:0.5rem 0 0;">Only groups: ${escHtml(cue.groups.join(', '))}</p>` : '';
+            box.innerHTML = `<div class="tl-inspector-row">
+                    <div><label class="field-label" for="tlInsTime">Time</label>
+                        <input id="tlInsTime" class="field-input" style="font-family:var(--font-mono);" value="${tlFormat(cue.at_ms)}" onchange="timelineEditTime(this)"></div>
+                    <div><label class="field-label" for="tlInsKind">Type</label>
+                        <select id="tlInsKind" class="field-input" onchange="timelineEditKind(this.value)">
+                            <option value="scene" ${kind === 'scene' ? 'selected' : ''}>Scene</option>
+                            <option value="chase" ${kind === 'chase' ? 'selected' : ''}>Chase</option>
+                            <option value="action" ${kind === 'action' ? 'selected' : ''}>Action</option>
+                        </select></div>
+                    <div><label class="field-label" for="tlInsValue">${kind === 'scene' ? 'Scene' : kind === 'chase' ? 'Chase' : 'Action'}</label>${value}</div>
+                </div>${groups}
+                <div class="tl-inspector-actions">
+                    <button class="btn-secondary btn-tiny" onclick="timelinePreviewCue()">Preview this cue</button>
+                    <button class="btn-secondary btn-tiny" onclick="timelineDuplicate()">Duplicate</button>
+                    <button class="btn-danger btn-tiny" onclick="timelineDelete()">Delete</button>
+                </div>`;
+            if (kind === 'chase') populateChaseDropdown('tlInsValue', cue.parameters.chase || '');
+        }
+
+        function tlSelectedOne() {
+            const sel = tl ? tl.cues.filter(c => tl.selected.has(c.key)) : [];
+            return sel.length === 1 ? sel[0] : null;
+        }
+
+        function timelineEditTime(input) {
+            const cue = tlSelectedOne(); if (!cue) return;
+            const ms = tlParseTime(input.value);
+            if (ms == null) { tlSetStatus(`Can't read "${input.value}" as a time. Try 1:23.500, 32s or 1500ms.`, true); input.value = tlFormat(cue.at_ms); return; }
+            cue.at_ms = ms; tlChanged();
+            tlSetStatus('');
+        }
+
+        function timelineEditKind(kind) {
+            const cue = tlSelectedOne(); if (!cue) return;
+            if (kind === 'scene') { cue.action = 'activate_scene'; cue.parameters = { scene: (allScenesData[0] || {}).name || '' }; }
+            else if (kind === 'chase') { cue.action = 'start_chase'; cue.parameters = { chase: '' }; }
+            else { cue.action = 'blackout'; cue.parameters = {}; }
+            tlChanged(); tlRenderInspector();
+        }
+
+        function timelineEditValue(value) {
+            const cue = tlSelectedOne(); if (!cue) return;
+            const kind = tlCueKind(cue);
+            if (kind === 'scene') cue.parameters = { scene: value };
+            else if (kind === 'chase') cue.parameters = { chase: value };
+            else {
+                const parts = String(value).trim().split(/\s+/).filter(Boolean);
+                if (!parts.length) return;
+                cue.action = parts.shift();
+                const params = {};
+                for (const p of parts) { const [k, ...v] = p.split('='); if (k && v.length) params[k] = v.join('='); }
+                cue.parameters = params;
+            }
+            tl.errorKeys.delete(cue.key);
+            tlChanged();
+        }
+
+        function tlChanged() { tlSetDirty(true); tlRender(); }
+
+        /* ── selection + edit commands ── */
+        function tlSelect(key, additive) {
+            if (additive) { if (tl.selected.has(key)) tl.selected.delete(key); else tl.selected.add(key); }
+            else tl.selected = new Set([key]);
+            tlRender(); tlRenderInspector();
+        }
+        function timelineSelectNone() { if (!tl) return; tl.selected.clear(); tlRender(); tlRenderInspector(); }
+
+        function timelineDelete() {
+            if (!tl || !tl.selected.size) return;
+            const n = tl.selected.size;
+            if (n >= tl.cues.length) { tlSetStatus('A cue list needs at least one cue; keep one.', true); return; }
+            tl.cues = tl.cues.filter(c => !tl.selected.has(c.key));
+            tl.selected.clear();
+            tlChanged(); tlRenderInspector();
+            tlSetStatus(`Deleted ${n} cue${n === 1 ? '' : 's'}. Save to keep the change, or Revert.`);
+        }
+
+        function timelineDuplicate() {
+            if (!tl || !tl.selected.size) return;
+            const sel = tl.cues.filter(c => tl.selected.has(c.key));
+            const span = Math.max(...sel.map(c => c.at_ms)) - Math.min(...sel.map(c => c.at_ms));
+            const offset = Math.max(1000, tlSnap(span + 1000));
+            const copies = sel.map(c => ({ ...c, key: tlNewKey(), at_ms: c.at_ms + offset, parameters: { ...c.parameters } }));
+            tl.cues.push(...copies);
+            tl.selected = new Set(copies.map(c => c.key));
+            tlChanged(); tlRenderInspector();
+            tlSetStatus(`Duplicated ${copies.length} cue${copies.length === 1 ? '' : 's'} ${tlFormat(offset)} later.`);
+        }
+
+        function timelineAddCue() {
+            if (!tl) return;
+            const at = tlSnap(tl.cursorMs != null ? tl.cursorMs : (tl.cues.reduce((m, c) => Math.max(m, c.at_ms), 0) + 5000));
+            const scene = (allScenesData[0] || {}).name || '';
+            const cue = { key: tlNewKey(), at_ms: at, action: 'activate_scene', parameters: { scene }, groups: null };
+            tl.cues.push(cue);
+            tl.selected = new Set([cue.key]);
+            tlChanged(); tlRenderInspector();
+            tlSetStatus(`Added a cue at ${tlFormat(at)}. Pick what it does below.`);
+            const ins = document.getElementById('tlInsValue'); if (ins) ins.focus();
+        }
+
+        function tlNudge(deltaMs) {
+            const sel = tl.cues.filter(c => tl.selected.has(c.key));
+            if (!sel.length) return;
+            const minAt = Math.min(...sel.map(c => c.at_ms));
+            const d = Math.max(deltaMs, -minAt);
+            if (!d) return;
+            sel.forEach(c => { c.at_ms += d; });
+            tlChanged(); tlRenderInspector();
+        }
+
+        /* ── preview + scrub ── */
+        function tlActiveCueAt(ms) {
+            let best = null;
+            for (const c of tl.cues) if (c.at_ms <= ms && (!best || c.at_ms >= best.at_ms)) best = c;
+            return best;
+        }
+
+        let tlPreviewBusy = false, tlPreviewQueued = null;
+        async function tlPreview(ms) {
+            if (!tl) return;
+            if (tlPreviewBusy) { tlPreviewQueued = ms; return; }
+            tlPreviewBusy = true;
+            try {
+                const body = { at_ms: Math.round(ms) };
+                if (tl.dirty) body.cues = tlSorted().map(tlToApi);
+                const r = await fetch(`/api/cue_lists/${tl.id}/preview`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+                });
+                const data = await r.json();
+                if (!data.success) tlSetStatus('Preview failed: ' + (data.error || r.status) + (data.cue_errors ? ` (cue ${data.cue_errors[0].index + 1}: ${data.cue_errors[0].error})` : ''), true);
+                else if (!data.applied) tlSetStatus(`Previewing ${tlFormat(ms)}: no cue yet, the first is later.`);
+                else tlSetStatus(`Previewing ${tlFormat(ms)} on the rig: ${tlCueLabel(data.applied)} (from ${data.applied.at}).`);
+            } catch (e) { tlSetStatus('Preview failed: ' + e.message, true); }
+            finally {
+                tlPreviewBusy = false;
+                if (tlPreviewQueued != null) { const q = tlPreviewQueued; tlPreviewQueued = null; tlPreview(q); }
+            }
+        }
+
+        function timelinePreviewCue() {
+            const cue = tlSelectedOne(); if (!cue) return;
+            tl.cursorMs = cue.at_ms; tlRender();
+            tlPreview(cue.at_ms);
+        }
+
+        /* ── transport + live playhead ── */
+        async function timelineGo() {
+            if (!tl) return;
+            if (tl.dirty) { if (!(await saveTimeline())) return; }
+            try {
+                const r = await fetch(`/api/cue_lists/${tl.id}/go`, { method: 'POST' });
+                const data = await r.json();
+                if (!data.success) { tlSetStatus('Go failed: ' + (data.error || 'unknown'), true); return; }
+                tl.runtime = { elapsed: 0, at: performance.now(), running: true };
+                tlSetStatus('Playing from the top.');
+                tlPlaceTransport(); tlAnimate();
+                setTimeout(tlPollRuntime, 300);
+            } catch (e) { tlSetStatus('Go failed: ' + e.message, true); }
+        }
+
+        async function timelineStop() {
+            if (!tl) return;
+            try { await fetch(`/api/cue_lists/${tl.id}/stop`, { method: 'POST' }); } catch (e) { /* poll will tell */ }
+            tl.runtime = null;
+            tlPlaceTransport();
+            tlSetStatus('Stopped. The lights hold the last cue.');
+        }
+
+        let tlPollTimer = null;
+        async function tlPollRuntime() {
+            clearTimeout(tlPollTimer);
+            if (!tl) return;
+            const id = tl.id;
+            try {
+                if (currentTab === 'cuelists' && !document.hidden) {
+                    const r = await fetch(`/api/cue_lists/${id}`);
+                    const data = await r.json();
+                    if (tl && tl.id === id && data.success) {
+                        const rt = data.cue_list.runtime || {};
+                        tl.runtime = rt.running ? { elapsed: rt.elapsed_ms, at: performance.now(), running: true } : null;
+                        tlPlaceTransport();
+                        if (tl.runtime) tlAnimate();
+                    }
+                }
+            } catch (e) { /* keep polling */ }
+            if (tl) tlPollTimer = setTimeout(tlPollRuntime, 1000);
+        }
+
+        function tlElapsed() { return tl && tl.runtime ? tl.runtime.elapsed + (performance.now() - tl.runtime.at) : null; }
+
+        function tlPlaceTransport() {
+            if (!tl) return;
+            const running = !!tl.runtime;
+            document.getElementById('tlGo').hidden = false;
+            document.getElementById('tlStop').hidden = !running;
+            const ph = document.getElementById('tlPlayhead');
+            const clock = document.getElementById('tlClock');
+            clock.classList.toggle('running', running);
+            if (!running) {
+                ph.hidden = true;
+                clock.textContent = tlFormat(tl.cursorMs || 0);
+                return;
+            }
+            const ms = tlElapsed();
+            ph.hidden = false;
+            ph.style.left = `${tlX(ms)}px`;
+            clock.textContent = tlFormat(ms);
+        }
+
+        let tlAnimFrame = null;
+        function tlAnimate() {
+            if (tlAnimFrame) return;
+            const step = () => {
+                tlAnimFrame = null;
+                if (!tl || !tl.runtime) return;
+                tlPlaceTransport();
+                // Follow the playhead when it nears the right edge.
+                const sc = document.getElementById('tlScroller');
+                const x = tlX(tlElapsed());
+                if (!tl.dragging && (x > sc.scrollLeft + sc.clientWidth * 0.85 || x < sc.scrollLeft)) {
+                    sc.scrollLeft = Math.max(0, x - sc.clientWidth * 0.25);
+                }
+                tlAnimFrame = requestAnimationFrame(step);
+            };
+            tlAnimFrame = requestAnimationFrame(step);
+        }
+
+        /* ── audio waveform (decoded in this browser) ── */
+        async function tlLoadWaveform() {
+            const id = tl.id;
+            try {
+                const r = await fetch(`/api/cue_lists/${id}/waveform`);
+                const data = await r.json();
+                if (!tl || tl.id !== id) return;
+                tl.wave = data.success && data.peaks && data.peaks.length ? {
+                    resolution_ms: data.resolution_ms || 50,
+                    audio_duration_ms: data.audio_duration_ms || data.peaks.length * (data.resolution_ms || 50),
+                    peaks: data.peaks,
+                } : null;
+                tl.audioFile = data.audio_file || tl.audioFile;
+            } catch (e) { tl.wave = null; }
+            tlAudioLabel();
+            if (!tl.userZoomed) timelineFit(); else tlRender();
+        }
+
+        function tlAudioLabel() {
+            const name = tl && tl.audioFile;
+            document.getElementById('tlAudioName').textContent = name || 'None';
+            document.getElementById('tlAudioName').title = name || '';
+            document.getElementById('tlAudioPick').textContent = name ? 'Replace…' : 'Attach…';
+            document.getElementById('tlAudioRemove').hidden = !name;
+        }
+
+        // Peaks per bucket from decoded audio: max |sample| and RMS, across channels.
+        function tlComputePeaks(buffer, resolutionMs) {
+            const per = Math.max(1, Math.round(buffer.sampleRate * resolutionMs / 1000));
+            const n = Math.ceil(buffer.length / per);
+            const chans = [];
+            for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
+            const out = new Array(n);
+            for (let b = 0; b < n; b++) {
+                const start = b * per, end = Math.min(buffer.length, start + per);
+                let peak = 0, sum = 0, count = 0;
+                for (const data of chans) {
+                    for (let i = start; i < end; i++) { const v = data[i]; const a = v < 0 ? -v : v; if (a > peak) peak = a; sum += v * v; count++; }
+                }
+                out[b] = [Math.round(Math.min(1, peak) * 1e4) / 1e4, Math.round(Math.min(1, Math.sqrt(sum / Math.max(1, count))) * 1e4) / 1e4];
+            }
+            return out;
+        }
+
+        async function timelineAttachAudio(input) {
+            const file = input.files && input.files[0];
+            input.value = '';
+            if (!file || !tl) return;
+            const id = tl.id;
+            tlSetStatus(`Reading ${file.name}…`);
+            try {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                if (!Ctx) throw new Error('this browser cannot decode audio');
+                const ctx = new Ctx();
+                const bytes = await file.arrayBuffer();
+                const buffer = await new Promise((resolve, reject) => {
+                    const p = ctx.decodeAudioData(bytes, resolve, reject);
+                    if (p && p.then) p.then(resolve, reject);
+                });
+                if (ctx.close) ctx.close();
+                const durationMs = Math.round(buffer.duration * 1000);
+                const resolution = Math.max(50, Math.ceil(durationMs / TL.WAVE_MAX_BUCKETS));
+                const peaks = tlComputePeaks(buffer, resolution);
+                const r = await fetch(`/api/cue_lists/${id}/waveform`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ audio_file: file.name, resolution_ms: resolution, audio_duration_ms: durationMs, peaks }),
+                });
+                const data = await r.json();
+                if (!data.success) throw new Error(data.error || `HTTP ${r.status}`);
+                if (!tl || tl.id !== id) return;
+                tl.audioFile = data.audio_file;
+                tl.wave = { resolution_ms: resolution, audio_duration_ms: durationMs, peaks: peaks.map(([peak, rms]) => ({ peak, rms })) };
+                tlAudioLabel();
+                timelineFit();
+                tlSetStatus(`Attached ${file.name} (${tlFormat(durationMs)}). The Pi stores the waveform only; play the audio from your own source and press Go with it.`);
+            } catch (e) {
+                tlSetStatus(`Couldn't read ${file.name}: ${e.message || e}. Try a WAV or MP3.`, true);
+            }
+        }
+
+        async function timelineDetachAudio() {
+            if (!tl || !confirm('Remove the audio waveform from this cue list? The cues stay.')) return;
+            try {
+                const r = await fetch(`/api/cue_lists/${tl.id}/waveform`, { method: 'DELETE' });
+                const data = await r.json();
+                if (!data.success) throw new Error(data.error || r.status);
+                tl.audioFile = null; tl.wave = null;
+                tlAudioLabel(); tlRender();
+                tlSetStatus('Audio removed.');
+            } catch (e) { tlSetStatus('Remove failed: ' + e.message, true); }
+        }
+
+        /* ── context menu ── */
+        let tlMenuKey = null;
+        function tlOpenMenu(key, x, y) {
+            if (!tl.selected.has(key)) tlSelect(key, false);
+            tlMenuKey = key;
+            const menu = document.getElementById('tlMenu');
+            menu.hidden = false;
+            const mw = menu.offsetWidth, mh = menu.offsetHeight;
+            menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - mw - 8))}px`;
+            menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - mh - 8))}px`;
+            menu.querySelector('button').focus();
+        }
+        function tlCloseMenu() { const m = document.getElementById('tlMenu'); if (m) m.hidden = true; tlMenuKey = null; }
+        function timelineMenu(cmd) {
+            tlCloseMenu();
+            if (cmd === 'edit') { const el = document.getElementById('tlInsTime'); if (el) el.focus(); }
+            else if (cmd === 'duplicate') timelineDuplicate();
+            else if (cmd === 'delete') timelineDelete();
+        }
+
+        /* ── pointer + keyboard wiring (bound once) ── */
+        let tlBound = false;
+        function tlBindOnce() {
+            if (tlBound) return;
+            tlBound = true;
+            const sc = document.getElementById('tlScroller');
+            const lane = document.getElementById('tlLane');
+            const scrub = document.getElementById('tlScrub');
+
+            sc.addEventListener('scroll', () => tlDraw(), { passive: true });
+            window.addEventListener('resize', () => { if (!tl) return; if (tl.userZoomed) tlRender(); else timelineFit(); });
+
+            // Ctrl/⌘ + wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms at the pointer.
+            sc.addEventListener('wheel', (e) => {
+                if (!tl || !(e.ctrlKey || e.metaKey)) return;
+                e.preventDefault();
+                const rect = sc.getBoundingClientRect();
+                tlSetZoom(tl.k * Math.exp(-e.deltaY * 0.01), e.clientX - rect.left);
+            }, { passive: false });
+
+            // Two-finger pinch on touch screens.
+            const touches = new Map();
+            let pinch = null;
+            sc.addEventListener('pointerdown', (e) => {
+                if (e.pointerType !== 'touch') return;
+                touches.set(e.pointerId, e.clientX);
+                if (touches.size === 2) {
+                    const xs = [...touches.values()];
+                    pinch = { dist: Math.abs(xs[0] - xs[1]) || 1, k: tl.k };
+                }
+            });
+            sc.addEventListener('pointermove', (e) => {
+                if (!pinch || !touches.has(e.pointerId)) return;
+                touches.set(e.pointerId, e.clientX);
+                const xs = [...touches.values()];
+                const rect = sc.getBoundingClientRect();
+                tlSetZoom(pinch.k * (Math.abs(xs[0] - xs[1]) || 1) / pinch.dist, (xs[0] + xs[1]) / 2 - rect.left);
+            });
+            const endTouch = (e) => { touches.delete(e.pointerId); if (touches.size < 2) pinch = null; };
+            sc.addEventListener('pointerup', endTouch);
+            sc.addEventListener('pointercancel', endTouch);
+
+            // Ruler / waveform: click or drag to preview. Previews only when the active cue changes.
+            let scrubbing = false, lastKey;
+            const scrubTo = (e) => {
+                const rect = document.getElementById('tlContent').getBoundingClientRect();
+                const ms = tlMs(e.clientX - rect.left);
+                tl.cursorMs = ms;
+                document.getElementById('tlCursor').hidden = false;
+                document.getElementById('tlCursor').style.left = `${tlX(ms)}px`;
+                if (!tl.runtime) document.getElementById('tlClock').textContent = tlFormat(ms);
+                const active = tlActiveCueAt(ms);
+                const key = active ? active.key : null;
+                if (key !== lastKey) { lastKey = key; tlPreview(ms); }
+            };
+            scrub.addEventListener('pointerdown', (e) => {
+                if (!tl || e.button > 0 || pinch) return;
+                scrubbing = true; lastKey = undefined;
+                scrub.setPointerCapture(e.pointerId);
+                scrubTo(e);
+            });
+            scrub.addEventListener('pointermove', (e) => { if (scrubbing && !pinch) scrubTo(e); });
+            const endScrub = () => { scrubbing = false; };
+            scrub.addEventListener('pointerup', endScrub);
+            scrub.addEventListener('pointercancel', endScrub);
+
+            // Cue blocks: select, drag to re-time (mouse anywhere; touch on the grip), long-press for the menu.
+            let drag = null, longPress = null;
+            lane.addEventListener('pointerdown', (e) => {
+                const block = e.target.closest('.tl-cue');
+                if (!block || !tl || e.button > 0) return;
+                const key = block.dataset.key;
+                const onGrip = !!e.target.closest('[data-grip]');
+                if (e.pointerType === 'touch') {
+                    longPress = setTimeout(() => { longPress = null; drag = null; tlOpenMenu(key, e.clientX, e.clientY); }, 550);
+                    if (!onGrip) { drag = { key, pending: true, touchTap: true, x0: e.clientX }; return; }
+                }
+                if (e.shiftKey || e.metaKey || e.ctrlKey) { tlSelect(key, true); drag = null; return; }
+                if (!tl.selected.has(key)) tlSelect(key, false);
+                const moving = tl.cues.filter(c => tl.selected.has(c.key));
+                drag = { key, x0: e.clientX, pending: true, orig: new Map(moving.map(c => [c.key, c.at_ms])), pointerId: e.pointerId };
+                // Capture on the lane: blocks are re-rendered while dragging.
+                lane.setPointerCapture(e.pointerId);
+            });
+            lane.addEventListener('pointermove', (e) => {
+                if (!drag) return;
+                const dx = e.clientX - drag.x0;
+                if (Math.abs(dx) > 8 && longPress) { clearTimeout(longPress); longPress = null; }
+                if (drag.touchTap) { if (Math.abs(dx) > 8) drag = null; return; }   // let the lane scroll
+                if (drag.pending && Math.abs(dx) < 3) return;
+                drag.pending = false;
+                tl.dragging = true;
+                const anchorOrig = drag.orig.get(drag.key);
+                const minOrig = Math.min(...drag.orig.values());
+                let delta = tlSnap(anchorOrig + dx / tl.k) - anchorOrig;
+                delta = Math.max(delta, -minOrig);
+                for (const c of tl.cues) if (drag.orig.has(c.key)) c.at_ms = drag.orig.get(c.key) + delta;
+                tlRender();
+                const el = lane.querySelector(`[data-key="${drag.key}"]`);
+                if (el) el.classList.add('dragging');
+                tlSetStatus(`${drag.orig.size > 1 ? drag.orig.size + ' cues' : 'Cue'} → ${tlFormat(anchorOrig + delta)} (${delta >= 0 ? '+' : '−'}${tlFormat(Math.abs(delta))})`);
+            });
+            const endDrag = () => {
+                if (longPress) { clearTimeout(longPress); longPress = null; }
+                if (!drag) return;
+                const d = drag; drag = null;
+                if (d.touchTap) { tlSelect(d.key, false); return; }
+                if (!d.pending) {
+                    tl.dragging = false;
+                    const moved = [...d.orig.entries()].some(([k, v]) => { const c = tl.cues.find(x => x.key === k); return c && c.at_ms !== v; });
+                    if (moved) tlSetDirty(true);
+                    tlRender(); tlRenderInspector();
+                } else if (tl.selected.size > 1 && tl.selected.has(d.key)) {
+                    tlSelect(d.key, false);   // plain click inside a multi-selection picks just that cue
+                }
+            };
+            lane.addEventListener('pointerup', endDrag);
+            lane.addEventListener('pointercancel', () => { if (longPress) clearTimeout(longPress); longPress = null; if (drag && !drag.pending) { for (const c of tl.cues) if (drag.orig && drag.orig.has(c.key)) c.at_ms = drag.orig.get(c.key); tl.dragging = false; tlRender(); } drag = null; });
+            lane.addEventListener('contextmenu', (e) => {
+                const block = e.target.closest('.tl-cue');
+                if (!block || !tl) return;
+                e.preventDefault();
+                tlOpenMenu(block.dataset.key, e.clientX, e.clientY);
+            });
+            lane.addEventListener('keydown', (e) => {
+                const block = e.target.closest('.tl-cue');
+                if (!block || !tl) return;
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tlSelect(block.dataset.key, e.shiftKey); }
+                else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+                    e.preventDefault(); const r = block.getBoundingClientRect(); tlOpenMenu(block.dataset.key, r.left + 8, r.bottom);
+                }
+            });
+
+            document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#tlMenu')) tlCloseMenu(); });
+
+            document.getElementById('cuelistEditor').addEventListener('keydown', (e) => {
+                if (!tl) return;
+                const typing = e.target.closest('input, select, textarea');
+                const mod = e.metaKey || e.ctrlKey;
+                if (e.key === 'Escape') {
+                    if (!document.getElementById('tlMenu').hidden) { tlCloseMenu(); return; }
+                    if (!typing) timelineSelectNone();
+                    return;
+                }
+                if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (tl.dirty) saveTimeline(); return; }
+                if (typing) return;
+                if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); timelineDuplicate(); return; }
+                if (e.key === 'Delete' || e.key === 'Backspace') { if (tl.selected.size) { e.preventDefault(); timelineDelete(); } return; }
+                if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && tl.selected.size) {
+                    e.preventDefault();
+                    const step = tlSnapStep() * (e.shiftKey ? 10 : 1);
+                    tlNudge(e.key === 'ArrowLeft' ? -step : step);
+                    const first = document.querySelector('#tlLane .tl-cue.selected');
+                    if (first) {
+                        first.focus({ preventScroll: true });
+                        const sc = document.getElementById('tlScroller');
+                        const x = parseFloat(first.style.left);
+                        if (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 40) sc.scrollLeft = Math.max(0, x - sc.clientWidth / 3);
+                    }
+                } else if ((e.key === '+' || e.key === '=') && !mod) { timelineZoomBy(1.6); }
+                else if (e.key === '-' && !mod) { timelineZoomBy(1 / 1.6); }
+            });
+
+            window.addEventListener('beforeunload', (e) => { if (tl && tl.dirty) { e.preventDefault(); e.returnValue = ''; } });
         }
 
         /* ══════════════════════════════════════

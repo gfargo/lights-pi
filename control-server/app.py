@@ -7779,6 +7779,28 @@ def _validate_cue_action(cue: dict) -> str | None:
     return None
 
 
+def _normalize_cues(raw_cues) -> tuple[list[dict], list[dict]]:
+    """Normalize and validate a cue array. Returns (cues sorted by time, errors).
+
+    Errors are ``{"index", "error"}`` against the input order.
+    """
+    if not isinstance(raw_cues, list) or not raw_cues:
+        return [], [{"index": None, "error": "cues must be a non-empty array"}]
+    cues, errors = [], []
+    for i, raw in enumerate(raw_cues):
+        norm = _normalize_cue(raw)
+        if "error" in norm:
+            errors.append({"index": i, "error": norm["error"]})
+            continue
+        ref_err = _validate_cue_action(norm)
+        if ref_err:
+            errors.append({"index": i, "error": ref_err})
+            continue
+        cues.append(norm)
+    cues.sort(key=lambda c: c["at_ms"])
+    return cues, errors
+
+
 def _serialize_cue(cue: dict) -> dict:
     """Cue → API-friendly form with both numeric and human-readable time."""
     return {
@@ -8180,6 +8202,7 @@ def delete_cue_list(cl_id_or_name):
     if cl is None:
         return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
     _stop_cue_list(cl["id"])
+    _waveform_sidecar_path(cl["id"]).unlink(missing_ok=True)
     data["cue_lists"] = [c for c in data["cue_lists"] if c["id"] != cl["id"]]
     _save_cue_lists(data)
     return jsonify({"success": True, "deleted": {"id": cl["id"], "name": cl["name"]}})
@@ -8231,6 +8254,10 @@ def preview_cue_list(cl_id_or_name):
 
     Body: {"at_ms": 1500}   (also accepts "at" in any _parse_time_ms form)
 
+    Optional "cues": an unsaved cue array (any create/PATCH form) to preview
+    against instead of the stored one, so the timeline editor can scrub
+    edits before they're saved.
+
     Powers "click anywhere on the timeline -> preview this instant".
     """
     body = request.get_json(silent=True)
@@ -8246,7 +8273,17 @@ def preview_cue_list(cl_id_or_name):
     if at_ms is None:
         return jsonify({"success": False, "error": f"'at_ms' is not parseable: {at_input!r}"}), 400
 
-    cue = _cue_active_at(cl.get("cues", []), at_ms)
+    cues = cl.get("cues", [])
+    if "cues" in body:
+        cues, errors = _normalize_cues(body["cues"])
+        if errors:
+            return jsonify({
+                "success": False,
+                "error": "One or more cues are invalid",
+                "cue_errors": errors,
+            }), 400
+
+    cue = _cue_active_at(cues, at_ms)
     if cue is None:
         return jsonify({"success": True, "at_ms": at_ms, "applied": None})
 
@@ -8254,7 +8291,6 @@ def preview_cue_list(cl_id_or_name):
         execute_lighting_action(
             {"action": cue["action"], "parameters": cue["parameters"]},
             target_groups=cue.get("groups"),
-            source="cue-preview",
         )
     except Exception as e:
         log.warning("cue_preview_failed", cue_list_id=cl["id"], action=cue["action"], error=str(e))
@@ -8275,6 +8311,10 @@ def cue_list_waveform(cl_id_or_name):
     _, cl = _find_cue_list(cl_id_or_name)
     if cl is None:
         return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+
+    stored = _load_waveform_sidecar(cl["id"])
+    if stored is not None:
+        return jsonify({"success": True, "duration_ms": cl.get("duration_ms", 0), **stored})
 
     audio_path = _audio_file_path(cl)
     if audio_path is None or not audio_path.exists():
@@ -8303,6 +8343,116 @@ def cue_list_waveform(cl_id_or_name):
         "duration_ms": cl.get("duration_ms", 0),
         "peaks": peaks,
     })
+
+
+# Waveforms decoded in the browser. The timeline editor decodes the show's
+# audio with Web Audio (any format the browser plays) and sends only the
+# peaks, so no audio file crosses the 1 MB request limit and the Pi never
+# decodes audio. Stored next to the audio directory, one file per cue list.
+WAVEFORM_MAX_BUCKETS = 20000
+WAVEFORM_MIN_RESOLUTION_MS = 10
+
+
+def _waveform_sidecar_path(cl_id) -> Path:
+    return CUE_AUDIO_DIR / f"cue_list_{int(cl_id)}.peaks.json"
+
+
+def _validate_waveform(body) -> tuple[dict | None, str | None]:
+    """Check a browser-made waveform. Returns (clean, None) or (None, error).
+
+    Body: {"audio_file": "song.mp3", "resolution_ms": 50,
+           "audio_duration_ms": 183000, "peaks": [[peak, rms], ...]}
+    Peaks may also be {"peak", "rms"} objects. Values are clamped to 0–1.
+    """
+    if not isinstance(body, dict):
+        return None, "Body must be a JSON object"
+    name = str(body.get("audio_file") or "").strip()
+    name = Path(name).name[:200]
+    if not name:
+        return None, "audio_file is required"
+    resolution = body.get("resolution_ms")
+    if isinstance(resolution, bool) or not isinstance(resolution, (int, float)):
+        return None, "resolution_ms must be a number"
+    resolution = int(resolution)
+    if resolution < WAVEFORM_MIN_RESOLUTION_MS:
+        return None, f"resolution_ms must be at least {WAVEFORM_MIN_RESOLUTION_MS}"
+    peaks = body.get("peaks")
+    if not isinstance(peaks, list) or not peaks:
+        return None, "peaks must be a non-empty array"
+    if len(peaks) > WAVEFORM_MAX_BUCKETS:
+        return None, f"At most {WAVEFORM_MAX_BUCKETS} peaks; use a coarser resolution_ms"
+
+    def unit(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+            raise ValueError
+        return round(min(1.0, max(0.0, float(v))), 4)
+
+    clean = []
+    try:
+        for bucket in peaks:
+            if isinstance(bucket, dict):
+                peak, rms = bucket.get("peak"), bucket.get("rms", 0)
+            elif isinstance(bucket, (list, tuple)) and len(bucket) == 2:
+                peak, rms = bucket
+            else:
+                raise ValueError
+            clean.append({"peak": unit(peak), "rms": unit(rms)})
+    except ValueError:
+        return None, "Each peak must be [peak, rms] or {peak, rms} with numbers"
+    duration = body.get("audio_duration_ms")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+        duration = len(clean) * resolution
+    return {
+        "audio_file": name,
+        "resolution_ms": resolution,
+        "audio_duration_ms": int(duration),
+        "peaks": clean,
+    }, None
+
+
+def _load_waveform_sidecar(cl_id) -> dict | None:
+    path = _waveform_sidecar_path(cl_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    clean, err = _validate_waveform(data)
+    return clean if err is None else None
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/waveform", methods=["PUT"])
+def put_cue_list_waveform(cl_id_or_name):
+    """Store a waveform the browser decoded and attach its file name."""
+    data, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+    clean, err = _validate_waveform(request.get_json(silent=True))
+    if err:
+        return jsonify({"success": False, "error": err}), 400
+    CUE_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    _waveform_sidecar_path(cl["id"]).write_text(json.dumps(clean))
+    cl["audio_file"] = clean["audio_file"]
+    _save_cue_lists(data)
+    return jsonify({
+        "success": True,
+        "audio_file": clean["audio_file"],
+        "audio_duration_ms": clean["audio_duration_ms"],
+        "buckets": len(clean["peaks"]),
+    })
+
+
+@app.route("/api/cue_lists/<cl_id_or_name>/waveform", methods=["DELETE"])
+def delete_cue_list_waveform(cl_id_or_name):
+    """Detach the audio: drop the stored waveform and the file name."""
+    data, cl = _find_cue_list(cl_id_or_name)
+    if cl is None:
+        return jsonify({"success": False, "error": f"Cue list not found: {cl_id_or_name}"}), 404
+    _waveform_sidecar_path(cl["id"]).unlink(missing_ok=True)
+    cl["audio_file"] = None
+    _save_cue_lists(data)
+    return jsonify({"success": True, "audio_file": None})
 
 
 # =============================================================================
