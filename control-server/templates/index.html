@@ -1349,6 +1349,9 @@
             font: inherit; min-width: 1.5rem; min-height: 1.5rem;
         }
         .stage-pick-link { margin-top: 0.5rem; }
+        .audio-level { height: 6px; background: var(--ink-2); margin-top: 0.9rem; overflow: hidden; }
+        .audio-level > div { height: 100%; width: 0%; background: var(--paper-60); transition: width 0.1s linear; }
+        #audioFlashFields[hidden] { display: none; }
         /* ── OSC panel (Tools) ── */
         .osc-where { font-size: var(--fs-body); color: var(--paper-80); margin: 0 0 0.9rem; }
         .osc-where .mono, .osc-feedback .mono { font-family: var(--font-mono); color: var(--paper); }
@@ -1874,8 +1877,10 @@
                 </div>
                 <div class="tool-tick-row two">
                     <span id="audioStatusLabel">Disabled</span>
-                    <span id="audioOnsetLabel">No onset</span>
+                    <span id="audioOnsetLabel">No hits yet</span>
                 </div>
+                <div class="audio-level" aria-hidden="true"><div id="audioLevelBar"></div></div>
+                <div class="tool-tick-row two"><span>Loudness</span><span class="mono" id="audioLevelValue">0%</span></div>
                 <div class="tool-actions">
                     <button class="btn-secondary" onclick="disableAudio()">Disable</button>
                     <button class="btn-primary" onclick="enableAudio()">Enable mic</button>
@@ -1889,7 +1894,8 @@
                     <span class="tool-value" id="audioSensValue">0.020</span>
                 </div>
                 <input type="range" id="audioSensSlider" class="strobe-slider" min="0" max="0.2" step="0.001" value="0.02"
-                       oninput="document.getElementById('audioSensValue').textContent=parseFloat(this.value).toFixed(3)">
+                       oninput="document.getElementById('audioSensValue').textContent=parseFloat(this.value).toFixed(3)"
+                       onchange="setAudioSensitivity(this.value)">
                 <div class="tool-tick-row">
                     <span>0 · always open</span>
                     <span>0.02 · default</span>
@@ -1899,19 +1905,35 @@
                 <p class="hint">Lower = more sensitive. Use Calibrate to auto-set from ambient noise.</p>
             </div>
 
-            <div class="tool-panel" data-eyebrow="Onset flash">
+            <div class="tool-panel" data-eyebrow="What the lights do">
                 <div class="tool-header">
-                    <span class="tool-title">React to</span>
+                    <span class="tool-title">Effect</span>
+                    <span class="tool-value" id="audioEffectState">Off</span>
                 </div>
-                <div class="tool-actions">
-                    <select id="audioReactTo" class="field-input" style="flex:1;">
-                        <option value="">Off (no flash)</option>
-                        <option value="any" selected>Any onset</option>
-                        <option value="kick">Kick (energy-based)</option>
-                        <option value="snare">Snare (HF-based)</option>
+                <select id="audioEffect" class="field-input" aria-label="Effect" onchange="syncAudioEffectFields()">
+                    <option value="flash" selected>Flash on hits</option>
+                    <option value="amplitude">Colour follows loudness</option>
+                    <option value="">Off (just listen)</option>
+                </select>
+                <div id="audioFlashFields">
+                    <label class="field-label" for="audioReactTo">React to</label>
+                    <select id="audioReactTo" class="field-input">
+                        <option value="any" selected>Any hit</option>
+                        <option value="kick">Kick drum (low thump)</option>
+                        <option value="snare">Snare, claps, hats (bright crack)</option>
                     </select>
+                    <div class="tool-header" style="margin-top:0.75rem;">
+                        <label class="field-label" for="audioDecay" style="margin:0;">Fade back</label>
+                        <span class="tool-value" id="audioDecayValue">250 ms</span>
+                    </div>
+                    <input type="range" id="audioDecay" class="strobe-slider" min="50" max="1000" step="25" value="250"
+                           oninput="document.getElementById('audioDecayValue').textContent=this.value+' ms'">
+                    <div class="tool-tick-row two"><span>Short · fast music</span><span>Long · slow</span></div>
                 </div>
-                <p class="hint" style="margin-top:0.5rem;">Flashes all fixtures on detected onset. Enable mic above to activate.</p>
+                <p class="hint" id="audioEffectHint">Every fixture flashes to full on each hit and fades back to the current look.</p>
+                <div class="tool-actions">
+                    <button class="btn-primary" onclick="applyAudioEffect()">Apply</button>
+                </div>
             </div>
 
             <div class="tool-panel" data-eyebrow="Beat clock">
@@ -5204,6 +5226,13 @@
                 const el = document.getElementById('audioBpmDisplay');
                 if (el) el.textContent = (data.bpm > 0 ? data.bpm.toFixed(1) : '—') + ' BPM';
             });
+            _socket.on('audio_level', function(data) {
+                const pct = Math.round(Math.max(0, Math.min(1, data.level || 0)) * 100);
+                const bar = document.getElementById('audioLevelBar');
+                const val = document.getElementById('audioLevelValue');
+                if (bar) bar.style.width = pct + '%';
+                if (val) val.textContent = pct + '%';
+            });
             _socket.on('audio_onset', function(data) {
                 const pulse = document.getElementById('audioOnsetPulse');
                 const label = document.getElementById('audioOnsetLabel');
@@ -5217,7 +5246,8 @@
                 }
                 if (label) {
                     const d = new Date(data.onset_ms);
-                    label.textContent = 'Onset ' + d.toLocaleTimeString();
+                    const kind = { kick: 'Kick', snare: 'Snare' }[data.kind] || 'Hit';
+                    label.textContent = kind + ' ' + d.toLocaleTimeString();
                 }
             });
             _socket.on('audio_state', function(data) {
@@ -5239,6 +5269,68 @@
                 slider.value = state.sensitivity;
                 if (sensVal) sensVal.textContent = parseFloat(state.sensitivity).toFixed(3);
             }
+            _audioEnabled = !!state.enabled;
+            if ('react' in state) {
+                const react = state.react;
+                const effState = document.getElementById('audioEffectState');
+                if (effState) effState.textContent = react
+                    ? (react.effect === 'flash' ? 'Flashing' : 'Following loudness')
+                    : 'Off';
+                if (react) {
+                    document.getElementById('audioEffect').value = react.effect;
+                    document.getElementById('audioReactTo').value = react.react_to || 'any';
+                    document.getElementById('audioDecay').value = react.decay_ms || 250;
+                    document.getElementById('audioDecayValue').textContent = (react.decay_ms || 250) + ' ms';
+                    syncAudioEffectFields();
+                }
+            }
+        }
+
+        let _audioEnabled = false;
+
+        function syncAudioEffectFields() {
+            const effect = document.getElementById('audioEffect').value;
+            document.getElementById('audioFlashFields').hidden = effect !== 'flash';
+            document.getElementById('audioEffectHint').textContent = {
+                flash: 'Every fixture flashes to full on each hit and fades back to the current look.',
+                amplitude: 'Colour follows how loud it is: deep blue when quiet, through violet and red, to amber when loud. Stopping puts the previous look back.',
+                '': 'The mic keeps listening (tempo for audio chases) but the lights don’t react.',
+            }[effect];
+        }
+
+        function _audioEffectBody() {
+            const effect = document.getElementById('audioEffect').value;
+            return {
+                effect: effect || null,
+                react_to: document.getElementById('audioReactTo').value || 'any',
+                decay_ms: parseInt(document.getElementById('audioDecay').value, 10) || 250,
+            };
+        }
+
+        async function applyAudioEffect() {
+            if (!_audioEnabled) { await enableAudio(); return; }
+            const label = document.getElementById('audioStatusLabel');
+            try {
+                const r = await fetch('/api/audio/enable', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(_audioEffectBody()),
+                });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || 'HTTP ' + r.status);
+                _applyAudioState(d);
+            } catch (e) {
+                if (label) label.textContent = 'Could not change the effect: ' + e.message;
+            }
+        }
+
+        async function setAudioSensitivity(value) {
+            if (!_audioEnabled) return;   // used the next time the mic is enabled
+            try {
+                await fetch('/api/audio/sensitivity', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sensitivity: parseFloat(value) }),
+                });
+            } catch (e) {}
         }
 
         function initAudio() {
@@ -5260,9 +5352,7 @@
 
         async function enableAudio() {
             const sens = parseFloat(document.getElementById('audioSensSlider').value);
-            const reactTo = document.getElementById('audioReactTo').value;
-            const body = { sensitivity: sens };
-            if (reactTo) body.react_to = reactTo;
+            const body = { sensitivity: sens, ..._audioEffectBody() };
             try {
                 const r = await fetch('/api/audio/enable', {
                     method: 'POST',
@@ -5286,6 +5376,8 @@
                 _applyAudioState(d);
                 const bpm = document.getElementById('audioBpmDisplay');
                 if (bpm) bpm.textContent = '— BPM';
+                const bar = document.getElementById('audioLevelBar');
+                if (bar) bar.style.width = '0%';
             } catch (e) {}
         }
 
@@ -5312,12 +5404,11 @@
         async function startAudioChase() {
             const chaseId = document.getElementById('audioChaseSelect').value;
             if (!chaseId) return;
-            const reactTo = document.getElementById('audioReactTo').value || 'any';
             try {
                 await fetch('/api/audio/chase/' + chaseId + '/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ react_to: reactTo }),
+                    body: JSON.stringify({}),
                 });
             } catch (e) {}
         }

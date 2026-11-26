@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Local QLC+ fixture definition parser (.qxf)
 sys.path.insert(0, str(Path(__file__).parent))
+import audio_react
 import chat_store
 import fixture_definitions
 import midi_engine
@@ -1132,6 +1133,7 @@ def set_channel_values(channel_values):
     commands = _channel_commands(channel_values)
     if not commands:
         return True
+    _note_audio_react_base(channel_values)
     try:
         _qlc_run(_qlc_send_commands(commands), timeout=5)
         _emit("channel_change", _channel_change_payload(commands))
@@ -8333,23 +8335,144 @@ def _audio_socketio_subscriber(event: dict) -> None:
         socketio.emit("audio_onset", {
             "onset_ms": event["onset_ms"],
             "rms": event.get("rms", 0),
+            "kind": event.get("kind"),
         })
+    elif event.get("type") == "level":
+        socketio.emit("audio_level", {"level": event["level"]})
 
 
-def _make_onset_flash_subscriber(react_to: str = "any", target_groups=None):
-    """Return a subscriber that briefly flashes fixture brightness on onset."""
-    def _cb(event: dict) -> None:
-        if event.get("type") != "onset":
-            return
+# ---------------------------------------------------------------------------
+# Audio-reactive effects (flash, amplitude) — see audio_react.py
+# ---------------------------------------------------------------------------
+#
+# One task on the QLC+ loop renders a frame every AUDIO_REACT_FRAME_S from
+# lock-free engine snapshots and writes only the channels that changed.
+# Running there (not as an engine subscriber) keeps hit-to-light latency to
+# one frame instead of a trip through the hub drainer. The task reads
+# _audio_react (a plain dict, replaced wholesale to reconfigure) and never
+# touches a green primitive.
+#
+# "base" is the look underneath the effect: brightness/colour values from
+# before it started, kept current by set_channel_values() so a scene applied
+# mid-show becomes what the flash fades back to, and what disable restores.
+
+AUDIO_REACT_FRAME_S = 0.03          # ~33 frames a second
+AUDIO_REACT_DEFAULT_DECAY_MS = 250
+_audio_react: dict | None = None
+_audio_react_task = None
+
+
+def _note_audio_react_base(channel_values) -> None:
+    """Record hub-side writes to channels the running effect controls."""
+    cfg = _audio_react
+    if not cfg:
+        return
+    base = cfg["base"]
+    for ch, val in channel_values:
         try:
-            apply_brightness_live(255, target_groups=target_groups)
-        except Exception as exc:
-            print(f"[onset-flash] error: {exc}")
-    return _cb
+            ch = int(ch)
+        except (TypeError, ValueError):
+            continue
+        if ch in base:
+            base[ch] = max(0, min(255, int(val)))
 
 
-# Module-level reference so we can remove the onset flash subscriber on disable
-_onset_flash_cb = None
+def _audio_react_config(body: dict):
+    """Validate an enable body's effect settings. Returns (settings, error).
+
+    ``effect`` is "flash", "amplitude" or null (no effect). For older
+    callers, ``react_to`` alone means the flash effect.
+    """
+    effect = body.get("effect")
+    react_to = body.get("react_to")
+    if effect is None and react_to:
+        effect = "flash"
+    if effect in ("", "off", "none"):
+        effect = None
+    if effect is not None and effect not in audio_react.EFFECTS:
+        return None, f"effect must be one of: {', '.join(audio_react.EFFECTS)}, or null"
+    react_to = react_to or "any"
+    if react_to not in audio_react.REACT_TO:
+        return None, f"react_to must be one of: {', '.join(audio_react.REACT_TO)}"
+    try:
+        decay_ms = int(body.get("decay_ms", AUDIO_REACT_DEFAULT_DECAY_MS))
+    except (TypeError, ValueError):
+        return None, "decay_ms must be a number"
+    decay_ms = max(50, min(2000, decay_ms))
+    groups = [g for g in (body.get("groups") or []) if isinstance(g, str)] or None
+    return {"effect": effect, "react_to": react_to, "decay_ms": decay_ms, "groups": groups}, None
+
+
+async def _run_audio_react_async(cfg: dict) -> None:
+    """Render the effect until _audio_react stops being *cfg*."""
+    last_sent: dict = {}
+    seen_onset, _ = _audio_engine.onset_snapshot()
+    flash_at = None
+    try:
+        while _audio_react is cfg:
+            now_ms = time.time() * 1000
+            onset_ms, kind = _audio_engine.onset_snapshot()
+            if onset_ms != seen_onset:
+                seen_onset = onset_ms
+                if audio_react.hit_matches(cfg["react_to"], kind):
+                    flash_at = onset_ms
+            if cfg["effect"] == "flash":
+                strength = audio_react.flash_envelope(now_ms - flash_at, cfg["decay_ms"]) if flash_at else 0.0
+                frame = audio_react.flash_frame(cfg["plan"], cfg["base"], strength)
+            else:
+                frame = audio_react.amplitude_frame(cfg["plan"], _audio_engine.level_snapshot())
+            changed = audio_react.changed_values(frame, last_sent)
+            if changed:
+                try:
+                    await _qlc_send_commands(_channel_commands(changed))
+                    last_sent.update(changed)
+                except Exception as exc:
+                    print(f"[audio-react] write failed: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(AUDIO_REACT_FRAME_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[audio-react] error: {type(exc).__name__}: {exc}")
+
+
+def _start_audio_react(settings: dict) -> dict:
+    """Start (or replace) the effect described by *settings*."""
+    global _audio_react, _audio_react_task
+    _stop_audio_react(restore=False)
+    plan = [
+        audio_react.plan_fixture(_fixture_roles(f), lambda off, f=f: _absolute_channel(f, off))
+        for f in _target_fixtures(settings["groups"])
+    ]
+    channels = set()
+    for fx in plan:
+        channels.update(fx["brightness"])
+        if fx["dimmer"] is not None:
+            channels.add(fx["dimmer"])
+        if fx["rgb"]:
+            channels.update(fx["rgb"])
+    current = get_current_channel_values()
+    cfg = {**settings, "plan": plan, "base": {ch: int(current.get(ch, 0) or 0) for ch in channels}}
+    _audio_react = cfg
+    _audio_react_task = _qlc_submit(_run_audio_react_async(cfg))
+    return {"fixtures": len(plan), "channels": len(channels)}
+
+
+def _stop_audio_react(restore: bool = True) -> None:
+    """Stop the effect; with *restore*, put the look underneath back."""
+    global _audio_react, _audio_react_task
+    cfg, task = _audio_react, _audio_react_task
+    _audio_react, _audio_react_task = None, None
+    if task is not None:
+        task.cancel()
+    if restore and cfg and cfg["base"]:
+        set_channel_values(sorted(cfg["base"].items()))
+
+
+def _audio_react_state() -> dict | None:
+    cfg = _audio_react
+    if not cfg:
+        return None
+    return {k: cfg[k] for k in ("effect", "react_to", "decay_ms", "groups")} | {"fixtures": len(cfg["plan"])}
 
 
 def _load_audio_chases() -> dict:
@@ -8479,43 +8602,45 @@ def _stop_audio_chase(chase_id_or_name: str) -> dict:
 
 @app.route("/api/audio", methods=["GET"])
 def get_audio_state():
-    """Return current audio engine state."""
-    return jsonify(_audio_engine.get_state())
+    """Return current audio engine state, plus the running effect (or null)."""
+    return jsonify({**_audio_engine.get_state(), "react": _audio_react_state()})
 
 
 @app.route("/api/audio/enable", methods=["POST"])
 def enable_audio():
-    """Start the audio engine.
+    """Start the audio engine and, optionally, an effect.
 
     Body (all optional):
         {
           "device":      null | int | "hw:1,0",   # sounddevice device id/name
-          "sensitivity": 0.02                      # noise-gate RMS threshold
-          "react_to":    "any" | "kick" | "snare" # onset flash mode; null = off
+          "sensitivity": 0.02,                     # noise-gate RMS threshold
+          "effect":      "flash" | "amplitude" | null,
+          "react_to":    "any" | "kick" | "snare", # which hits flash
+          "decay_ms":    250,                      # flash fade-back, 50–2000
+          "groups":      ["front"]                 # default: every fixture
         }
+
+    ``react_to`` without ``effect`` means the flash effect (older callers).
+    Calling it again while capture is running only changes the effect;
+    capture restarts only when ``device`` or ``sensitivity`` is given.
     """
-    global _onset_flash_cb
     body = request.get_json(silent=True) or {}
 
+    settings, err = _audio_react_config(body)
+    if err:
+        return jsonify({"success": False, "error": err}), 400
     device = body.get("device")
     sensitivity = body.get("sensitivity")
-    react_to = body.get("react_to")
 
     # Wire SocketIO subscriber (idempotent)
     _audio_engine.unsubscribe(_audio_socketio_subscriber)
     _audio_engine.subscribe(_audio_socketio_subscriber)
 
-    # Remove old onset flash subscriber if any
-    if _onset_flash_cb is not None:
-        _audio_engine.unsubscribe(_onset_flash_cb)
-        _onset_flash_cb = None
-
-    # Register new onset flash subscriber
-    if react_to:
-        _onset_flash_cb = _make_onset_flash_subscriber(react_to)
-        _audio_engine.subscribe(_onset_flash_cb)
-
-    ok = _audio_engine.start(device=device, sensitivity=sensitivity)
+    running = _audio_engine.get_state()["enabled"]
+    if running and device is None and sensitivity is None:
+        ok = True
+    else:
+        ok = _audio_engine.start(device=device, sensitivity=sensitivity)
     if not ok:
         return jsonify({
             "success": False,
@@ -8526,18 +8651,33 @@ def enable_audio():
             "available": False,
         }), 503
 
-    return jsonify({"success": True, **_audio_engine.get_state()})
+    if settings["effect"]:
+        _start_audio_react(settings)
+    else:
+        _stop_audio_react()
+    return jsonify({"success": True, **_audio_engine.get_state(), "react": _audio_react_state()})
 
 
 @app.route("/api/audio/disable", methods=["POST"])
 def disable_audio():
-    """Stop the audio engine and any running audio chases."""
-    global _onset_flash_cb
+    """Stop the effect (restoring the look underneath) and the audio engine."""
+    _stop_audio_react()
     _audio_engine.stop()
-    if _onset_flash_cb is not None:
-        _audio_engine.unsubscribe(_onset_flash_cb)
-        _onset_flash_cb = None
     _audio_engine.unsubscribe(_audio_socketio_subscriber)
+    return jsonify({"success": True, **_audio_engine.get_state(), "react": None})
+
+
+@app.route("/api/audio/sensitivity", methods=["POST"])
+def set_audio_sensitivity():
+    """Set the noise gate without restarting capture. Body: {"sensitivity": 0.02}."""
+    body = request.get_json(silent=True) or {}
+    try:
+        value = float(body.get("sensitivity"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "sensitivity must be a number"}), 400
+    if not 0 <= value <= 1:
+        return jsonify({"success": False, "error": "sensitivity must be between 0 and 1"}), 400
+    _audio_engine.set_sensitivity(value)
     return jsonify({"success": True, **_audio_engine.get_state()})
 
 
@@ -10304,6 +10444,10 @@ def init_runtime() -> None:
 
     # Wire audio SocketIO subscriber so BPM/onset events stream to the browser.
     # The engine only starts capture when /api/audio/enable is called.
+    # Capture runs on a real OS thread and hands each event to the hub (see
+    # AudioEngine's docstring) — never a green thread under eventlet.
+    _audio_engine.use_threading(_native_threading_module())
+    _audio_engine.set_dispatch(lambda cb, event: _call_on_hub(cb, event))
     _audio_engine.subscribe(_audio_socketio_subscriber)
     if _audio_engine.available:
         print("✓ Audio engine ready (aubio + sounddevice found)")

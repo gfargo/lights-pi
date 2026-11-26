@@ -9,6 +9,8 @@ import statistics
 import threading
 import time
 
+from audio_react import LevelTracker, band_energies, classify_hit
+
 # ---------------------------------------------------------------------------
 # Pure helpers — no hardware, fully unit-testable
 # ---------------------------------------------------------------------------
@@ -58,23 +60,34 @@ class AudioEngine:
 
     Subscribers are callables that receive one dict argument:
         {"type": "bpm",    "bpm": 120.0}
-        {"type": "onset",  "onset_ms": 1700000000000, "rms": 0.042}
+        {"type": "onset",  "onset_ms": 1700000000000, "rms": 0.042, "kind": "kick"}
+        {"type": "level",  "level": 0.63}            (about 10 per second)
 
-    All state mutations are lock-protected so subscribers can be
-    added/removed from Flask request threads while the capture thread runs.
+    Threading. Capture is a blocking PortAudio read every ~12 ms, so it must
+    run on a real OS thread: as a green thread under gunicorn's eventlet
+    worker it would never yield and would starve every HTTP request (the
+    #109 failure). app.py calls ``use_threading()`` with eventlet's original
+    threading module and ``set_dispatch()`` with a function that hands each
+    subscriber call to the hub, so subscribers never run on the capture
+    thread there. Readers on other OS threads (the QLC+ loop) use the
+    lock-free ``*_snapshot()`` methods.
     """
 
     def __init__(self):
+        self._threading = threading
         self._lock = threading.Lock()
         self._subscribers: list = []
         self._running = False
         self._thread: threading.Thread | None = None
+        self._dispatch = lambda cb, event: cb(event)
 
         # Public state
         self._bpm: float = 0.0
         self._bpm_history: list[float] = []
         self._recent_rms: list[float] = []
         self._last_onset_ms: int = 0
+        self._last_onset_kind: str = ""
+        self._level: float = 0.0          # 0–1 loudness, auto-gained
         self._sensitivity: float = 0.02   # RMS noise-gate threshold
         self._device: str | int | None = None  # None = system default
 
@@ -95,6 +108,19 @@ class AudioEngine:
         except (ImportError, OSError):
             # sounddevice raises OSError when PortAudio native lib is absent
             return False
+
+    # ------------------------------------------------------------------
+    # Runtime wiring (see the class docstring)
+    # ------------------------------------------------------------------
+
+    def use_threading(self, module) -> None:
+        """Run capture on *module*'s threads and locks (call before start)."""
+        self._threading = module
+        self._lock = module.Lock()
+
+    def set_dispatch(self, dispatch) -> None:
+        """*dispatch(callback, event)* delivers one event to one subscriber."""
+        self._dispatch = dispatch
 
     # ------------------------------------------------------------------
     # Public API
@@ -119,7 +145,8 @@ class AudioEngine:
             self._bpm = 0.0
             self._bpm_history = []
             self._recent_rms = []
-            self._thread = threading.Thread(
+            self._level = 0.0
+            self._thread = self._threading.Thread(
                 target=self._capture_loop,
                 daemon=True,
                 name="audio-engine",
@@ -142,6 +169,8 @@ class AudioEngine:
                 "enabled": self._running,
                 "bpm": round(self._bpm, 1),
                 "last_onset_ms": self._last_onset_ms,
+                "last_onset_kind": self._last_onset_kind,
+                "level": round(self._level, 3),
                 "sensitivity": self._sensitivity,
                 "device": self._device,
             }
@@ -159,6 +188,19 @@ class AudioEngine:
         eventlet) can wedge the loop.
         """
         return self._bpm
+
+    def onset_snapshot(self) -> tuple:
+        """Lock-free (last_onset_ms, kind) for the QLC+ loop thread."""
+        return self._last_onset_ms, self._last_onset_kind
+
+    def level_snapshot(self) -> float:
+        """Lock-free 0–1 loudness for the QLC+ loop thread."""
+        return self._level
+
+    def set_sensitivity(self, value: float) -> None:
+        """Change the noise gate while running."""
+        with self._lock:
+            self._sensitivity = float(value)
 
     def calibrate(self) -> dict:
         """Auto-set noise gate from recent ambient audio samples.
@@ -201,7 +243,7 @@ class AudioEngine:
             subscribers = list(self._subscribers)
         for cb in subscribers:
             try:
-                cb(event)
+                self._dispatch(cb, event)
             except Exception as exc:
                 print(f"[audio-engine] subscriber error: {exc}")
 
@@ -219,6 +261,16 @@ class AudioEngine:
             onset_det = aubio.onset("complex", buf, hop, sr)
             tempo_det = aubio.tempo("specdiff", buf, hop, sr)
 
+            # Hit classification looks at the last 2048 samples (~46 ms,
+            # ~21 Hz bins) so the kick band has enough resolution.
+            fft_size = 2048
+            window = np.hanning(fft_size).astype("float32")
+            ring = np.zeros(fft_size, dtype="float32")
+            tracker = LevelTracker()
+            last_level_emit = 0.0
+            last_bpm_emitted = -1.0
+            last_bpm_emit = 0.0
+
             with sd.InputStream(
                 device=self._device,
                 channels=1,
@@ -230,6 +282,15 @@ class AudioEngine:
                     data, _ = stream.read(hop)
                     samples = data[:, 0]
                     rms = float(np.sqrt(np.mean(samples ** 2)))
+                    ring = np.concatenate((ring[hop:], samples))
+
+                    # Loudness for the amplitude effect (plain float write:
+                    # readers on other threads take no lock).
+                    self._level = tracker.update(rms, self._sensitivity)
+                    now = time.time()
+                    if now - last_level_emit >= 0.1:
+                        last_level_emit = now
+                        self._notify({"type": "level", "level": round(self._level, 3)})
 
                     # Rolling RMS history for calibration
                     with self._lock:
@@ -252,17 +313,25 @@ class AudioEngine:
                             if len(self._bpm_history) > 32:
                                 self._bpm_history = self._bpm_history[-32:]
                             self._bpm = smooth_bpm(self._bpm_history)
-                        self._notify({"type": "bpm", "bpm": round(self._bpm, 1)})
+                        # Only tell the UI when the readout would change, at
+                        # most twice a second (this branch runs ~86 times/s).
+                        if abs(self._bpm - last_bpm_emitted) >= 0.5 and now - last_bpm_emit >= 0.5:
+                            last_bpm_emitted, last_bpm_emit = self._bpm, now
+                            self._notify({"type": "bpm", "bpm": round(self._bpm, 1)})
 
                     # Fire onset only when above noise gate
                     if gate_open and onset_out[0] > 0:
                         onset_ms = int(time.time() * 1000)
-                        with self._lock:
-                            self._last_onset_ms = onset_ms
+                        spectrum = np.abs(np.fft.rfft(ring * window))
+                        kind = classify_hit(*band_energies(spectrum, sr, fft_size))
+                        # Kind first, then the timestamp readers key on.
+                        self._last_onset_kind = kind
+                        self._last_onset_ms = onset_ms
                         self._notify({
                             "type": "onset",
                             "onset_ms": onset_ms,
                             "rms": round(rms, 4),
+                            "kind": kind,
                         })
 
         except Exception as exc:

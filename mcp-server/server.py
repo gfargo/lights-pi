@@ -929,6 +929,65 @@ def blackout(groups: list[str] | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Audio reactivity (issue #12) — needs a USB mic on the Pi
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_audio_state() -> dict:
+    """Mic and effect state: available, enabled, bpm, level (0-1),
+    last_onset_kind, sensitivity, and the running effect under "react"."""
+    return _get("/api/audio")
+
+
+@mcp.tool()
+def enable_audio_react(
+    effect: str = "flash",
+    react_to: str = "any",
+    decay_ms: int = 250,
+    groups: list[str] | None = None,
+    sensitivity: float | None = None,
+) -> dict:
+    """Start listening to the mic and make the lights react.
+
+    Args:
+        effect: "flash" — brightness jumps to full on each hit and fades back
+            to the current look over decay_ms. "amplitude" — colour follows
+            loudness, deep blue when quiet through violet and red to amber
+            when loud.
+        react_to: Which hits flash: "any", "kick" (low thump) or "snare"
+            (bright crack, also claps and hats). Ignored by "amplitude".
+        decay_ms: Flash fade-back time, 50-2000 ms. Short (~150) for fast
+            music, long (~600) for slow.
+        groups: Optional group names to limit the effect. Omit for every fixture.
+        sensitivity: Optional noise gate (RMS, e.g. 0.02). Lower reacts to
+            quieter sound. Usually better set with the Calibrate button.
+
+    Calling it again changes the effect without restarting the mic.
+    Fails with "unavailable" when the Pi has no audio libraries or mic.
+    """
+    payload: dict[str, Any] = {"effect": effect, "react_to": react_to, "decay_ms": int(decay_ms)}
+    if groups:
+        payload["groups"] = groups
+    if sensitivity is not None:
+        payload["sensitivity"] = float(sensitivity)
+    return _post("/api/audio/enable", payload)
+
+
+@mcp.tool()
+def disable_audio_react() -> dict:
+    """Stop the mic and the effect, and put back the look from before it."""
+    return _post("/api/audio/disable")
+
+
+@mcp.tool()
+def set_audio_sensitivity(level: float) -> dict:
+    """Set the mic's noise gate (RMS 0-1, typically 0.005-0.1) without
+    restarting. Lower reacts to quieter sounds; raise it if talking or
+    footsteps trigger flashes."""
+    return _post("/api/audio/sensitivity", {"sensitivity": float(level)})
+
+
+# ---------------------------------------------------------------------------
 # Diagnostics (issue #9)
 # ---------------------------------------------------------------------------
 

@@ -20,7 +20,7 @@ detector.  When you add a new @mcp.tool() legitimately, update the count here.
 """
 import asyncio
 
-EXPECTED_TOOL_COUNT = 53
+EXPECTED_TOOL_COUNT = 57
 
 
 # ---------------------------------------------------------------------------

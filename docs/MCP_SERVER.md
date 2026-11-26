@@ -143,6 +143,17 @@ in the workspace XML, played back via QLC+'s native chase engine.
 | `start_chase`     | Begin playback (loops forever unless run_order is SingleShot) |
 | `stop_chase`      | Halt playback; fixtures hold their current state              |
 
+### Audio reactivity
+
+Needs a USB mic on the Pi; see [AUDIO_REACTIVE.md](AUDIO_REACTIVE.md).
+
+| Tool                    | Effect                                                  |
+|-------------------------|---------------------------------------------------------|
+| `get_audio_state`       | Mic state, BPM, loudness, last hit kind, running effect |
+| `enable_audio_react`    | Start the mic with `flash` (on `any`/`kick`/`snare` hits, fading back over `decay_ms`) or `amplitude` (colour follows loudness), optionally on some groups |
+| `disable_audio_react`   | Stop the mic and effect; restores the look from before  |
+| `set_audio_sensitivity` | Change the noise gate without restarting                |
+
 ### Workspaces
 
 Each workspace is a separate `.qxw` with its own fixtures, scenes, groups and
