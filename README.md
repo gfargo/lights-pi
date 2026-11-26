@@ -1221,6 +1221,19 @@ See [docs/AI_SCENE_GENERATION.md](docs/AI_SCENE_GENERATION.md) for complete docu
 The [GitHub releases page](https://github.com/gfargo/lights-pi/releases) is
 the source of truth. Recent highlights:
 
+**v2.19.0 — Cue timeline, bands to fixtures.** **Edit** on a cue list
+opens a timeline: drag cues to re-time them, attach the track to see its
+waveform, and scrub the ruler to preview any moment on the rig. A new audio
+effect puts bass, mids and highs on their own fixtures. Floor-plan images up
+to 8 MB upload, and `deploy.sh` now updates the MCP server too.
+
+**v2.18.x — Stage plan, OSC panel, sound-reactive light.** A Stage tab draws
+the room with every fixture in its live colour; pick fixtures and aim
+commands at just those, add a floor-plan image, export it as a PNG. An OSC
+panel with feedback to TouchOSC. Lights flash on kicks or snares and colour
+follows loudness. Every Flask route and MCP tool is covered by integration
+tests.
+
 **v2.17.0 — Branded, thumb-first control UI.** `BRAND_NAME`,
 `BRAND_SHORT_NAME` and `BRAND_ACCENT` name and colour each install; an
 optional `static/theme.css` loads after the built-in styles and survives
