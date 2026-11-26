@@ -93,6 +93,38 @@ echo "--- Restarting control server ---"
 "
 
 echo ""
+echo "--- MCP server ---"
+# Only on Pis where it was installed (./lightsctl.sh mcp-install, which also
+# writes the unit and the venv). ~/mcp-server/.env holds its secrets and is
+# never overwritten or deleted.
+if "${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "systemctl cat lighting-mcp.service >/dev/null 2>&1"; then
+  rsync -avz --delete -e "$RSYNC_RSH" \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    --exclude='.env' \
+    mcp-server/ "${PI_USER}@${PI_HOST}:${PI_HOME}/mcp-server/"
+  "${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "
+    ~/mcp-server-venv/bin/pip install -q --disable-pip-version-check -r ${PI_HOME}/mcp-server/requirements.txt
+    sudo systemctl restart lighting-mcp.service
+    for i in \$(seq 1 30); do
+      # Any HTTP answer means uvicorn is up (GET /mcp without a session is a 4xx).
+      code=\$(curl -s -o /dev/null --max-time 3 -w '%{http_code}' http://localhost:5001/mcp 2>/dev/null || true)
+      if [ \"\$code\" != 000 ] && [ -n \"\$code\" ]; then
+        echo \"✓ lighting-mcp.service answering on :5001 (HTTP \$code after \${i}s)\"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo '✗ lighting-mcp.service did not answer on :5001 within 30s'
+    echo \"   state: \$(systemctl is-active lighting-mcp.service)\"
+    journalctl -u lighting-mcp.service --since '45 sec ago' --no-pager | tail -25
+    exit 1
+  "
+else
+  echo "Not installed on this Pi; skipping (./lightsctl.sh mcp-install to add it)."
+fi
+
+echo ""
 echo "=== Done ==="
 echo "Control server: http://${PI_HOST}:5000"
 echo "QLC+ web:       http://${PI_HOST}:9999"
