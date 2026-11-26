@@ -66,6 +66,11 @@ gunicorn -k eventlet -w 1 -b 0.0.0.0:$CONTROL_PORT -c gunicorn.conf.py app:app
   log). `/healthz` reports `qlc_bridge_ok`, `qlc_consecutive_timeouts` and
   `qlc_loop_restarts`, and returns 503 while calls are stalling.
   `tests/_eventlet_stress.py` exercises this under a real monkey-patch.
+- Other native threads follow the same rule. Microphone capture
+  (`audio_engine.py`) and rtmidi's callback thread (`midi_engine.py`) only
+  hand work to the hub with `_call_on_hub()`. For MIDI, fader messages are
+  coalesced on the way: the hub applies the newest value per control, so a
+  fader sweep costs one QLC+ write per hub pass rather than one per message.
 - Local dev (`python app.py`) is unaffected — it still runs via
   `socketio.run(...)`, calling the same `init_runtime()` directly instead of
   through a gunicorn hook.
@@ -259,6 +264,11 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | GET | `/api/stage/background` | The floor-plan image drawn under the Stage grid (404 when none) |
 | POST | `/api/stage/background` | Upload a floor plan (multipart field `image`; PNG, JPEG or WebP, 8 MB max), replacing any old one |
 | DELETE | `/api/stage/background` | Remove the floor plan |
+| GET | `/api/midi/devices` | Connected MIDI input ports (probes rtmidi; `available` is false without python-rtmidi) |
+| GET | `/api/midi/monitor` | MIDI tab poll: open ports (`system` marks Midi Through and QLC+'s own port), messages after `?after=<seq>`, latest value per control |
+| GET/POST | `/api/midi/mappings` | List or add MIDI bindings (CC → `channel`/`master`; note → `scene`/`chase_toggle`/`blackout`); stored in `~/.qlcplus/midi_mappings.json` |
+| PATCH/DELETE | `/api/midi/mappings/<id>` | Change or remove a MIDI binding |
+| GET | `/api/midi/state` | Last raw MIDI value per binding |
 | GET | `/api/osc` | OSC listener state, local addresses, feedback destination and the last 25 inbound messages |
 | GET | `/api/osc/addresses` | OSC address (`/scene/<id>`, `/scene/<slug>`) of every scene and chase |
 | POST | `/api/osc/settings` | Where OSC feedback goes: `sender` (reply to the last sender), `fixed` host:port, or `off`; saved to `~/.qlcplus/osc.json` |

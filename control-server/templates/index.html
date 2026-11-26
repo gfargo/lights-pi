@@ -1444,6 +1444,44 @@
         .audio-band.mid .audio-level > div { background: var(--band-mid); }
         .audio-band.high .audio-level > div { background: var(--band-high); }
         #audioFlashFields[hidden] { display: none; }
+        /* ── MIDI tab (#26): controllers, learn-to-bind, live values ── */
+        .midi-devices { list-style: none; margin: 0 0 0.5rem; padding: 0; }
+        .midi-devices li { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0; font-size: var(--fs-body); color: var(--paper); overflow-wrap: anywhere; }
+        .midi-devices .dot { flex: none; width: 8px; height: 8px; background: var(--signal-green); }
+        .midi-learn-state { font-size: var(--fs-body); color: var(--paper-80); margin: 0 0 0.9rem; min-height: 1.5em; }
+        .midi-learn-state.listening { color: var(--amber-tungsten); }
+        .midi-bind[hidden] { display: none; }
+        .midi-bind .midi-control-name { font-family: var(--font-mono); color: var(--paper); font-size: var(--fs-small); }
+        .midi-bind [data-for][hidden] { display: none; }
+        .midi-range { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+        .midi-bind summary { cursor: pointer; list-style: none; }
+        .midi-bind summary::-webkit-details-marker { display: none; }
+        .midi-bind summary::before { content: '▸'; display: inline-block; width: 1em; color: var(--paper-60); }
+        .midi-bind details[open] summary::before { content: '▾'; }
+        #midi-tab .panel-grid { margin-bottom: 2rem; }
+        .midi-list { list-style: none; margin: 0 0 1.5rem; padding: 0; border-top: 1px solid var(--rule); }
+        .midi-list li {
+            display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(5rem, 1fr) auto;
+            gap: 0.35rem 1rem; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid var(--rule);
+            font-size: var(--fs-small);
+        }
+        .midi-list .midi-empty { display: block; color: var(--paper-50); padding: 0.75rem 0; }
+        .midi-what { color: var(--paper); overflow-wrap: anywhere; }
+        .midi-what .mono { font-family: var(--font-mono); }
+        .midi-sub { display: block; color: var(--paper-50); font-size: var(--fs-meta); margin-top: 0.15rem; }
+        .midi-does { color: var(--paper-80); overflow-wrap: anywhere; }
+        .midi-does.unbound { color: var(--paper-50); }
+        .midi-meter { display: flex; align-items: center; gap: 0.5rem; }
+        .midi-meter .bar { flex: 1; height: 6px; background: var(--ink-2); overflow: hidden; }
+        .midi-meter .bar > div { height: 100%; background: var(--amber-tungsten); transition: width 0.08s linear; }
+        .midi-meter .num { font-family: var(--font-mono); color: var(--paper-60); font-size: var(--fs-meta); min-width: 2.2rem; text-align: right; }
+        .midi-row-actions { display: flex; gap: 0.25rem; justify-content: flex-end; }
+        .midi-list li.flash { background: var(--ink-2); }
+        @media (max-width: 600px) {
+            .midi-list li { grid-template-columns: minmax(0, 1fr) auto; }
+            .midi-list .midi-meter { grid-column: 1 / -1; grid-row: 3; }
+            .midi-list .midi-does { grid-column: 1 / -1; grid-row: 2; }
+        }
         /* ── OSC panel (Tools) ── */
         .osc-where { font-size: var(--fs-body); color: var(--paper-80); margin: 0 0 0.9rem; }
         .osc-where .mono, .osc-feedback .mono { font-family: var(--font-mono); color: var(--paper); }
@@ -1622,6 +1660,7 @@
             <button class="tab tab-secondary" onclick="switchTab('stage', this)" role="tab" aria-selected="false"><span>Stage</span></button>
             <button class="tab tab-secondary" onclick="switchTab('cuelists', this)" role="tab" aria-selected="false"><span>Cue lists</span></button>
             <button class="tab tab-secondary" onclick="switchTab('audio', this)" role="tab" aria-selected="false"><span>Audio</span></button>
+            <button class="tab tab-secondary" onclick="switchTab('midi', this)" role="tab" aria-selected="false"><span>MIDI</span></button>
             <button class="tab tab-secondary" onclick="switchTab('tools', this)" role="tab" aria-selected="false"><span>Tools</span></button>
             <button class="tab tab-secondary" onclick="switchTab('diag', this)" role="tab" aria-selected="false"><span>Diagnostics</span></button>
             <button class="tab-more" id="tabMoreBtn" onclick="toggleMoreSheet()" aria-haspopup="dialog" aria-controls="moreSheet" aria-expanded="false"><svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg><span>More</span></button>
@@ -1634,6 +1673,7 @@
             <button class="more-item" data-tab="stage" onclick="switchTab('stage')"><span class="more-item-text"><span>Stage</span><span class="more-item-hint">Fixtures on a plan of the room, live colour</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="cuelists" onclick="switchTab('cuelists')"><span class="more-item-text"><span>Cue lists</span><span class="more-item-hint">Timed shows, synced to audio</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="audio" onclick="switchTab('audio')"><span class="more-item-text"><span>Audio</span><span class="more-item-hint">BPM detection and onset flash</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
+            <button class="more-item" data-tab="midi" onclick="switchTab('midi')"><span class="more-item-text"><span>MIDI</span><span class="more-item-hint">Faders and buttons on a controller</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="tools" onclick="switchTab('tools')"><span class="more-item-text"><span>Tools</span><span class="more-item-hint">Kelvin, strobe, three-point palette</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" data-tab="diag" onclick="switchTab('diag')"><span class="more-item-text"><span>Diagnostics</span><span class="more-item-hint">Pi health, RF scan, logs, workspaces</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
             <button class="more-item" onclick="closeMoreSheet(); openDrawer();"><span class="more-item-text"><span>Fixture groups</span><span class="more-item-hint">Create, rename and light groups</span></span><span class="more-item-chev" aria-hidden="true">›</span></button>
@@ -2121,6 +2161,69 @@
         <!-- ══════════════════════════════════════
              Quick Tools tab — Kelvin, strobe, palette
              ══════════════════════════════════════ -->
+        <div id="midi-tab" class="tab-content">
+            <div class="section-title">MIDI controller</div>
+            <div class="panel-grid">
+                <div class="tool-panel" data-eyebrow="Connected">
+                    <div class="tool-header">
+                        <span class="tool-title">Controllers</span>
+                        <span class="tool-value" id="midiDeviceCount">—</span>
+                    </div>
+                    <ul class="midi-devices" id="midiDevices"></ul>
+                    <p class="hint" id="midiDeviceHint">Looking for controllers…</p>
+                </div>
+
+                <div class="tool-panel" data-eyebrow="Bind a control">
+                    <div class="tool-header">
+                        <span class="tool-title" id="midiBindTitle">Learn</span>
+                    </div>
+                    <p class="midi-learn-state" id="midiLearnState" aria-live="polite">Press Learn, then move a fader or press a button on your controller.</p>
+                    <div class="tool-actions" id="midiLearnActions">
+                        <button class="btn-primary" id="midiLearnBtn" onclick="midiLearnToggle()">Learn</button>
+                    </div>
+                    <form class="midi-bind" id="midiBindForm" hidden onsubmit="event.preventDefault(); midiSaveBinding();">
+                        <p class="midi-control-name" id="midiBindControl"></p>
+                        <label class="field-label" for="midiAction">Does</label>
+                        <select class="field-input" id="midiAction" onchange="midiSyncBindFields()"></select>
+                        <div data-for="channel">
+                            <label class="field-label" for="midiFixture">Fixture</label>
+                            <select class="field-input" id="midiFixture" onchange="midiFillChannels()"></select>
+                            <label class="field-label" for="midiChannel">Channel</label>
+                            <select class="field-input" id="midiChannel"></select>
+                            <details>
+                                <summary class="field-label">Range</summary>
+                                <div class="midi-range">
+                                    <label class="field-label">Bottom of the fader<input class="field-input" id="midiOutMin" type="number" min="0" max="255" value="0"></label>
+                                    <label class="field-label">Top of the fader<input class="field-input" id="midiOutMax" type="number" min="0" max="255" value="255"></label>
+                                </div>
+                            </details>
+                        </div>
+                        <div data-for="scene">
+                            <label class="field-label" for="midiScene">Scene</label>
+                            <select class="field-input" id="midiScene"></select>
+                        </div>
+                        <div data-for="chase_toggle">
+                            <label class="field-label" for="midiChase">Chase</label>
+                            <select class="field-input" id="midiChase"></select>
+                        </div>
+                        <label class="field-label" for="midiName">Name <span class="field-hint">optional</span></label>
+                        <input class="field-input" id="midiName" maxlength="60" placeholder="Front wash">
+                        <div class="tool-actions">
+                            <button type="button" class="btn-ghost" onclick="midiCancelBinding()">Cancel</button>
+                            <button type="submit" class="btn-primary" id="midiSaveBtn">Save</button>
+                        </div>
+                        <p class="hint" id="midiBindError" role="alert"></p>
+                    </form>
+                </div>
+            </div>
+
+            <div class="section-title">Bindings</div>
+            <ul class="midi-list" id="midiMappings"><li class="midi-empty">Nothing bound yet. Press Learn and move a control.</li></ul>
+
+            <div class="section-title">Controls you've moved</div>
+            <ul class="midi-list" id="midiControls"><li class="midi-empty">Move a fader or press a button and it shows up here with its live value.</li></ul>
+        </div>
+
         <div id="tools-tab" class="tab-content">
             <div class="section-title">Tools</div>
             <div class="panel-grid">
@@ -2453,7 +2556,7 @@
                 — replaceState (vs. pushState) keeps the back button useful
                 because tab clicks don't become history entries.
            ══════════════════════════════════════ */
-        const VALID_TABS = ['chat', 'ai', 'console', 'stage', 'cuelists', 'chases', 'audio', 'tools', 'diag'];
+        const VALID_TABS = ['chat', 'ai', 'console', 'stage', 'cuelists', 'chases', 'audio', 'midi', 'tools', 'diag'];
         let currentTab = 'ai';
 
         function switchTab(tabName, btn) {
@@ -2496,12 +2599,14 @@
 
             // Stage colour polling runs only while the Stage tab is open.
             if (tabName !== 'stage') stopStagePolling();
+            if (tabName !== 'midi') stopMidiPolling();
 
             // Lazy-load tab content on switch (idempotent — each loader is safe to re-call).
             if (tabName === 'stage') initStage();
             else if (tabName === 'cuelists') { loadCueLists(); ensureCueListPolling(); }
             else if (tabName === 'chases') loadChases();
             else if (tabName === 'audio')  initAudio();
+            else if (tabName === 'midi')   initMidi();
             else if (tabName === 'tools') populateToolsGroupSelects();
             else if (tabName === 'diag')  { loadSystemInfo(); loadRfSettings(); loadWorkspaces(); loadOscStatus(); }
             else if (tabName === 'chat')  { renderChatHistory(); loadConversations(); }
@@ -5425,6 +5530,307 @@
             const mode = document.getElementById('oscMode').value;
             document.getElementById('oscHost').hidden = mode !== 'fixed';
             document.getElementById('oscPort').hidden = mode === 'off';
+        }
+
+        /* ══════════════════════════════════════════════════════════════
+           MIDI tab (#26). Polls /api/midi/monitor while open: connected
+           controllers, new messages (for Learn) and every control's latest
+           value (for the live bars). Bindings are /api/midi/mappings.
+           ══════════════════════════════════════════════════════════════ */
+        const midi = {
+            seq: 0, timer: null, busy: false,
+            mappings: [], controls: [], devicesKey: '',
+            fixtures: [], scenes: [], chases: [],
+            learning: false, learnFrom: 0,
+            editing: null,   // { id?: mappingId, input: {type, channel, number}, port? }
+        };
+        const MIDI_NOTE_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+        const MIDI_ACTIONS = {
+            cc:   [['channel', 'A fixture channel'], ['master', 'Master dimmer']],
+            note: [['scene', 'Recall a scene'], ['chase_toggle', 'Start / stop a chase'], ['blackout', 'Blackout']],
+        };
+
+        function midiNoteName(n) { return MIDI_NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1); }
+        function midiKind(type) { return type === 'cc' ? 'cc' : 'note'; }
+        function midiKey(input) { return `${midiKind(input.type)}:${input.channel}:${input.number}`; }
+        function midiDescribeInput(input) {
+            const ch = input.channel == null ? 'any channel' : `channel ${input.channel + 1}`;
+            return midiKind(input.type) === 'cc'
+                ? `Fader or knob · CC ${input.number} · ${ch}`
+                : `Button · note ${input.number} (${midiNoteName(input.number)}) · ${ch}`;
+        }
+        function midiShortInput(input) {
+            return midiKind(input.type) === 'cc' ? `CC ${input.number}` : `Note ${input.number}`;
+        }
+        function midiFixtureName(id) { const f = midi.fixtures.find(x => String(x.id) === String(id)); return f ? f.name : `Fixture ${id}`; }
+        function midiChannelName(fid, off) {
+            const f = midi.fixtures.find(x => String(x.id) === String(fid));
+            const c = f && (f.channel_info || []).find(ci => ci.offset === off);
+            return c && c.name ? c.name : `Channel ${off + 1}`;
+        }
+        function midiDescribeAction(a) {
+            if (!a) return '';
+            if (a.type === 'channel') {
+                const range = (a.out_min ?? 0) !== 0 || (a.out_max ?? 255) !== 255 ? ` (${a.out_min}–${a.out_max})` : '';
+                return `${midiFixtureName(a.fixture_id)} · ${midiChannelName(a.fixture_id, a.channel_offset || 0)}${range}`;
+            }
+            if (a.type === 'master') return 'Master dimmer';
+            if (a.type === 'blackout') return 'Blackout';
+            if (a.type === 'scene') {
+                const s = midi.scenes.find(x => String(x.id) === String(a.scene_id) || x.name === a.scene_id);
+                return `Scene · ${s ? s.name : a.scene_id}`;
+            }
+            if (a.type === 'chase_toggle') {
+                const c = midi.chases.find(x => String(x.id) === String(a.chase_id) || x.name === a.chase_id);
+                return `Chase on/off · ${c ? c.name : a.chase_id}`;
+            }
+            return a.type;
+        }
+        // Mappings that answer a message from this control (a mapping with no
+        // channel answers every channel).
+        function midiMappingsFor(control) {
+            return midi.mappings.filter(m => midiKind(m.input.type) === midiKind(control.type)
+                && m.input.number === control.number
+                && (m.input.channel == null || m.input.channel === control.channel));
+        }
+        function midiLatestFor(input) {
+            return midi.controls.find(c => midiKind(c.type) === midiKind(input.type) && c.number === input.number
+                && (input.channel == null || c.channel === input.channel));
+        }
+        function midiMeter(control, isNote) {
+            const v = control ? control.value : 0;
+            const pct = control ? (isNote ? (control.type === 'note_on' ? 100 : 0) : Math.round(v / 127 * 100)) : 0;
+            const label = control ? (isNote ? (control.type === 'note_on' ? 'on' : 'off') : v) : '—';
+            return `<span class="midi-meter"><span class="bar"><div style="width:${pct}%"></div></span><span class="num">${label}</span></span>`;
+        }
+
+        async function initMidi() {
+            try {
+                const [m, f, s, c] = await Promise.all([
+                    fetch('/api/midi/mappings').then(r => r.json()),
+                    fetch('/api/fixtures').then(r => r.json()),
+                    fetch('/api/scenes').then(r => r.json()),
+                    fetch('/api/chases').then(r => r.json()),
+                ]);
+                midi.mappings = m.mappings || [];
+                midi.fixtures = f.fixtures || [];
+                midi.scenes = s.scenes || s || [];
+                midi.chases = c.chases || [];
+            } catch (e) {
+                document.getElementById('midiDeviceHint').textContent = 'Could not load MIDI settings: ' + e.message;
+            }
+            midiRenderMappings();
+            midiRenderControls();
+            startMidiPolling();
+        }
+
+        function startMidiPolling() {
+            stopMidiPolling();
+            const tick = async () => {
+                await midiPoll();
+                if (currentTab === 'midi') midi.timer = setTimeout(tick, document.hidden ? 1000 : 150);
+            };
+            tick();
+        }
+        function stopMidiPolling() { clearTimeout(midi.timer); midi.timer = null; if (midi.learning) midiLearnToggle(false); }
+
+        async function midiPoll() {
+            if (midi.busy) return;
+            midi.busy = true;
+            try {
+                const d = await fetch(`/api/midi/monitor?after=${midi.seq}`).then(r => r.json());
+                midiRenderDevices(d);
+                if (d.seq < midi.seq) midi.seq = 0;   // server restarted
+                const fresh = d.messages || [];
+                const changed = d.seq !== midi.seq;
+                midi.seq = d.seq;
+                midi.controls = d.controls || [];
+                if (midi.learning) {
+                    const hit = fresh.find(m => m.seq > midi.learnFrom && (m.type === 'cc' || m.type === 'note_on'));
+                    if (hit) {
+                        midiLearnToggle(false);
+                        midiOpenBinding({ input: { type: midiKind(hit.type), channel: hit.channel, number: hit.number }, port: hit.port });
+                    }
+                }
+                if (changed) { midiRenderControls(); midiUpdateMappingMeters(); }
+            } catch (e) { /* server briefly away; next tick retries */ }
+            finally { midi.busy = false; }
+        }
+
+        function midiRenderDevices(d) {
+            const real = (d.devices || []).filter(x => !x.system);
+            const key = `${d.available}|${real.map(x => x.name).join(',')}`;
+            if (key === midi.devicesKey) return;
+            midi.devicesKey = key;
+            document.getElementById('midiDeviceCount').textContent = d.available ? String(real.length) : '—';
+            document.getElementById('midiDevices').innerHTML = real.map(x => `<li><span class="dot" aria-hidden="true"></span>${escHtml(x.name)}</li>`).join('');
+            document.getElementById('midiDeviceHint').textContent = !d.available
+                ? 'MIDI is off on this Pi: python-rtmidi is not installed. Run bash scripts/deploy.sh to install it.'
+                : real.length
+                    ? 'Plugged-in controllers are picked up within a couple of seconds.'
+                    : 'No controller connected. Plug one in over USB; it is picked up within a couple of seconds.';
+        }
+
+        function midiRenderControls() {
+            const box = document.getElementById('midiControls');
+            if (!midi.controls.length) {
+                box.innerHTML = '<li class="midi-empty">Move a fader or press a button and it shows up here with its live value.</li>';
+                return;
+            }
+            box.innerHTML = midi.controls.slice(0, 24).map(c => {
+                const input = { type: midiKind(c.type), channel: c.channel, number: c.number };
+                const bound = midiMappingsFor(c);
+                const does = bound.length
+                    ? `<span class="midi-does">${escHtml(bound.map(m => m.name || midiDescribeAction(m.action)).join(', '))}</span>`
+                    : '<span class="midi-does unbound">Not bound</span>';
+                const btn = bound.length ? '' : `<button class="btn-ghost" onclick="midiOpenBinding(${escHtml(JSON.stringify({ input, port: c.port }))})">Bind</button>`;
+                return `<li><span class="midi-what">${escHtml(midiDescribeInput(input))}<span class="midi-sub">${escHtml(c.port)}</span></span>`
+                    + `${does}${midiMeter(c, input.type === 'note')}<span class="midi-row-actions">${btn}</span></li>`;
+            }).join('');
+        }
+
+        function midiRenderMappings() {
+            const box = document.getElementById('midiMappings');
+            if (!midi.mappings.length) {
+                box.innerHTML = '<li class="midi-empty">Nothing bound yet. Press Learn and move a control.</li>';
+                return;
+            }
+            box.innerHTML = midi.mappings.map(m => {
+                const latest = midiLatestFor(m.input);
+                const title = m.name || midiDescribeAction(m.action);
+                return `<li data-mapping="${escHtml(m.id)}"><span class="midi-what">${escHtml(title)}<span class="midi-sub">${escHtml(midiDescribeInput(m.input))}</span></span>`
+                    + `<span class="midi-does">${escHtml(m.name ? midiDescribeAction(m.action) : '')}</span>`
+                    + `${midiMeter(latest, midiKind(m.input.type) === 'note')}`
+                    + `<span class="midi-row-actions"><button class="btn-ghost" onclick="midiEditMapping('${escHtml(m.id)}')">Edit</button>`
+                    + `<button class="btn-danger" onclick="midiDeleteMapping('${escHtml(m.id)}')">Delete</button></span></li>`;
+            }).join('');
+        }
+        function midiUpdateMappingMeters() {
+            for (const m of midi.mappings) {
+                const li = document.querySelector(`#midiMappings li[data-mapping="${CSS.escape(m.id)}"]`);
+                const meter = li && li.querySelector('.midi-meter');
+                if (meter) meter.outerHTML = midiMeter(midiLatestFor(m.input), midiKind(m.input.type) === 'note');
+            }
+        }
+
+        function midiLearnToggle(force) {
+            midi.learning = force === undefined ? !midi.learning : force;
+            midi.learnFrom = midi.seq;
+            const state = document.getElementById('midiLearnState');
+            const btn = document.getElementById('midiLearnBtn');
+            state.classList.toggle('listening', midi.learning);
+            state.textContent = midi.learning
+                ? 'Listening… move a fader or press a button on your controller.'
+                : 'Press Learn, then move a fader or press a button on your controller.';
+            btn.textContent = midi.learning ? 'Stop listening' : 'Learn';
+            if (midi.learning) document.getElementById('midiBindForm').hidden = true;
+        }
+
+        function midiOpenBinding(edit) {
+            midi.editing = edit;
+            const input = edit.input;
+            document.getElementById('midiBindTitle').textContent = edit.id ? 'Edit binding' : 'New binding';
+            document.getElementById('midiBindControl').textContent = midiDescribeInput(input) + (edit.port ? ` · ${edit.port}` : '');
+            document.getElementById('midiLearnState').textContent = edit.id ? '' : 'Got it. Choose what it does.';
+            document.getElementById('midiLearnActions').hidden = true;
+            const action = edit.action || {};
+            const sel = document.getElementById('midiAction');
+            sel.innerHTML = MIDI_ACTIONS[midiKind(input.type)].map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+            if (action.type) sel.value = action.type;
+            document.getElementById('midiFixture').innerHTML = midi.fixtures.length
+                ? midi.fixtures.map(f => `<option value="${f.id}">${escHtml(f.name)}</option>`).join('')
+                : '<option value="">No fixtures in this workspace</option>';
+            if (action.fixture_id != null) document.getElementById('midiFixture').value = String(action.fixture_id);
+            midiFillChannels(action.channel_offset);
+            document.getElementById('midiOutMin').value = action.out_min ?? 0;
+            document.getElementById('midiOutMax').value = action.out_max ?? 255;
+            document.getElementById('midiScene').innerHTML = midi.scenes.length
+                ? midi.scenes.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('')
+                : '<option value="">No scenes yet</option>';
+            if (action.scene_id != null) document.getElementById('midiScene').value = String(action.scene_id);
+            document.getElementById('midiChase').innerHTML = midi.chases.length
+                ? midi.chases.map(c => `<option value="${c.id}">${escHtml(c.name)}</option>`).join('')
+                : '<option value="">No chases yet</option>';
+            if (action.chase_id != null) document.getElementById('midiChase').value = String(action.chase_id);
+            document.getElementById('midiName').value = edit.name || '';
+            document.getElementById('midiBindError').textContent = '';
+            midiSyncBindFields();
+            const form = document.getElementById('midiBindForm');
+            form.hidden = false;
+            sel.focus({ preventScroll: true });
+            form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+
+        function midiFillChannels(selected) {
+            const f = midi.fixtures.find(x => String(x.id) === document.getElementById('midiFixture').value);
+            const chans = f ? (f.channel_info && f.channel_info.length ? f.channel_info : Array.from({ length: f.channels || 0 }, (_, i) => ({ offset: i }))) : [];
+            const box = document.getElementById('midiChannel');
+            box.innerHTML = chans.map(c => `<option value="${c.offset}">${escHtml(c.name || `Channel ${c.offset + 1}`)}</option>`).join('');
+            if (selected != null) box.value = String(selected);
+        }
+
+        function midiSyncBindFields() {
+            const type = document.getElementById('midiAction').value;
+            document.querySelectorAll('#midiBindForm [data-for]').forEach(el => { el.hidden = el.dataset.for !== type; });
+        }
+
+        function midiCancelBinding() {
+            midi.editing = null;
+            document.getElementById('midiBindForm').hidden = true;
+            document.getElementById('midiLearnActions').hidden = false;
+            document.getElementById('midiBindTitle').textContent = 'Learn';
+            midiLearnToggle(false);
+        }
+
+        async function midiSaveBinding() {
+            const edit = midi.editing;
+            if (!edit) return;
+            const type = document.getElementById('midiAction').value;
+            const action = { type };
+            if (type === 'channel') {
+                action.fixture_id = parseInt(document.getElementById('midiFixture').value, 10);
+                action.channel_offset = parseInt(document.getElementById('midiChannel').value, 10);
+                action.out_min = parseInt(document.getElementById('midiOutMin').value, 10);
+                action.out_max = parseInt(document.getElementById('midiOutMax').value, 10);
+            } else if (type === 'scene') action.scene_id = document.getElementById('midiScene').value;
+            else if (type === 'chase_toggle') action.chase_id = document.getElementById('midiChase').value;
+            const body = { name: document.getElementById('midiName').value.trim(), input: edit.input, action };
+            const err = document.getElementById('midiBindError');
+            try {
+                const r = await fetch(edit.id ? `/api/midi/mappings/${encodeURIComponent(edit.id)}` : '/api/midi/mappings', {
+                    method: edit.id ? 'PATCH' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await r.json();
+                if (!data.success) { err.textContent = data.error || `HTTP ${r.status}`; return; }
+                const i = midi.mappings.findIndex(m => m.id === data.mapping.id);
+                if (i >= 0) midi.mappings[i] = data.mapping; else midi.mappings.push(data.mapping);
+                midiCancelBinding();
+                document.getElementById('midiLearnState').textContent = `Saved: ${midiShortInput(data.mapping.input)} → ${midiDescribeAction(data.mapping.action)}.`;
+                midiRenderMappings();
+                midiRenderControls();
+            } catch (e) { err.textContent = 'Could not save: ' + e.message; }
+        }
+
+        function midiEditMapping(id) {
+            const m = midi.mappings.find(x => x.id === id);
+            if (!m) return;
+            midiLearnToggle(false);
+            midiOpenBinding({ id: m.id, name: m.name, input: m.input, action: m.action });
+        }
+
+        async function midiDeleteMapping(id) {
+            const m = midi.mappings.find(x => x.id === id);
+            if (!m || !confirm(`Delete the binding for ${midiShortInput(m.input)} (${m.name || midiDescribeAction(m.action)})?`)) return;
+            try {
+                const r = await fetch(`/api/midi/mappings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                midi.mappings = midi.mappings.filter(x => x.id !== id);
+                if (midi.editing && midi.editing.id === id) midiCancelBinding();
+                midiRenderMappings();
+                midiRenderControls();
+            } catch (e) { alert('Could not delete: ' + e.message); }
         }
 
         async function loadOscStatus() {
