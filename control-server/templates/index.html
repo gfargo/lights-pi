@@ -5306,6 +5306,7 @@
                     const el = document.getElementById('audioBand' + name + 'N');
                     if (el) el.textContent = perBand ? `· ${perBand[name.toLowerCase()]} fixture${perBand[name.toLowerCase()] === 1 ? '' : 's'}` : '';
                 });
+                _audioReactTargets = { groups: (react && react.groups) || null, bands: (react && react.bands) || null };
                 if (react) {
                     document.getElementById('audioEffect').value = react.effect;
                     document.getElementById('audioReactTo').value = react.react_to || 'any';
@@ -5330,13 +5331,20 @@
             }[effect];
         }
 
+        // Groups and a band mapping set through the API or MCP have no
+        // controls here; send them back so pressing Apply doesn't drop them.
+        let _audioReactTargets = { groups: null, bands: null };
+
         function _audioEffectBody() {
             const effect = document.getElementById('audioEffect').value;
-            return {
+            const body = {
                 effect: effect || null,
                 react_to: document.getElementById('audioReactTo').value || 'any',
                 decay_ms: parseInt(document.getElementById('audioDecay').value, 10) || 250,
             };
+            if (_audioReactTargets.groups) body.groups = _audioReactTargets.groups;
+            if (effect === 'spectrum' && _audioReactTargets.bands) body.bands = _audioReactTargets.bands;
+            return body;
         }
 
         async function applyAudioEffect() {

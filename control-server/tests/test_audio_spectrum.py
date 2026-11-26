@@ -183,3 +183,78 @@ def test_capture_loop_band_maths_puts_a_tone_in_its_band(freq, band):
             for b, (a, z) in ar.band_bins(sr, n).items()}
     assert max(amps, key=amps.get) == band
     assert amps[band] == pytest.approx(0.5, rel=0.35)    # scaled to about the tone's amplitude
+
+
+class TestStartAudioReact:
+    """Starting and switching effects, with QLC+ and the runner stubbed."""
+
+    FIXTURES = [{"id": 0}, {"id": 1}]
+    # Fixture N drives channels 10N+1 (dimmer) and 10N+2..4 (RGB).
+    ROLES = {"brightness": [], "dimmer": 0, "red": 1, "green": 2, "blue": 3}
+
+    def _stub(self, monkeypatch, live):
+        writes = []
+        monkeypatch.setattr(app, "_audio_react", None)
+        monkeypatch.setattr(app, "_audio_react_task", None)
+        monkeypatch.setattr(app, "_qlc_submit", lambda coro: coro.close())
+        monkeypatch.setattr(app, "get_workspace_fixtures", lambda: list(self.FIXTURES))
+        monkeypatch.setattr(app, "_group_fixture_ids", lambda groups: None if not groups else (
+            {"0"} if groups == ["front"] else set()))
+        monkeypatch.setattr(app, "_fixture_roles", lambda f: self.ROLES)
+        monkeypatch.setattr(app, "_absolute_channel", lambda f, off: 10 * f["id"] + off + 1)
+        monkeypatch.setattr(app, "get_current_channel_values", lambda: dict(live))
+        monkeypatch.setattr(app, "set_channel_values", lambda vals: writes.append(dict(vals)) or True)
+        monkeypatch.setattr(app, "_load_stage_layout", lambda: {})
+        return writes
+
+    @staticmethod
+    def _settings(effect, groups=None, bands=None):
+        return {"effect": effect, "react_to": "any", "decay_ms": 250, "groups": groups, "bands": bands}
+
+    def test_bands_matching_nothing_is_an_error_and_keeps_the_running_effect(self, monkeypatch):
+        self._stub(monkeypatch, {})
+        app._start_audio_react(self._settings("amplitude"))
+        running = app._audio_react
+        with pytest.raises(app.AudioReactTargetError):
+            app._start_audio_react(self._settings("spectrum", bands={"low": ["bakc"]}))
+        assert app._audio_react is running
+
+    def test_fixture_id_as_a_string(self, monkeypatch):
+        self._stub(monkeypatch, {})
+        app._start_audio_react(self._settings("spectrum", bands={"high": ["1"]}))
+        assert [fx.get("band") for fx in app._audio_react["plan"]] == ["high"]
+
+    def test_switching_keeps_the_original_look_and_frees_dropped_fixtures(self, monkeypatch):
+        look = {1: 200, 2: 10, 3: 20, 4: 30, 11: 150, 12: 40, 13: 50, 14: 60}
+        writes = self._stub(monkeypatch, look)
+        app._start_audio_react(self._settings("amplitude"))
+        assert app._audio_react["base"] == look
+
+        # The first effect has painted its own frame on every channel.
+        painted = {ch: 255 for ch in look}
+        monkeypatch.setattr(app, "get_current_channel_values", lambda: dict(painted))
+        app._start_audio_react(self._settings("spectrum", bands={"low": ["front"]}))
+
+        # Fixture 1 is no longer driven: it gets its pre-effect look back now.
+        assert writes == [{11: 150, 12: 40, 13: 50, 14: 60}]
+        # Fixture 0 keeps the pre-effect look as its base, not the painted frame.
+        assert app._audio_react["base"] == {1: 200, 2: 10, 3: 20, 4: 30}
+
+        app._stop_audio_react()
+        assert writes[-1] == {1: 200, 2: 10, 3: 20, 4: 30}
+
+    def test_enable_route_returns_400_for_unmatched_bands(self, monkeypatch):
+        self._stub(monkeypatch, {})
+
+        class Engine:
+            def unsubscribe(self, fn): pass
+            def subscribe(self, fn): pass
+            def get_state(self): return {"enabled": True}
+            def start(self, **kw): return True
+
+        monkeypatch.setattr(app, "_audio_engine", Engine())
+        resp = app.app.test_client().post("/api/audio/enable", json={
+            "effect": "spectrum", "bands": {"mid": [99]},
+        })
+        assert resp.status_code == 400
+        assert "matched no fixtures" in resp.get_json()["error"]

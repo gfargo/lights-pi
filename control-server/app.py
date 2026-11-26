@@ -8446,7 +8446,11 @@ def _spectrum_band_of(fixtures: list, bands) -> dict:
             if isinstance(target, int):
                 members = [str(target)] if str(target) in ids else []
             else:
+                # A group name wins; failing that, "3" means fixture 3
+                # (agents often send IDs as strings).
                 members = [str(f["id"]) for f in _target_fixtures([target])]
+                if not members and target.strip() in ids:
+                    members = [target.strip()]
             for key in members:
                 if key in ids:
                     out.setdefault(ids[key], band)
@@ -8487,12 +8491,28 @@ async def _run_audio_react_async(cfg: dict) -> None:
         print(f"[audio-react] error: {type(exc).__name__}: {exc}")
 
 
+class AudioReactTargetError(ValueError):
+    """The requested fixtures for an effect matched nothing."""
+
+
 def _start_audio_react(settings: dict) -> dict:
-    """Start (or replace) the effect described by *settings*."""
+    """Start (or replace) the effect described by *settings*.
+
+    Raises AudioReactTargetError, leaving any running effect alone, when an
+    explicit spectrum ``bands`` mapping names no fixture in the workspace.
+
+    When it replaces a running effect, the look from before the first effect
+    is kept as the one to restore: channels both effects drive keep their old
+    base, and channels only the old effect drove are put back now, so they
+    don't stay stuck on its last frame.
+    """
     global _audio_react, _audio_react_task
-    _stop_audio_react(restore=False)
     fixtures = _target_fixtures(settings["groups"])
     band_of = _spectrum_band_of(fixtures, settings.get("bands")) if settings["effect"] == "spectrum" else {}
+    if settings["effect"] == "spectrum" and settings.get("bands") and not band_of:
+        raise AudioReactTargetError(
+            "bands matched no fixtures; use group names or fixture IDs from /api/fixtures"
+        )
     if band_of:
         fixtures = [f for f in fixtures if f["id"] in band_of]
     plan = []
@@ -8508,8 +8528,15 @@ def _start_audio_react(settings: dict) -> dict:
             channels.add(fx["dimmer"])
         if fx["rgb"]:
             channels.update(fx["rgb"])
+    previous = _audio_react
+    _stop_audio_react(restore=False)
+    prev_base = (previous or {}).get("base") or {}
+    left_over = {ch: v for ch, v in prev_base.items() if ch not in channels}
+    if left_over:
+        set_channel_values(sorted(left_over.items()))
     current = get_current_channel_values()
-    cfg = {**settings, "plan": plan, "base": {ch: int(current.get(ch, 0) or 0) for ch in channels}}
+    base = {ch: prev_base[ch] if ch in prev_base else int(current.get(ch, 0) or 0) for ch in channels}
+    cfg = {**settings, "plan": plan, "base": base}
     _audio_react = cfg
     _audio_react_task = _qlc_submit(_run_audio_react_async(cfg))
     return {"fixtures": len(plan), "channels": len(channels)}
@@ -8716,7 +8743,10 @@ def enable_audio():
         }), 503
 
     if settings["effect"]:
-        _start_audio_react(settings)
+        try:
+            _start_audio_react(settings)
+        except AudioReactTargetError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
     else:
         _stop_audio_react()
     return jsonify({"success": True, **_audio_engine.get_state(), "react": _audio_react_state()})
