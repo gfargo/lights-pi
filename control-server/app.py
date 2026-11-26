@@ -169,7 +169,8 @@ app.config["SECRET_KEY"] = os.getenv(
     os.urandom(32).hex(),  # random per restart if not configured
 )
 
-# 3. Limit request body size to 1MB (audit item #8)
+# 3. Limit request body size to 1MB (audit item #8). Routes that take files
+# raise it for their own request only (see upload_stage_background).
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB
 
 # 4. Shared-password auth (issue #25). Unset LIGHTS_PASSWORD == open mode,
@@ -269,6 +270,16 @@ def _require_auth():
     if request.path.startswith("/api/"):
         return jsonify({"error": "unauthorized"}), 401
     return redirect("/login")
+
+
+@app.errorhandler(413)
+def _request_too_large(_err):
+    """Say what the limit is instead of Werkzeug's HTML page, for API callers."""
+    limit = request.max_content_length or app.config["MAX_CONTENT_LENGTH"]
+    message = f"Request is larger than {limit // (1024 * 1024)} MB"
+    if request.path.startswith("/api/"):
+        return jsonify({"success": False, "error": message}), 413
+    return message, 413
 
 
 @app.after_request
@@ -4943,6 +4954,8 @@ def _normalize_aim(value):
 # Floor-plan image drawn under the Stage grid. One file, kept next to the
 # layout; PNG, JPEG or WebP only (no SVG: it can carry script).
 STAGE_BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
+# Room for the multipart boundary and headers around the image itself.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _STAGE_BACKGROUND_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 
 
@@ -4983,6 +4996,10 @@ def get_stage_background():
 @app.route("/api/stage/background", methods=["POST"])
 def upload_stage_background():
     """Store a floor-plan image (multipart field ``image``), replacing any old one."""
+    # The app-wide 1 MB body limit would refuse most photos of a room before
+    # this view runs its own check; lift it for this request only. It must be
+    # set before request.files is first read.
+    request.max_content_length = STAGE_BACKGROUND_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES
     upload = request.files.get("image")
     if upload is None:
         return jsonify({"success": False, "error": "Send the image as the 'image' field"}), 400

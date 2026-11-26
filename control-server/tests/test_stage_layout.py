@@ -267,3 +267,38 @@ class TestStageTargets:
         root = app._scene_root_from_xml(out)
         ids = [fv.get("ID") for fv in app._find_children(root, "FixtureVal")]
         assert ids == ["1", "3"]
+
+
+class TestUploadSizeLimit:
+    def _client(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(app, "STAGE_LAYOUT_FILE", tmp_path / "stage_layout.json")
+        return app.app.test_client()
+
+    def test_accepts_photo_bigger_than_app_body_limit(self, monkeypatch, tmp_path):
+        # The app-wide limit is 1 MB; a 3 MB floor plan must still go through.
+        import io
+        client = self._client(monkeypatch, tmp_path)
+        big = PNG + b"\x00" * (3 * 1024 * 1024)
+        assert len(big) > app.app.config["MAX_CONTENT_LENGTH"]
+        resp = client.post("/api/stage/background", data={"image": (io.BytesIO(big), "plan.png")},
+                           content_type="multipart/form-data")
+        assert resp.status_code == 200, resp.get_data(as_text=True)[:200]
+        assert (tmp_path / "stage_background.png").stat().st_size == len(big)
+
+    def test_body_over_8_mb_is_refused_with_json(self, monkeypatch, tmp_path):
+        import io
+        client = self._client(monkeypatch, tmp_path)
+        huge = PNG + b"\x00" * (9 * 1024 * 1024)
+        resp = client.post("/api/stage/background", data={"image": (io.BytesIO(huge), "plan.png")},
+                           content_type="multipart/form-data")
+        assert resp.status_code == 413
+        assert resp.get_json()["success"] is False
+        assert not (tmp_path / "stage_background.png").exists()
+
+
+def test_other_routes_keep_the_1_mb_limit():
+    client = app.app.test_client()
+    resp = client.post("/api/stage_layout", data=b"{" + b" " * (2 * 1024 * 1024) + b"}",
+                       content_type="application/json")
+    assert resp.status_code == 413
+    assert "1 MB" in resp.get_json()["error"]

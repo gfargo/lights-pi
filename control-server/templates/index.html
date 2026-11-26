@@ -3366,10 +3366,16 @@
             renderGroupChips();
         }
 
+        const STAGE_PLAN_MAX_BYTES = 8 * 1024 * 1024;  // matches STAGE_BACKGROUND_MAX_BYTES
         async function uploadStagePlan(input) {
             const file = input.files && input.files[0];
             const status = document.getElementById('stageStatus');
             if (!file) return;
+            if (file.size > STAGE_PLAN_MAX_BYTES) {
+                status.textContent = `That image is ${(file.size / 1048576).toFixed(1)} MB; the limit is 8 MB. Export it smaller and try again.`;
+                input.value = '';
+                return;
+            }
             const body = new FormData();
             body.append('image', file);
             status.textContent = 'Uploading the floor plan…';
