@@ -25,7 +25,9 @@ details are on the [releases page](https://github.com/gfargo/lights-pi/releases)
 | OSC panel, feedback to the sender, TouchOSC button handling, setup guide (#27) | v2.18.1 |
 | Audio: flash that fades back, kick/snare, colour follows loudness, MCP tools (#12) | v2.18.1 |
 | Integration tests: every route smoke-tested, every MCP tool checked against Flask (#24) | v2.18.1 |
-| Cue list timeline editor: drag to re-time, scrub to preview, waveform, live playhead (#29) | next |
+| Cue list timeline editor: drag to re-time, scrub to preview, waveform, live playhead (#29) | v2.19.0 |
+| Audio: bands to fixtures (spectrum), bass/mids/highs on their own fixtures (#12) | v2.19.0 |
+| Floor-plan uploads up to 8 MB, `deploy.sh` updates the MCP server | v2.19.0 |
 
 ## Open
 
@@ -33,7 +35,7 @@ Several open issues have their backend shipped and are waiting on UI work
 that needs hands-on review with real hardware:
 
 - [#26 MIDI controller input](https://github.com/gfargo/lights-pi/issues/26): web UI tab and learn/bind flow.
-- [#27 OSC](https://github.com/gfargo/lights-pi/issues/27): a TouchOSC layout file and a check from a real tablet.
-- [#12 Audio reactivity](https://github.com/gfargo/lights-pi/issues/12): a check with a real microphone, and `spectrum_split`.
+- [#27 OSC](https://github.com/gfargo/lights-pi/issues/27): the generated TouchOSC layout ([PR #131](https://github.com/gfargo/lights-pi/pull/131)) needs a check on a real tablet, and a QLab cue check.
+- [#12 Audio reactivity](https://github.com/gfargo/lights-pi/issues/12): every mode is built; it needs a check with a real microphone.
 
 New ideas go to GitHub issues rather than this file.
