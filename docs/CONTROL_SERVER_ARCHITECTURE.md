@@ -263,6 +263,7 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | GET | `/api/osc/addresses` | OSC address (`/scene/<id>`, `/scene/<slug>`) of every scene and chase |
 | POST | `/api/osc/settings` | Where OSC feedback goes: `sender` (reply to the last sender), `fixed` host:port, or `off`; saved to `~/.qlcplus/osc.json` |
 | POST | `/api/osc/test` | Send `/state/test 1` to the feedback destination |
+| GET | `/api/osc/touchosc` | A TouchOSC layout (`.tosc`) for the loaded workspace: scene buttons, eight channel faders, chases, master, cues, blackout (`touchosc_layout.py`) |
 | GET | `/api/fixtures` | List fixtures with `channel_info` |
 | GET | `/api/fixture_channels/<id>` | Per-fixture channel breakdown |
 | POST | `/api/fixtures/<id>/identify` | Pulse a fixture so the operator can locate it |
