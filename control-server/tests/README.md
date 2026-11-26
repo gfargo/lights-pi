@@ -11,7 +11,8 @@ pip install -r requirements-dev.txt
 pytest -v
 ```
 
-All tests run together. CI runs the same suite on Python 3.11 and 3.12.
+All tests run together. CI runs the same suite on Python 3.11, 3.12 and 3.13
+(3.13 is what the Pi runs).
 
 ---
 
@@ -34,76 +35,82 @@ QLC+ WebSocket, or external AI providers lives here.
 
 ## Integration tests (`integration/`)
 
-Three suites that exercise real system surfaces without hardware.
+These exercise the real system surfaces without hardware: Flask routes, MCP
+tool dispatch and cue playback.
 
-### Suite 1 — Flask routes (`test_flask_routes.py`)
+### The sandbox (`conftest.py`)
 
-Uses `app.test_client()` with two patches:
-- `app._qlc_send_commands` → async recording mock (collects `CH|<ch>|<val>` strings)
-- `app._qlc_run` → `asyncio.run()` on a fresh local loop (no background thread)
+The `patched_app` fixture (and `flask_client` / `mcp_flask_client` built on
+it) gives every test:
 
-`WORKSPACE_PATH` is redirected to `integration/fixtures/test_workspace.qxw`
-(two fixtures: a 1-channel dimmer and a 3-channel RGB). `GROUPS_FILE` and
-`CUE_LISTS_FILE` are isolated to a `tmp_path`.
+- `_qlc_send_commands` replaced by a recorder that collects the
+  `CH|<channel>|<value>` frames that would have gone to QLC+;
+- `_qlc_run` running coroutines on a fresh local loop (no background thread);
+- a tmp_path copy of `integration/fixtures/test_workspace.qxw` (a 1-channel
+  dimmer, ID 1, and a 3-channel RGB, ID 2), so tests may write to it;
+- every `~/.qlcplus` data file (groups, cue lists, stage layout, OSC, MIDI,
+  RF, last look, audio chases) and the chat database moved to tmp_path.
 
-Covers: `/api/action`, `/api/blackout`, `/api/batch`, `/api/channel`,
-`/api/cue_lists`. Request-validation paths (400 / 404) are also exercised.
+Nothing a test does reaches the developer's real rig data or QLC+.
 
-**Not covered here (by design):** `/api/command` (needs AI provider);
-`/api/channel_values` (needs live QLC+ WebSocket reply).
+### Flask
 
-### Suite 2 — MCP compliance (`test_mcp_compliance.py`)
+| File | What it proves |
+|------|---------------|
+| `test_route_smoke.py` | **Every** route in the URL map answers without a 5xx when called with unknown IDs and an empty body. New routes are picked up automatically. Routes that can't run here (the SSE stream, AI, microphone, Wi-Fi scan, direct-WebSocket DMX test) are listed in `SKIPPED` with the reason. |
+| `test_lifecycles.py` | The happy path: scenes saved, described, renamed, duplicated, snapshotted and deleted; groups built and used as a target; cue lists edited; stage layout, conversations and OSC settings stored and read back. |
+| `test_flask_routes.py` | The QLC+ frames sent by `/api/action`, `/api/blackout`, `/api/batch` and `/api/channel`, plus their 400/404 paths. |
 
-Imports `mcp-server/server.py` and replaces its global `_client` with an
-`httpx.Client(transport=httpx.WSGITransport(app=flask_app))`. Tool functions
-then call real Flask routes through the WSGI layer with no network.
+### MCP
 
-The **48-tool count assertion** is intentionally brittle — it is the drift
-detector: if a tool is added or removed, this number must be updated.
+| File | What it proves |
+|------|---------------|
+| `test_mcp_routes.py` | For **every** registered tool: it makes at least one request, each request's method and path match a Flask route, and every POST/PATCH body key is read by the Flask handler (or a helper it calls). Tools are discovered from the registry, so a new tool is checked with no edits here. Requests go to a recording transport, never to Flask. |
+| `test_mcp_compliance.py` | The tool count (`EXPECTED_TOOL_COUNT`, a deliberate drift detector: update it when you add a tool), unique names, descriptions, and a sample of tools called through to the real Flask app. |
+| `test_mcp_auth.py` | Bearer-token middleware on the streamable HTTP transport. |
 
-Covers: tool registry count + uniqueness, discovery tools (`_get` paths),
-action tools (`_post` paths), cue list tools, group management.
+### Cue playback (`test_cue_playback.py`)
 
-### Suite 3 — Cue playback (`test_cue_playback.py`)
+Calls `_run_cue_list_async` with injected `now` / `sleep` callables, so a
+fake clock advances instantly. Covers ordering by `at_ms`, timing, a failing
+cue not aborting the rest, cancellation and registry cleanup. The engine has
+no pause / resume / seek, so there is nothing to test there yet.
 
-Calls `_run_cue_list_async` directly with injectable `now` / `sleep`
-callables so the fake clock advances instantly. No background loop, no
-real timers.
-
-Covers: out-of-order input sorted by `at_ms`; timing accuracy via fake
-clock; fault tolerance (bad cue doesn't abort remaining); `CancelledError`
-propagation (stop_cue_list path); registry cleanup on completion and
-cancellation.
-
-**Out of scope:** pause / resume / seek — the engine has no such feature.
+Also here: `test_mock_chase.py`, `test_tempo_edge_cases.py` and
+`test_workspace_concurrency.py`.
 
 ---
 
 ## Adding new integration tests
 
-1. Drop a new `test_*.py` in `integration/`.
-2. Use the `flask_client` fixture for Flask route tests:
-   ```python
-   def test_my_route(flask_client):
-       client, recorded = flask_client
-       r = client.post("/api/foo", json={...})
-       assert r.status_code == 200
-       assert any(cmd.startswith("CH|") for cmd in recorded)
-   ```
-3. Use the `mcp_flask_client` fixture for MCP tool tests:
-   ```python
-   def test_my_tool(mcp_flask_client):
-       mcp_module, _, recorded = mcp_flask_client
-       result = mcp_module.my_tool(arg="value")
-       assert isinstance(result, dict)
-   ```
-4. For cue playback tests, use `_make_fake_clock()` from `test_cue_playback.py`
-   and call `_run_cue_list_async` directly with the injected callables.
+- **A new Flask route** is smoke-tested automatically. If it can't run in the
+  sandbox (it streams, calls the AI provider, opens a device), add it to
+  `SKIPPED` in `test_route_smoke.py` with the reason. If it reports a service
+  being down with a 503, add it to `UNAVAILABLE_OK`. Then add a happy-path
+  test to `test_lifecycles.py` or a new file:
+  ```python
+  def test_my_route(flask_client):
+      client, recorded = flask_client
+      r = client.post("/api/foo", json={...})
+      assert r.status_code == 200
+      assert "CH|2|255" in recorded
+  ```
+- **A new MCP tool** is checked by `test_mcp_routes.py` automatically. Bump
+  `EXPECTED_TOOL_COUNT` in `test_mcp_compliance.py`. To call it through the
+  real Flask app, use `mcp_flask_client`:
+  ```python
+  def test_my_tool(mcp_flask_client):
+      mcp_module, _, recorded = mcp_flask_client
+      assert mcp_module.my_tool(arg="value")["success"] is True
+  ```
+- **Cue playback:** use `_make_fake_clock()` from `test_cue_playback.py` and
+  call `_run_cue_list_async` with the injected callables.
 
-## What's NOT covered (yet)
+## What's NOT covered
 
-- **AI provider calls** — mocked at `app.interpret_command` level; never hits a real API.
-- **QLC+ WebSocket** — replaced entirely by the recording mock.
-- **Real `.qxw` file mutations** — test workspace is read-only; write tests need a tmp copy.
-- **Hitting a real QLC+ instance** — that's e2e, a separate effort.
-- **Cue list pause / resume / seek** — engine doesn't implement these yet.
+- **AI provider calls:** `/api/chat` and `/api/command` are skipped; the
+  provider is never called.
+- **The QLC+ WebSocket itself:** replaced by the recorder. Code that writes
+  to the socket directly (the DMX test pattern) needs the real link.
+- **A real QLC+ instance:** that's end-to-end, a separate effort.
+- **Cue list pause / resume / seek:** not implemented in the engine.
