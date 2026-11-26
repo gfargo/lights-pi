@@ -105,10 +105,72 @@ class TestTimelineEdits:
         stored = _ok(client.get(f"/api/cue_lists/{cl_id}"))["cue_list"]["cues"]
         assert stored[0]["at_ms"] == 0
 
-    def test_preview_rejects_bad_unsaved_cues(self, flask_client):
+    def test_preview_skips_half_finished_unsaved_cues(self, flask_client):
+        # A cue still being edited (no time yet, a chase not picked) must not
+        # stop scrubbing elsewhere in the list.
+        client, recorded = flask_client
+        bright = {"at_ms": 0, "action": "adjust_brightness", "parameters": {"value": "50%"}}
+        cl_id = _make(client, cues=[bright])
+        recorded.clear()
+        body = _ok(client.post(f"/api/cue_lists/{cl_id}/preview", json={
+            "at_ms": 500,
+            "cues": [bright, {"action": "blackout"}, {"at_ms": 9000, "chase": ""}],
+        }))
+        assert body["applied"]["action"] == "adjust_brightness"
+        assert recorded
+
+    def test_preview_reports_a_broken_reference_only_when_it_fires(self, flask_client):
+        client, _ = flask_client
+        bright = {"at_ms": 0, "action": "adjust_brightness", "parameters": {"value": "50%"}}
+        cl_id = _make(client, cues=[bright])
+        cues = [bright, {"at_ms": 2000, "scene": "No Such Scene"}]
+        _ok(client.post(f"/api/cue_lists/{cl_id}/preview", json={"at_ms": 1000, "cues": cues}))
+        body = _ok(client.post(f"/api/cue_lists/{cl_id}/preview", json={"at_ms": 2500, "cues": cues}),
+                   status=400)
+        assert "No Such Scene" in body["error"]
+
+    def test_preview_rejects_cues_that_are_not_a_list(self, flask_client):
         client, _ = flask_client
         cl_id = _make(client)
-        body = _ok(client.post(f"/api/cue_lists/{cl_id}/preview", json={
-            "at_ms": 0, "cues": [{"action": "blackout"}],
-        }), status=400)
-        assert body["cue_errors"][0]["index"] == 0
+        _ok(client.post(f"/api/cue_lists/{cl_id}/preview", json={"at_ms": 0, "cues": "all"}), status=400)
+
+
+class TestBadNumbers:
+    """Flask's JSON parser accepts NaN and Infinity; they must not reach int()."""
+
+    def _raw(self, client, method, url, text):
+        return client.open(url, method=method, data=text, content_type="application/json")
+
+    def test_non_finite_times_and_resolutions_are_400(self, flask_client):
+        client, _ = flask_client
+        cl_id = _make(client)
+        assert self._raw(client, "POST", f"/api/cue_lists/{cl_id}/preview", '{"at_ms": NaN}').status_code == 400
+        assert self._raw(client, "POST", f"/api/cue_lists/{cl_id}/preview", '{"at_ms": Infinity}').status_code == 400
+        resp = self._raw(client, "PUT", f"/api/cue_lists/{cl_id}/waveform",
+                         '{"audio_file": "a.mp3", "resolution_ms": Infinity, "peaks": [[0.1, 0.1]]}')
+        assert resp.status_code == 400
+        resp = self._raw(client, "PUT", f"/api/cue_lists/{cl_id}/waveform",
+                         '{"audio_file": "a.mp3", "resolution_ms": 50, "audio_duration_ms": NaN, "peaks": [[0.1, 0.1]]}')
+        assert resp.status_code == 200
+        assert resp.get_json()["audio_duration_ms"] == 50
+
+    def test_parameters_must_be_an_object(self, flask_client):
+        client, _ = flask_client
+        resp = client.post("/api/cue_lists", json={
+            "name": "Bad params", "cues": [{"at_ms": 0, "action": "activate_scene", "parameters": "Warm"}],
+        })
+        assert resp.status_code == 400
+
+
+def test_changing_audio_file_drops_the_old_waveform(flask_client):
+    client, _ = flask_client
+    import app as app_module
+
+    cl_id = _make(client)
+    _ok(client.put(f"/api/cue_lists/{cl_id}/waveform", json=WAVE))
+    _ok(client.patch(f"/api/cue_lists/{cl_id}", json={"audio_file": "show.mp3"}))
+    assert app_module._waveform_sidecar_path(cl_id).exists(), "same file: keep the waveform"
+
+    _ok(client.patch(f"/api/cue_lists/{cl_id}", json={"audio_file": "encore.wav"}))
+    assert not app_module._waveform_sidecar_path(cl_id).exists()
+    assert _ok(client.get(f"/api/cue_lists/{cl_id}/waveform"))["peaks"] == []

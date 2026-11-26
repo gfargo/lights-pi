@@ -4132,6 +4132,7 @@
             WAVE_TOP: 28, WAVE_H: 64,
             MIN_K: 0.0005,      // px per ms when fully zoomed out (30 min ≈ 900 px)
             MAX_K: 8,           // 8 px per ms: snaps to single milliseconds
+            MAX_WIDTH_PX: 4e6,  // browsers stop laying out past ~17M px (Firefox); stay well under
             WAVE_MAX_BUCKETS: 15000,
         };
         let tl = null;          // editor state while a cue list is open
@@ -4263,37 +4264,51 @@
 
         async function saveTimeline() {
             if (!tl) return false;
+            // The editor can change (or close, or open another list) while
+            // the PATCH is in flight; only touch the one this save came from.
+            const ed = tl;
+            const rev = ed.rev || 0;
             const sorted = tlSorted();
             if (!sorted.length) { tlSetStatus('A cue list needs at least one cue.', true); return false; }
             try {
-                const r = await fetch(`/api/cue_lists/${tl.id}`, {
+                const r = await fetch(`/api/cue_lists/${ed.id}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ cues: sorted.map(tlToApi) }),
                 });
                 const data = await r.json();
+                if (tl !== ed) return !!data.success;
                 if (!data.success) {
-                    tl.errorKeys = new Set((data.cue_errors || []).map(e => sorted[e.index] && sorted[e.index].key).filter(Boolean));
+                    ed.errorKeys = new Set((data.cue_errors || []).map(e => sorted[e.index] && sorted[e.index].key).filter(Boolean));
                     const first = (data.cue_errors || [])[0];
-                    if (first && sorted[first.index]) { tl.selected = new Set([sorted[first.index].key]); }
+                    if (first && sorted[first.index]) { ed.selected = new Set([sorted[first.index].key]); }
                     tlRender(); tlRenderInspector();
                     tlSetStatus((data.error || 'Save failed') + (first ? `: ${first.error}` : ''), true);
                     return false;
                 }
-                tl.saved = data.cue_list.cues.map(tlFromServer);
+                ed.saved = data.cue_list.cues.map(tlFromServer);
+                ed.errorKeys.clear();
+                if ((ed.rev || 0) !== rev || ed.dragging) {
+                    // Edited during the save: keep those edits, still unsaved.
+                    tlSetStatus('Saved, but you changed it since; save again to keep the newest edits.');
+                    return true;
+                }
                 // Keep selection across the reload by matching time + action.
-                const selectedSig = new Set(tl.cues.filter(c => tl.selected.has(c.key)).map(c => `${Math.round(c.at_ms)}|${c.action}|${JSON.stringify(c.parameters)}`));
-                tl.cues = tl.saved.map(c => ({ ...c, parameters: { ...c.parameters } }));
-                tl.selected = new Set(tl.cues.filter(c => selectedSig.has(`${c.at_ms}|${c.action}|${JSON.stringify(c.parameters)}`)).map(c => c.key));
-                tl.errorKeys.clear();
+                const selectedSig = new Set(ed.cues.filter(c => ed.selected.has(c.key)).map(c => `${Math.round(c.at_ms)}|${c.action}|${JSON.stringify(c.parameters)}`));
+                ed.cues = ed.saved.map(c => ({ ...c, parameters: { ...c.parameters } }));
+                ed.selected = new Set(ed.cues.filter(c => selectedSig.has(`${c.at_ms}|${c.action}|${JSON.stringify(c.parameters)}`)).map(c => c.key));
                 tlSetDirty(false);
                 tlRender(); tlRenderInspector();
                 tlSetStatus('Saved.');
                 return true;
-            } catch (e) { tlSetStatus('Save failed: ' + e.message, true); return false; }
+            } catch (e) {
+                if (tl === ed) tlSetStatus('Save failed: ' + e.message, true);
+                return false;
+            }
         }
 
         function tlSetDirty(dirty) {
+            if (dirty) tl.rev = (tl.rev || 0) + 1;
             tl.dirty = dirty;
             document.getElementById('tlDirty').hidden = !dirty;
             document.getElementById('tlSave').disabled = !dirty;
@@ -4314,7 +4329,7 @@
             const sc = document.getElementById('tlScroller');
             const ax = anchorScreenX == null ? sc.clientWidth / 2 : anchorScreenX;
             const anchorMs = tlMs(sc.scrollLeft + ax);
-            tl.k = Math.min(TL.MAX_K, Math.max(TL.MIN_K, k));
+            tl.k = Math.min(TL.MAX_K, TL.MAX_WIDTH_PX / tlTotalMs(), Math.max(TL.MIN_K, k));
             tl.userZoomed = true;
             tlRender();
             sc.scrollLeft = Math.max(0, tlX(anchorMs) - ax);
@@ -4642,7 +4657,7 @@
                 tl.runtime = { elapsed: 0, at: performance.now(), running: true };
                 tlSetStatus('Playing from the top.');
                 tlPlaceTransport(); tlAnimate();
-                setTimeout(tlPollRuntime, 300);
+                clearTimeout(tlPollTimer); tlPollTimer = setTimeout(tlPollRuntime, 300);
             } catch (e) { tlSetStatus('Go failed: ' + e.message, true); }
         }
 
@@ -4726,7 +4741,8 @@
                     peaks: data.peaks,
                 } : null;
                 tl.audioFile = data.audio_file || tl.audioFile;
-            } catch (e) { tl.wave = null; }
+            } catch (e) { if (tl && tl.id === id) tl.wave = null; }
+            if (!tl || tl.id !== id) return;
             tlAudioLabel();
             if (!tl.userZoomed) timelineFit(); else tlRender();
         }
@@ -4767,12 +4783,17 @@
                 const Ctx = window.AudioContext || window.webkitAudioContext;
                 if (!Ctx) throw new Error('this browser cannot decode audio');
                 const ctx = new Ctx();
-                const bytes = await file.arrayBuffer();
-                const buffer = await new Promise((resolve, reject) => {
-                    const p = ctx.decodeAudioData(bytes, resolve, reject);
-                    if (p && p.then) p.then(resolve, reject);
-                });
-                if (ctx.close) ctx.close();
+                let buffer;
+                try {
+                    const bytes = await file.arrayBuffer();
+                    buffer = await new Promise((resolve, reject) => {
+                        const p = ctx.decodeAudioData(bytes, resolve, reject);
+                        if (p && p.then) p.then(resolve, reject);
+                    });
+                } finally {
+                    // Browsers cap live AudioContexts; close it even when decoding fails.
+                    if (ctx.close) ctx.close();
+                }
                 const durationMs = Math.round(buffer.duration * 1000);
                 const resolution = Math.max(50, Math.ceil(durationMs / TL.WAVE_MAX_BUCKETS));
                 const peaks = tlComputePeaks(buffer, resolution);
@@ -4952,7 +4973,14 @@
             lane.addEventListener('keydown', (e) => {
                 const block = e.target.closest('.tl-cue');
                 if (!block || !tl) return;
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tlSelect(block.dataset.key, e.shiftKey); }
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    const key = block.dataset.key;
+                    tlSelect(key, e.shiftKey);
+                    // tlSelect re-renders the lane; put focus back on the same cue.
+                    const again = lane.querySelector(`[data-key="${key}"]`);
+                    if (again) again.focus({ preventScroll: true });
+                }
                 else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
                     e.preventDefault(); const r = block.getBoundingClientRect(); tlOpenMenu(block.dataset.key, r.left + 8, r.bottom);
                 }
@@ -4972,7 +5000,14 @@
                 if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (tl.dirty) saveTimeline(); return; }
                 if (typing) return;
                 if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); timelineDuplicate(); return; }
-                if (e.key === 'Delete' || e.key === 'Backspace') { if (tl.selected.size) { e.preventDefault(); timelineDelete(); } return; }
+                if (e.key === 'Delete' || e.key === 'Backspace') {
+                    if (tl.selected.size) {
+                        e.preventDefault(); timelineDelete();
+                        // The deleted cue had focus; keep keys working in the editor.
+                        document.getElementById('tlScroller').focus({ preventScroll: true });
+                    }
+                    return;
+                }
                 if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && tl.selected.size) {
                     e.preventDefault();
                     const step = tlSnapStep() * (e.shiftKey ? 10 : 1);

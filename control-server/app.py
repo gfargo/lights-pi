@@ -7653,6 +7653,8 @@ def _parse_time_ms(value) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
         return max(0, int(value))
 
     text = str(value).strip().lower()
@@ -7754,6 +7756,8 @@ def _normalize_cue(raw_cue) -> dict:
             "action": str(raw_cue["action"]),
             "parameters": raw_cue.get("parameters", {}) or {},
             "groups": groups,
+        } if isinstance(raw_cue.get("parameters", {}) or {}, dict) else {
+            "error": "Cue 'parameters' must be an object",
         }
     return {"error": "Cue must have 'scene', 'chase', or 'action'"}
 
@@ -7779,10 +7783,12 @@ def _validate_cue_action(cue: dict) -> str | None:
     return None
 
 
-def _normalize_cues(raw_cues) -> tuple[list[dict], list[dict]]:
+def _normalize_cues(raw_cues, check_refs: bool = True) -> tuple[list[dict], list[dict]]:
     """Normalize and validate a cue array. Returns (cues sorted by time, errors).
 
-    Errors are ``{"index", "error"}`` against the input order.
+    Errors are ``{"index", "error"}`` against the input order. With
+    *check_refs* off, scene and chase names aren't looked up (each lookup
+    parses the workspace file; preview checks only the cue it fires).
     """
     if not isinstance(raw_cues, list) or not raw_cues:
         return [], [{"index": None, "error": "cues must be a non-empty array"}]
@@ -7792,7 +7798,7 @@ def _normalize_cues(raw_cues) -> tuple[list[dict], list[dict]]:
         if "error" in norm:
             errors.append({"index": i, "error": norm["error"]})
             continue
-        ref_err = _validate_cue_action(norm)
+        ref_err = _validate_cue_action(norm) if check_refs else None
         if ref_err:
             errors.append({"index": i, "error": ref_err})
             continue
@@ -8163,7 +8169,11 @@ def update_cue_list(cl_id_or_name):
         cl["description"] = (body.get("description") or "").strip()
 
     if "audio_file" in body:
-        cl["audio_file"] = (body.get("audio_file") or "").strip() or None
+        new_audio = (body.get("audio_file") or "").strip() or None
+        if new_audio != cl.get("audio_file"):
+            # A waveform drawn from the old file would now be wrong.
+            _waveform_sidecar_path(cl["id"]).unlink(missing_ok=True)
+        cl["audio_file"] = new_audio
 
     if "cues" in body:
         raw_cues = body["cues"]
@@ -8275,17 +8285,20 @@ def preview_cue_list(cl_id_or_name):
 
     cues = cl.get("cues", [])
     if "cues" in body:
-        cues, errors = _normalize_cues(body["cues"])
-        if errors:
-            return jsonify({
-                "success": False,
-                "error": "One or more cues are invalid",
-                "cue_errors": errors,
-            }), 400
+        # Unsaved edits: a half-finished cue elsewhere in the list (a chase
+        # not picked yet) must not stop scrubbing, so skip cues that don't
+        # parse and only check the scene/chase of the one that fires.
+        if not isinstance(body["cues"], list):
+            return jsonify({"success": False, "error": "cues must be an array"}), 400
+        cues, _ = _normalize_cues(body["cues"], check_refs=False)
 
     cue = _cue_active_at(cues, at_ms)
     if cue is None:
         return jsonify({"success": True, "at_ms": at_ms, "applied": None})
+    if "cues" in body:
+        ref_err = _validate_cue_action(cue)
+        if ref_err:
+            return jsonify({"success": False, "error": ref_err, "at_ms": cue["at_ms"]}), 400
 
     try:
         execute_lighting_action(
@@ -8371,7 +8384,7 @@ def _validate_waveform(body) -> tuple[dict | None, str | None]:
     if not name:
         return None, "audio_file is required"
     resolution = body.get("resolution_ms")
-    if isinstance(resolution, bool) or not isinstance(resolution, (int, float)):
+    if isinstance(resolution, bool) or not isinstance(resolution, (int, float)) or not math.isfinite(resolution):
         return None, "resolution_ms must be a number"
     resolution = int(resolution)
     if resolution < WAVEFORM_MIN_RESOLUTION_MS:
@@ -8400,7 +8413,8 @@ def _validate_waveform(body) -> tuple[dict | None, str | None]:
     except ValueError:
         return None, "Each peak must be [peak, rms] or {peak, rms} with numbers"
     duration = body.get("audio_duration_ms")
-    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+    usable = isinstance(duration, (int, float)) and not isinstance(duration, bool) and math.isfinite(duration)
+    if not usable or duration <= 0:
         duration = len(clean) * resolution
     return {
         "audio_file": name,
