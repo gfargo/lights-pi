@@ -11,6 +11,7 @@ import concurrent.futures
 import contextlib
 import gzip
 import hmac
+import io
 import json
 import logging
 import math
@@ -58,6 +59,7 @@ import audio_react
 import chat_store
 import fixture_definitions
 import midi_engine
+import touchosc_layout
 from audio_engine import _engine as _audio_engine
 from audio_engine import bpm_to_interval_ms
 from event_bus import EventBus, format_sse, parse_filter
@@ -10366,6 +10368,23 @@ def osc_addresses():
         return jsonify(_osc_address_book())
     except Exception as e:
         return jsonify({"scenes": [], "chases": [], "error": str(e)}), 500
+
+
+@app.route("/api/osc/touchosc", methods=["GET"])
+def osc_touchosc_layout():
+    """A TouchOSC layout (.tosc) for this workspace's scenes, chases and channels."""
+    try:
+        book = _osc_address_book()
+        fixtures = get_workspace_fixtures()
+        for fixture in fixtures:
+            fixture["channel_info"] = _fixture_channels_info(fixture)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read the workspace: {e}"}), 500
+    data = touchosc_layout.build_layout(
+        book["scenes"], book["chases"], touchosc_layout.channel_faders(fixtures),
+    )
+    return send_file(io.BytesIO(data), mimetype="application/octet-stream",
+                     as_attachment=True, download_name="lights-pi.tosc")
 
 
 @app.route("/api/osc/settings", methods=["POST"])

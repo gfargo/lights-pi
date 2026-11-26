@@ -97,20 +97,37 @@ The port must match the port TouchOSC listens on (its "receive port",
    - **Host**: the Pi's address from the OSC panel
    - **Send port**: `8000`
    - **Receive port**: `9000`
-2. Build the layout in the TouchOSC editor. A useful first page:
-   - a grid of **buttons**, each with its OSC address set to one scene,
-     such as `/scene/1`, `/scene/6`, `/scene/lights-on`;
-   - a **fader** with address `/master`;
-   - a **toggle button** per chase, such as `/chase/12`;
-   - a **button** with address `/blackout`, coloured red;
-   - optionally, a bank of faders on single channels:
-     `/fixture/0/0`, `/fixture/0/1` and so on (fixture IDs come from
-     `GET /api/fixtures`; channels count from 0).
+2. Load a layout. The quickest is the one made for your workspace:
+   **Diagnostics → OSC → Download layout (.tosc)**. It has:
+   - **Scenes**: a button for every scene (more pages past 24), the
+     master fader, cue **GO** / **STOP** and a red **BLACKOUT**;
+   - **Faders**: eight faders on the first eight channels, labelled with
+     fixture and channel, plus master and blackout;
+   - **Chases** (when the workspace has any): a toggle per chase.
+
+   It's laid out for an iPad in landscape (1024 × 768) and is generated
+   from the workspace loaded when you download it, so download it again
+   after adding scenes. Open the file in TouchOSC (AirDrop, Files, or the
+   editor's **Open**). [`docs/touchosc/lights-pi.tosc`](touchosc/lights-pi.tosc)
+   is the same layout built from the bundled sample workspace, if you want
+   to look before connecting.
+
+   To build your own instead, use these addresses: a **button** per scene
+   (`/scene/1`, `/scene/lights-on`), a **fader** on `/master`, a **toggle
+   button** per chase (`/chase/12`), a **button** on `/blackout`, and
+   faders on single channels (`/fixture/0/0`, `/fixture/0/1`; fixture IDs
+   come from `GET /api/fixtures`, channels count from 0).
 3. Press a scene button. It should appear in the OSC panel's recent
    messages, the lights should change, and the button should stay lit.
 
-The repository doesn't ship a ready-made `.tosc` file yet; one built and
-tested on a real tablet is welcome as a contribution.
+From a computer you can also fetch the layout for any running server:
+
+```bash
+python control-server/touchosc_layout.py http://lights.local:5000 my-rig.tosc
+```
+
+This doesn't work when `LIGHTS_PASSWORD` is set (the command has no way to
+sign in); download the layout from the web UI instead.
 
 ## QLab
 
