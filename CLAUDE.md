@@ -52,7 +52,7 @@ Two things called "update" exist; they do different jobs.
 
 | Command | What it does |
 |---|---|
-| `bash scripts/deploy.sh` | **Deploys lights-pi code.** Rsyncs `control-server/`, `scripts/`, and `lightsctl.sh` to the Pi and restarts `lighting-control.service`. This is the real deploy path. |
+| `bash scripts/deploy.sh` | **Deploys lights-pi code.** Rsyncs `control-server/`, `scripts/`, and `lightsctl.sh` to the Pi and restarts `lighting-control.service`; when the MCP server is installed it also syncs `mcp-server/` (keeping its `.env`) and restarts `lighting-mcp.service`. This is the real deploy path. |
 | `./lightsctl.sh update` | **OS packages only.** Runs `sudo apt update && apt upgrade` on the Pi. Does not touch lights-pi code. |
 | `./lightsctl.sh mcp-install` | Installs and enables the MCP server (port 5001). Not part of initial provisioning — run separately, otherwise Pi-health reports `lighting-mcp: not_installed`. |
 
