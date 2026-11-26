@@ -9030,9 +9030,24 @@ def list_audio_chases():
 # section — and the server as a whole — imports and runs cleanly on a
 # headless Pi with python-rtmidi absent or no controller plugged in.
 
+# Threading: rtmidi calls _on_midi_message on its own native thread. Under
+# the eventlet worker that thread must not touch a green primitive (this
+# lock, structlog, the QLC+ bridge), so it only parses the message and hands
+# it to the hub with _call_on_hub(); everything else runs on the hub.
 _midi_mappings_lock = threading.Lock()
 _midi_last_values: dict = {}   # mapping_id -> last raw MIDI value (0-127)
 _midi_chase_state: dict = {}   # mapping_id -> bool (chase_toggle running state)
+_midi_monitor = midi_engine.MidiMonitor()
+
+# Fader coalescing. A moving fader sends ~100 CCs a second; only its latest
+# value matters. The rtmidi thread stores the newest message per control in
+# _midi_cc_latest and queues one hub call per control until the hub takes it.
+# Order matters for not losing the final value: the rtmidi thread writes the
+# value *before* checking _midi_cc_queued, and the hub clears the flag
+# *before* reading the value. Plain dict/set operations are atomic under the
+# GIL, so no lock is shared with the hub.
+_midi_cc_latest: dict = {}     # (port, channel, number) -> newest parsed CC
+_midi_cc_queued: set = set()   # controls with a hub call already queued
 
 
 def _load_midi_mappings() -> list:
@@ -9097,6 +9112,8 @@ def _midi_actions() -> dict:
     return {
         "set_channel_values": set_channel_values,
         "resolve_channel": _midi_resolve_channel,
+        "set_master": lambda level: apply_brightness_live(level, target_groups=None),
+        "blackout": lambda: _do_blackout(None),
         "activate_scene": apply_existing_scene_live,
         "start_chase": _midi_start_chase,
         "stop_chase": _midi_stop_chase,
@@ -9104,14 +9121,39 @@ def _midi_actions() -> dict:
 
 
 def _on_midi_message(port_name: str, raw_message: list) -> None:
-    """MidiListener callback — runs on the listener thread. Never raises:
-    a malformed message or a mapping referencing missing fixtures/scenes/
-    chases is dropped, not fatal, so one bad controller can't take down the
-    listener thread."""
+    """MidiListener callback, on rtmidi's own thread. Parses the message and
+    hands it to the hub; never touches app state here (see the threading
+    note above). Never raises."""
     try:
         parsed = midi_engine.parse_midi_message(raw_message)
         if parsed is None:
             return
+        if parsed["type"] == "cc":
+            slot = (port_name, parsed["channel"], parsed["number"])
+            _midi_cc_latest[slot] = parsed
+            if slot not in _midi_cc_queued:
+                _midi_cc_queued.add(slot)
+                _call_on_hub(_handle_midi_cc, port_name, slot)
+        else:
+            _call_on_hub(_handle_midi_message, port_name, parsed)
+    except Exception as exc:
+        print(f"[midi-listener] could not queue message: {type(exc).__name__}: {exc}")
+
+
+def _handle_midi_cc(port_name: str, slot: tuple) -> None:
+    """Hub side of fader coalescing: apply the newest value for one control."""
+    _midi_cc_queued.discard(slot)
+    parsed = _midi_cc_latest.get(slot)
+    if parsed is not None:
+        _handle_midi_message(port_name, parsed)
+
+
+def _handle_midi_message(port_name: str, parsed: dict) -> None:
+    """Record one message for the UI and run its mapping. Runs on the hub.
+    A mapping that points at a missing fixture, scene or chase is dropped,
+    not fatal, so one bad controller can't take anything down."""
+    try:
+        _midi_monitor.record(port_name, parsed)
         with _midi_mappings_lock:
             mappings = _load_midi_mappings()
             result = midi_engine.dispatch_midi_message(
@@ -9208,6 +9250,30 @@ def delete_midi_mapping(mapping_id):
         _midi_chase_state.pop(mapping_id, None)
     _emit("midi_mapping_modified", {"mapping_id": mapping_id, "action": "deleted"})
     return jsonify({"success": True})
+
+
+@app.route("/api/midi/monitor", methods=["GET"])
+def midi_monitor():
+    """What the MIDI tab polls: connected controllers, messages newer than
+    ``?after=<seq>`` and the latest value of every control seen.
+
+    Devices come from the ports the listener already has open, so polling
+    this is cheap (no rtmidi probe). ``system`` marks ports that aren't
+    controllers (ALSA's Midi Through, QLC+'s own client).
+    """
+    try:
+        after = max(0, int(request.args.get("after", 0)))
+    except (TypeError, ValueError):
+        after = 0
+    snap = _midi_monitor.snapshot(after)
+    return jsonify({
+        "available": _midi_listener.available,
+        "devices": [
+            {"name": name, "system": midi_engine.is_system_port(name)}
+            for name in _midi_listener.connected_ports()
+        ],
+        **snap,
+    })
 
 
 @app.route("/api/midi/state", methods=["GET"])

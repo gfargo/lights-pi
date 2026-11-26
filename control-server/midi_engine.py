@@ -6,6 +6,7 @@ hardware-gated code lives inside MidiListener and is guarded by the
 helpers are pure and fully unit-testable with constructed fake MIDI
 messages — no device required.
 """
+import collections
 import threading
 import time
 import uuid
@@ -15,7 +16,9 @@ import uuid
 # ---------------------------------------------------------------------------
 
 VALID_INPUT_TYPES = ("cc", "note")
-VALID_ACTION_TYPES = ("channel", "scene", "chase_toggle")
+# channel and master take a fader or knob (CC); scene, chase_toggle and
+# blackout take a button or pad (note on).
+VALID_ACTION_TYPES = ("channel", "master", "scene", "chase_toggle", "blackout")
 
 
 def parse_midi_message(data) -> dict | None:
@@ -149,6 +152,12 @@ def build_mapping(data: dict, mapping_id: str | None = None):
         if not chase_id:
             return None, "action.chase_id is required for a chase_toggle mapping"
         action["chase_id"] = chase_id
+    # "master" and "blackout" take no parameters.
+
+    if action_type in ("channel", "master") and input_type != "cc":
+        return None, f"a {action_type} mapping needs a fader or knob (input.type \"cc\")"
+    if action_type in ("scene", "chase_toggle", "blackout") and input_type != "note":
+        return None, f"a {action_type} mapping needs a button or pad (input.type \"note\")"
 
     mapping = {
         "id": mapping_id or uuid.uuid4().hex[:12],
@@ -188,6 +197,8 @@ def dispatch_midi_message(msg: dict | None, mappings: list, actions: dict, chase
     actions: dict of callables the dispatch invokes —
         set_channel_values(updates: list[(abs_channel:int, value:int)]) -> bool
         resolve_channel(fixture_id:int, channel_offset:int) -> int | None
+        set_master(level:int 0-255) -> Any
+        blackout() -> Any
         activate_scene(scene_id) -> Any
         start_chase(chase_id) -> Any
         stop_chase(chase_id) -> Any
@@ -226,6 +237,15 @@ def dispatch_midi_message(msg: dict | None, mappings: list, actions: dict, chase
             actions["set_channel_values"]([(abs_channel, scaled)])
             return {"matched": True, "mapping_id": mapping_id, "action": action_type, "value": scaled}
 
+        if action_type == "master" and msg["type"] == "cc":
+            level = scale_value(msg["value"])
+            actions["set_master"](level)
+            return {"matched": True, "mapping_id": mapping_id, "action": action_type, "value": level}
+
+        if action_type == "blackout" and msg["type"] == "note_on":
+            actions["blackout"]()
+            return {"matched": True, "mapping_id": mapping_id, "action": action_type}
+
         if action_type == "scene" and msg["type"] == "note_on":
             actions["activate_scene"](action.get("scene_id"))
             return {"matched": True, "mapping_id": mapping_id, "action": action_type}
@@ -244,6 +264,69 @@ def dispatch_midi_message(msg: dict | None, mappings: list, actions: dict, chase
         return {"matched": False, "mapping_id": mapping_id, "action": action_type}
 
     return {"matched": False, "mapping_id": None, "action": None}
+
+
+def control_key(msg: dict) -> str:
+    """Identity of the physical control behind a message: "cc:<channel>:<number>"
+    for a fader or knob, "note:<channel>:<number>" for a button or pad (its
+    note on and note off share a key)."""
+    kind = "cc" if msg.get("type") == "cc" else "note"
+    return f"{kind}:{msg.get('channel')}:{msg.get('number')}"
+
+
+def is_system_port(name: str) -> bool:
+    """Ports every Linux box has that aren't controllers: ALSA's "Midi
+    Through" loopback and QLC+'s own sequencer client."""
+    lowered = str(name).lower()
+    return "midi through" in lowered or "__qlc__" in lowered or lowered.startswith("qlcplus")
+
+
+class MidiMonitor:
+    """What the controllers have sent lately, for the web UI.
+
+    Keeps the last *recent* messages in order (each with a sequence number,
+    so a poller asks only for what's new) and the latest message per
+    physical control (for live value bars). Pure bookkeeping: callers decide
+    which thread records into it.
+    """
+
+    def __init__(self, recent: int = 50, controls: int = 64):
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._recent = collections.deque(maxlen=recent)
+        self._controls: collections.OrderedDict[str, dict] = collections.OrderedDict()
+        self._max_controls = controls
+
+    def record(self, port: str, msg: dict, now: float | None = None) -> dict:
+        key = control_key(msg)
+        with self._lock:
+            self._seq += 1
+            entry = {
+                "seq": self._seq,
+                "ts": time.time() if now is None else now,
+                "port": port,
+                "type": msg["type"],
+                "channel": msg["channel"],
+                "number": msg["number"],
+                "value": msg["value"],
+                "key": key,
+            }
+            self._recent.append(entry)
+            self._controls[f"{port}|{key}"] = entry
+            self._controls.move_to_end(f"{port}|{key}")
+            while len(self._controls) > self._max_controls:
+                self._controls.popitem(last=False)
+        return entry
+
+    def snapshot(self, after: int = 0) -> dict:
+        """Messages newer than *after*, oldest first, and every control's
+        latest message, most recently moved first."""
+        with self._lock:
+            return {
+                "seq": self._seq,
+                "messages": [dict(m) for m in self._recent if m["seq"] > after],
+                "controls": [dict(c) for c in reversed(self._controls.values())],
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +400,11 @@ class MidiListener:
         except Exception as exc:
             print(f"[midi-listener] device query failed: {exc}")
             return []
+
+    def connected_ports(self) -> list:
+        """Names of the ports the listener has open right now. Cheap: no
+        rtmidi probe (each probe costs an ALSA client), so it's safe to poll."""
+        return sorted(self._ports)
 
     def start(self) -> bool:
         if not self.available:
