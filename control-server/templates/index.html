@@ -634,12 +634,15 @@
            Console
            ══════════════════════════════════════ */
         #fixturesList {
-            display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
             gap: 0.75rem; align-items: start;
         }
         .fixture-control { position: relative; background: var(--ink-1); border: 1px solid var(--rule-strong); padding: 0.9rem 1rem 0.5rem; }
         .fixture-name { font-weight: 600; color: var(--paper); margin-bottom: 0.4rem; font-size: var(--fs-base); padding-right: 6.5rem; min-height: 36px; display: flex; align-items: center; gap: 0.4rem; }
-        .channel-controls { display: grid; gap: 0; }
+        /* minmax(0, …) and width: 0 on the slider: a range input's default
+           width (129px in Chrome, more in iOS Safari) must not set the row's
+           minimum, or the card runs off narrow phones. */
+        .channel-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
         .channel-control { display: flex; align-items: center; gap: 0.75rem; min-height: var(--hit); }
         .channel-label { flex: 0 0 104px; font-size: var(--fs-small); color: var(--paper-80); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .channel-value { flex: 0 0 2.6rem; text-align: right; font-family: var(--font-mono); font-size: var(--fs-small); font-weight: 500; color: var(--paper); font-variant-numeric: tabular-nums; }
@@ -650,7 +653,7 @@
         input[type="range"] {
             -webkit-appearance: none; appearance: none;
             background: transparent; height: var(--hit); cursor: pointer; outline: none;
-            touch-action: pan-y;
+            touch-action: pan-y; min-width: 0; max-width: 100%;
         }
         input[type="range"]:focus-visible { outline: 2px solid var(--amber-tungsten); outline-offset: 0; }
         input[type="range"]::-webkit-slider-runnable-track { height: 6px; background: var(--ink-3); border: 1px solid var(--rule-strong); }
@@ -668,7 +671,7 @@
         }
         input[type="range"]:active::-webkit-slider-thumb { background-color: var(--amber-tungsten); cursor: grabbing; }
         input[type="range"]:active::-moz-range-thumb { background-color: var(--amber-tungsten); }
-        .channel-slider { flex: 1; min-width: 0; }
+        .channel-slider { flex: 1 1 0; min-width: 0; width: 0; }
 
         .fixture-actions { position: absolute; top: 0.75rem; right: 0.75rem; display: flex; gap: 0.3rem; }
         .identify-btn {
@@ -1215,7 +1218,7 @@
             .scene-menu { right: 0; left: auto; }
 
             /* Console: one column, wider label column off. */
-            #fixturesList { grid-template-columns: 1fr; }
+            #fixturesList { grid-template-columns: minmax(0, 1fr); }
             .channel-label { flex-basis: 84px; }
 
             /* Headers + rows stack. */
