@@ -11,6 +11,10 @@ flash      On each matching hit the brightness channels jump to full and
            fade back to the look underneath over ``decay_ms``.
 amplitude  Colour follows loudness: quiet is deep blue, then violet, red and
            amber as it gets louder, with brightness rising alongside.
+spectrum   Bands to fixtures: each fixture follows the loudness of one
+           frequency band (low, mid or high). By default the fixtures are
+           split into thirds from left to right across the Stage plan, like
+           a spectrum analyser. RGB fixtures take the band's colour.
 
 Hit kinds
 ---------
@@ -23,7 +27,8 @@ from __future__ import annotations
 import colorsys
 import math
 
-EFFECTS = ("flash", "amplitude")
+EFFECTS = ("flash", "amplitude", "spectrum")
+BANDS = ("low", "mid", "high")
 REACT_TO = ("any", "kick", "snare")
 
 # Frequency bands (Hz) used to class a hit.
@@ -54,6 +59,22 @@ def band_energies(magnitudes, sample_rate: float, fft_size: int):
         elif HIGH_BAND[0] <= f < HIGH_BAND[1]:
             high += e
     return low, mid, high
+
+
+def band_bins(sample_rate: float, fft_size: int, n_bins: int | None = None) -> dict:
+    """Half-open rfft bin ranges ``{band: (start, end)}`` for LOW/MID/HIGH.
+
+    The same edges as ``band_energies``, as index ranges so the capture loop
+    can sum a numpy spectrum with slices instead of a Python loop.
+    """
+    bin_hz = sample_rate / fft_size
+    n_bins = n_bins if n_bins is not None else fft_size // 2 + 1
+
+    def index(freq):  # first bin whose centre is >= freq
+        return max(0, min(n_bins, math.ceil(freq / bin_hz)))
+
+    return {name: (index(lo), index(hi))
+            for name, (lo, hi) in zip(BANDS, (LOW_BAND, MID_BAND, HIGH_BAND), strict=True)}
 
 
 def classify_hit(low: float, mid: float, high: float) -> str:
@@ -222,3 +243,59 @@ def amplitude_frame(plan: list, level: float, step: int = 4) -> list:
 def changed_values(frame: list, last_sent: dict) -> list:
     """The entries of *frame* whose value differs from what was last sent."""
     return [(ch, v) for ch, v in frame if last_sent.get(ch) != v]
+
+
+# ---------------------------------------------------------------------------
+# Spectrum: bands to fixtures
+# ---------------------------------------------------------------------------
+
+BAND_COLOURS = {"low": (255, 24, 0), "mid": (255, 150, 0), "high": (40, 140, 255)}
+SPECTRUM_FLOOR = 0.08   # a silent band glows faintly instead of going dark
+
+
+def assign_bands(fixture_ids: list, positions: dict | None = None) -> dict:
+    """Split fixtures into low / mid / high: ``{fixture_id: band}``.
+
+    With a Stage position (``{"x": metres}``) for every fixture, they are
+    ordered left to right, so bass sits on the left like a spectrum
+    analyser; otherwise they keep the given order. Thirds, except that two
+    fixtures take low and high and one takes low.
+    """
+    ids = list(fixture_ids)
+    positions = positions or {}
+
+    def x_of(fid):
+        pos = positions.get(str(fid)) or positions.get(fid)
+        return pos.get("x") if isinstance(pos, dict) else None
+
+    if ids and all(isinstance(x_of(f), (int, float)) for f in ids):
+        ids.sort(key=lambda f: (x_of(f), str(f)))
+    n = len(ids)
+    if n == 2:
+        return {ids[0]: "low", ids[1]: "high"}
+    return {fid: BANDS[min(2, i * 3 // n)] for i, fid in enumerate(ids)}
+
+
+def spectrum_frame(plan: list, levels: dict, step: int = 4) -> list:
+    """Channel values for the spectrum effect.
+
+    Each plan entry carries ``band``; *levels* maps band → 0–1. RGB fixtures
+    show the band's colour at that level with the dimmer open; others take
+    the level on their brightness channels.
+    """
+    out = {}
+    for fx in plan:
+        band = fx.get("band")
+        if band not in BAND_COLOURS:
+            continue
+        level = max(0.0, min(1.0, float(levels.get(band, 0.0))))
+        value = SPECTRUM_FLOOR + (1.0 - SPECTRUM_FLOOR) * level
+        if fx["rgb"]:
+            for ch, c in zip(fx["rgb"], BAND_COLOURS[band], strict=True):
+                out[ch] = quantize(int(round(c * value)), step)
+            if fx["dimmer"] is not None:
+                out[fx["dimmer"]] = 255
+        else:
+            for ch in fx["brightness"]:
+                out[ch] = quantize(int(round(value * 255)), step)
+    return sorted(out.items())

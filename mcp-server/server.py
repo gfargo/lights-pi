@@ -946,6 +946,7 @@ def enable_audio_react(
     decay_ms: int = 250,
     groups: list[str] | None = None,
     sensitivity: float | None = None,
+    bands: dict[str, list[str | int]] | None = None,
 ) -> dict:
     """Start listening to the mic and make the lights react.
 
@@ -953,7 +954,9 @@ def enable_audio_react(
         effect: "flash" — brightness jumps to full on each hit and fades back
             to the current look over decay_ms. "amplitude" — colour follows
             loudness, deep blue when quiet through violet and red to amber
-            when loud.
+            when loud. "spectrum" — bands to fixtures: each fixture follows
+            the loudness of the low, mid or high band (red, amber, blue on
+            RGB fixtures).
         react_to: Which hits flash: "any", "kick" (low thump) or "snare"
             (bright crack, also claps and hats). Ignored by "amplitude".
         decay_ms: Flash fade-back time, 50-2000 ms. Short (~150) for fast
@@ -961,6 +964,10 @@ def enable_audio_react(
         groups: Optional group names to limit the effect. Omit for every fixture.
         sensitivity: Optional noise gate (RMS, e.g. 0.02). Lower reacts to
             quieter sound. Usually better set with the Calibrate button.
+        bands: Spectrum only. Which fixtures follow which band, e.g.
+            {"low": ["back"], "mid": ["front"], "high": [3, 4]} (group names
+            or fixture IDs). Omit to split the fixtures into thirds, left to
+            right across the Stage plan.
 
     Calling it again changes the effect without restarting the mic.
     Fails with "unavailable" when the Pi has no audio libraries or mic.
@@ -970,6 +977,8 @@ def enable_audio_react(
         payload["groups"] = groups
     if sensitivity is not None:
         payload["sensitivity"] = float(sensitivity)
+    if bands:
+        payload["bands"] = bands
     return _post("/api/audio/enable", payload)
 
 

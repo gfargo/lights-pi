@@ -69,6 +69,11 @@
             --signal-red:    #f87171;
             --signal-red-deep:   #7a2020;
 
+            /* ── Audio spectrum bands (match audio_react.BAND_COLOURS) ── */
+            --band-low:      #ff1800;
+            --band-mid:      #ff9600;
+            --band-high:     #288cff;
+
             /* ── Type ── */
             --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Fira Code", monospace;
@@ -1351,6 +1356,12 @@
         .stage-pick-link { margin-top: 0.5rem; }
         .audio-level { height: 6px; background: var(--ink-2); margin-top: 0.9rem; overflow: hidden; }
         .audio-level > div { height: 100%; width: 0%; background: var(--paper-60); transition: width 0.1s linear; }
+        .audio-bands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin: 0.75rem 0 0.5rem; }
+        .audio-band { display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--fs-meta); color: var(--paper-60); }
+        .audio-band .audio-level { margin-top: 0; }
+        .audio-band.low .audio-level > div { background: var(--band-low); }
+        .audio-band.mid .audio-level > div { background: var(--band-mid); }
+        .audio-band.high .audio-level > div { background: var(--band-high); }
         #audioFlashFields[hidden] { display: none; }
         /* ── OSC panel (Tools) ── */
         .osc-where { font-size: var(--fs-body); color: var(--paper-80); margin: 0 0 0.9rem; }
@@ -1913,8 +1924,16 @@
                 <select id="audioEffect" class="field-input" aria-label="Effect" onchange="syncAudioEffectFields()">
                     <option value="flash" selected>Flash on hits</option>
                     <option value="amplitude">Colour follows loudness</option>
+                    <option value="spectrum">Bands to fixtures</option>
                     <option value="">Off (just listen)</option>
                 </select>
+                <div id="audioSpectrumFields" hidden>
+                    <div class="audio-bands" aria-label="Band levels">
+                        <div class="audio-band low"><span>Low <span class="mono" id="audioBandLowN"></span></span><div class="audio-level"><div id="audioBandLow"></div></div></div>
+                        <div class="audio-band mid"><span>Mid <span class="mono" id="audioBandMidN"></span></span><div class="audio-level"><div id="audioBandMid"></div></div></div>
+                        <div class="audio-band high"><span>High <span class="mono" id="audioBandHighN"></span></span><div class="audio-level"><div id="audioBandHigh"></div></div></div>
+                    </div>
+                </div>
                 <div id="audioFlashFields">
                     <label class="field-label" for="audioReactTo">React to</label>
                     <select id="audioReactTo" class="field-input">
@@ -5232,6 +5251,12 @@
                 const val = document.getElementById('audioLevelValue');
                 if (bar) bar.style.width = pct + '%';
                 if (val) val.textContent = pct + '%';
+                if (Array.isArray(data.bands)) {
+                    ['Low', 'Mid', 'High'].forEach((name, i) => {
+                        const el = document.getElementById('audioBand' + name);
+                        if (el) el.style.width = Math.round(Math.max(0, Math.min(1, data.bands[i] || 0)) * 100) + '%';
+                    });
+                }
             });
             _socket.on('audio_onset', function(data) {
                 const pulse = document.getElementById('audioOnsetPulse');
@@ -5274,8 +5299,13 @@
                 const react = state.react;
                 const effState = document.getElementById('audioEffectState');
                 if (effState) effState.textContent = react
-                    ? (react.effect === 'flash' ? 'Flashing' : 'Following loudness')
+                    ? ({ flash: 'Flashing', amplitude: 'Following loudness', spectrum: 'Bands to fixtures' }[react.effect] || react.effect)
                     : 'Off';
+                const perBand = react && react.fixtures_per_band;
+                ['Low', 'Mid', 'High'].forEach(name => {
+                    const el = document.getElementById('audioBand' + name + 'N');
+                    if (el) el.textContent = perBand ? `· ${perBand[name.toLowerCase()]} fixture${perBand[name.toLowerCase()] === 1 ? '' : 's'}` : '';
+                });
                 if (react) {
                     document.getElementById('audioEffect').value = react.effect;
                     document.getElementById('audioReactTo').value = react.react_to || 'any';
@@ -5291,9 +5321,11 @@
         function syncAudioEffectFields() {
             const effect = document.getElementById('audioEffect').value;
             document.getElementById('audioFlashFields').hidden = effect !== 'flash';
+            document.getElementById('audioSpectrumFields').hidden = effect !== 'spectrum';
             document.getElementById('audioEffectHint').textContent = {
                 flash: 'Every fixture flashes to full on each hit and fades back to the current look.',
                 amplitude: 'Colour follows how loud it is: deep blue when quiet, through violet and red, to amber when loud. Stopping puts the previous look back.',
+                spectrum: 'Each fixture follows one band: bass (red), mids (amber) or highs (blue). Fixtures are split into thirds from left to right across the Stage plan, or in fixture order if they aren’t all on it. Stopping puts the previous look back.',
                 '': 'The mic keeps listening (tempo for audio chases) but the lights don’t react.',
             }[effect];
         }
