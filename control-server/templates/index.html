@@ -2630,7 +2630,11 @@
         function renderHistoryItem(command, result, time) {
             const id = ++historyCounter;
             const ok = result.success;
-            const action = result.action ? (result.action.explanation || result.action.action) : 'Error';
+            // Routes other than /api/command and /api/action send no 'action';
+            // describe those by their output, and only say Error when it failed.
+            const action = result.action
+                ? (result.action.explanation || result.action.action)
+                : (ok ? (result.output || 'Done') : 'Error');
             const dbg = result.debug || {};
             const errMsg = result.error || '';
             const logMsg = result.log || '';
@@ -3044,7 +3048,11 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({})
                 });
-                const data = await r.json();
+                const data = await r.json().catch(() => ({ success: false, error: 'HTTP ' + r.status }));
+                if (data.success) {
+                    data.output = `${data.channels_zeroed} channel${data.channels_zeroed === 1 ? '' : 's'} on `
+                        + `${data.fixtures} fixture${data.fixtures === 1 ? '' : 's'} set to 0`;
+                }
                 renderHistoryItem('Blackout', data, new Date().toLocaleTimeString());
             } catch (e) {
                 console.error('blackout failed:', e);
