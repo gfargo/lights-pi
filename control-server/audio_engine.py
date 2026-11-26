@@ -9,7 +9,7 @@ import statistics
 import threading
 import time
 
-from audio_react import LevelTracker, band_energies, classify_hit
+from audio_react import BANDS, LevelTracker, band_bins, band_energies, classify_hit
 
 # ---------------------------------------------------------------------------
 # Pure helpers — no hardware, fully unit-testable
@@ -88,6 +88,7 @@ class AudioEngine:
         self._last_onset_ms: int = 0
         self._last_onset_kind: str = ""
         self._level: float = 0.0          # 0–1 loudness, auto-gained
+        self._bands: tuple = (0.0, 0.0, 0.0)  # 0–1 low/mid/high, each auto-gained
         self._sensitivity: float = 0.02   # RMS noise-gate threshold
         self._device: str | int | None = None  # None = system default
 
@@ -146,6 +147,7 @@ class AudioEngine:
             self._bpm_history = []
             self._recent_rms = []
             self._level = 0.0
+            self._bands = (0.0, 0.0, 0.0)
             self._thread = self._threading.Thread(
                 target=self._capture_loop,
                 daemon=True,
@@ -171,6 +173,7 @@ class AudioEngine:
                 "last_onset_ms": self._last_onset_ms,
                 "last_onset_kind": self._last_onset_kind,
                 "level": round(self._level, 3),
+                "bands": dict(zip(BANDS, (round(b, 3) for b in self._bands), strict=True)),
                 "sensitivity": self._sensitivity,
                 "device": self._device,
             }
@@ -196,6 +199,14 @@ class AudioEngine:
     def level_snapshot(self) -> float:
         """Lock-free 0–1 loudness for the QLC+ loop thread."""
         return self._level
+
+    def bands_snapshot(self) -> dict:
+        """Lock-free ``{"low", "mid", "high"}`` 0–1 levels for the QLC+ loop thread.
+
+        The tuple is replaced whole on each update, so a reader never sees a
+        half-written set.
+        """
+        return dict(zip(BANDS, self._bands, strict=True))
 
     def set_sensitivity(self, value: float) -> None:
         """Change the noise gate while running."""
@@ -267,6 +278,13 @@ class AudioEngine:
             window = np.hanning(fft_size).astype("float32")
             ring = np.zeros(fft_size, dtype="float32")
             tracker = LevelTracker()
+            # Per-band loudness: each band gains itself, so a bass-heavy mix
+            # still moves the high band. Faster release than overall loudness
+            # so the bands pulse.
+            bins = band_bins(sr, fft_size)
+            band_trackers = [LevelTracker(attack=0.6, release=0.15) for _ in BANDS]
+            band_scale = fft_size / 4   # Hann-windowed rfft magnitude → ~signal amplitude
+            hop_count = 0
             last_level_emit = 0.0
             last_bpm_emitted = -1.0
             last_bpm_emit = 0.0
@@ -287,10 +305,28 @@ class AudioEngine:
                     # Loudness for the amplitude effect (plain float write:
                     # readers on other threads take no lock).
                     self._level = tracker.update(rms, self._sensitivity)
+                    gate_open = noise_gate_passes(rms, self._sensitivity)
+
+                    # Band levels for the spectrum effect, every other hop
+                    # (~43 a second, more than the ~33 fps renderer needs).
+                    hop_count += 1
+                    if hop_count % 2 == 0:
+                        if gate_open:
+                            spectrum = np.abs(np.fft.rfft(ring * window))
+                            amps = [float(np.sqrt(np.sum(spectrum[a:b] ** 2))) / band_scale
+                                    for a, b in bins.values()]
+                        else:
+                            amps = [0.0, 0.0, 0.0]
+                        self._bands = tuple(t.update(a) for t, a in zip(band_trackers, amps, strict=True))
+
                     now = time.time()
                     if now - last_level_emit >= 0.1:
                         last_level_emit = now
-                        self._notify({"type": "level", "level": round(self._level, 3)})
+                        self._notify({
+                            "type": "level",
+                            "level": round(self._level, 3),
+                            "bands": [round(b, 3) for b in self._bands],
+                        })
 
                     # Rolling RMS history for calibration
                     with self._lock:
@@ -302,8 +338,6 @@ class AudioEngine:
                     tempo_det(samples)
                     onset_out = onset_det(samples)
                     raw_bpm = float(tempo_det.get_bpm())
-
-                    gate_open = noise_gate_passes(rms, self._sensitivity)
 
                     # Update BPM estimate when gate is open and tempo has a reading
                     if gate_open and raw_bpm > 0:

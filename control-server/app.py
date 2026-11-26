@@ -8355,11 +8355,11 @@ def _audio_socketio_subscriber(event: dict) -> None:
             "kind": event.get("kind"),
         })
     elif event.get("type") == "level":
-        socketio.emit("audio_level", {"level": event["level"]})
+        socketio.emit("audio_level", {"level": event["level"], "bands": event.get("bands")})
 
 
 # ---------------------------------------------------------------------------
-# Audio-reactive effects (flash, amplitude) — see audio_react.py
+# Audio-reactive effects (flash, amplitude, spectrum) — see audio_react.py
 # ---------------------------------------------------------------------------
 #
 # One task on the QLC+ loop renders a frame every AUDIO_REACT_FRAME_S from
@@ -8397,8 +8397,10 @@ def _note_audio_react_base(channel_values) -> None:
 def _audio_react_config(body: dict):
     """Validate an enable body's effect settings. Returns (settings, error).
 
-    ``effect`` is "flash", "amplitude" or null (no effect). For older
-    callers, ``react_to`` alone means the flash effect.
+    ``effect`` is "flash", "amplitude", "spectrum" or null (no effect). For
+    older callers, ``react_to`` alone means the flash effect. ``bands``
+    (spectrum only) maps "low" / "mid" / "high" to group names or fixture
+    IDs; without it the fixtures are split automatically.
     """
     effect = body.get("effect")
     react_to = body.get("react_to")
@@ -8417,7 +8419,59 @@ def _audio_react_config(body: dict):
         return None, "decay_ms must be a number"
     decay_ms = max(50, min(2000, decay_ms))
     groups = [g for g in (body.get("groups") or []) if isinstance(g, str)] or None
-    return {"effect": effect, "react_to": react_to, "decay_ms": decay_ms, "groups": groups}, None
+    bands, err = _audio_bands_config(body.get("bands"))
+    if err:
+        return None, err
+    return {"effect": effect, "react_to": react_to, "decay_ms": decay_ms,
+            "groups": groups, "bands": bands}, None
+
+
+def _audio_bands_config(raw):
+    """Validate a spectrum ``bands`` mapping. Returns (mapping or None, error)."""
+    if raw in (None, {}, ""):
+        return None, None
+    if not isinstance(raw, dict):
+        return None, "bands must be an object like {\"low\": [\"left\"], \"high\": [3, 4]}"
+    unknown = sorted(set(raw) - set(audio_react.BANDS))
+    if unknown:
+        return None, f"bands keys must be {', '.join(audio_react.BANDS)}; got {', '.join(unknown)}"
+    clean = {}
+    for band, targets in raw.items():
+        if not isinstance(targets, list) or not all(
+            isinstance(x, str) or (isinstance(x, int) and not isinstance(x, bool)) for x in targets
+        ):
+            return None, f"bands.{band} must be a list of group names or fixture IDs"
+        if targets:
+            clean[band] = list(targets)
+    return (clean or None), None
+
+
+def _spectrum_band_of(fixtures: list, bands) -> dict:
+    """``{fixture_id: band}`` for the spectrum effect.
+
+    With an explicit *bands* mapping, fixtures it names (by group or ID) get
+    that band and the rest sit out. Without one, *fixtures* are split into
+    thirds, left to right across the Stage plan when every fixture is on it.
+    """
+    if not bands:
+        positions = _load_stage_layout().get("positions") or {}
+        return audio_react.assign_bands([f["id"] for f in fixtures], positions)
+    ids = {str(f["id"]): f["id"] for f in fixtures}
+    out = {}
+    for band in audio_react.BANDS:
+        for target in bands.get(band, []):
+            if isinstance(target, int):
+                members = [str(target)] if str(target) in ids else []
+            else:
+                # A group name wins; failing that, "3" means fixture 3
+                # (agents often send IDs as strings).
+                members = [str(f["id"]) for f in _target_fixtures([target])]
+                if not members and target.strip() in ids:
+                    members = [target.strip()]
+            for key in members:
+                if key in ids:
+                    out.setdefault(ids[key], band)
+    return out
 
 
 async def _run_audio_react_async(cfg: dict) -> None:
@@ -8436,6 +8490,8 @@ async def _run_audio_react_async(cfg: dict) -> None:
             if cfg["effect"] == "flash":
                 strength = audio_react.flash_envelope(now_ms - flash_at, cfg["decay_ms"]) if flash_at else 0.0
                 frame = audio_react.flash_frame(cfg["plan"], cfg["base"], strength)
+            elif cfg["effect"] == "spectrum":
+                frame = audio_react.spectrum_frame(cfg["plan"], _audio_engine.bands_snapshot())
             else:
                 frame = audio_react.amplitude_frame(cfg["plan"], _audio_engine.level_snapshot())
             changed = audio_react.changed_values(frame, last_sent)
@@ -8452,14 +8508,36 @@ async def _run_audio_react_async(cfg: dict) -> None:
         print(f"[audio-react] error: {type(exc).__name__}: {exc}")
 
 
+class AudioReactTargetError(ValueError):
+    """The requested fixtures for an effect matched nothing."""
+
+
 def _start_audio_react(settings: dict) -> dict:
-    """Start (or replace) the effect described by *settings*."""
+    """Start (or replace) the effect described by *settings*.
+
+    Raises AudioReactTargetError, leaving any running effect alone, when an
+    explicit spectrum ``bands`` mapping names no fixture in the workspace.
+
+    When it replaces a running effect, the look from before the first effect
+    is kept as the one to restore: channels both effects drive keep their old
+    base, and channels only the old effect drove are put back now, so they
+    don't stay stuck on its last frame.
+    """
     global _audio_react, _audio_react_task
-    _stop_audio_react(restore=False)
-    plan = [
-        audio_react.plan_fixture(_fixture_roles(f), lambda off, f=f: _absolute_channel(f, off))
-        for f in _target_fixtures(settings["groups"])
-    ]
+    fixtures = _target_fixtures(settings["groups"])
+    band_of = _spectrum_band_of(fixtures, settings.get("bands")) if settings["effect"] == "spectrum" else {}
+    if settings["effect"] == "spectrum" and settings.get("bands") and not band_of:
+        raise AudioReactTargetError(
+            "bands matched no fixtures; use group names or fixture IDs from /api/fixtures"
+        )
+    if band_of:
+        fixtures = [f for f in fixtures if f["id"] in band_of]
+    plan = []
+    for f in fixtures:
+        fx = audio_react.plan_fixture(_fixture_roles(f), lambda off, f=f: _absolute_channel(f, off))
+        if band_of:
+            fx["band"] = band_of[f["id"]]
+        plan.append(fx)
     channels = set()
     for fx in plan:
         channels.update(fx["brightness"])
@@ -8467,8 +8545,15 @@ def _start_audio_react(settings: dict) -> dict:
             channels.add(fx["dimmer"])
         if fx["rgb"]:
             channels.update(fx["rgb"])
+    previous = _audio_react
+    _stop_audio_react(restore=False)
+    prev_base = (previous or {}).get("base") or {}
+    left_over = {ch: v for ch, v in prev_base.items() if ch not in channels}
+    if left_over:
+        set_channel_values(sorted(left_over.items()))
     current = get_current_channel_values()
-    cfg = {**settings, "plan": plan, "base": {ch: int(current.get(ch, 0) or 0) for ch in channels}}
+    base = {ch: prev_base[ch] if ch in prev_base else int(current.get(ch, 0) or 0) for ch in channels}
+    cfg = {**settings, "plan": plan, "base": base}
     _audio_react = cfg
     _audio_react_task = _qlc_submit(_run_audio_react_async(cfg))
     return {"fixtures": len(plan), "channels": len(channels)}
@@ -8489,7 +8574,12 @@ def _audio_react_state() -> dict | None:
     cfg = _audio_react
     if not cfg:
         return None
-    return {k: cfg[k] for k in ("effect", "react_to", "decay_ms", "groups")} | {"fixtures": len(cfg["plan"])}
+    state = {k: cfg.get(k) for k in ("effect", "react_to", "decay_ms", "groups", "bands")}
+    state["fixtures"] = len(cfg["plan"])
+    if cfg.get("effect") == "spectrum":
+        counts = collections.Counter(fx.get("band") for fx in cfg["plan"])
+        state["fixtures_per_band"] = {b: counts.get(b, 0) for b in audio_react.BANDS}
+    return state
 
 
 def _load_audio_chases() -> dict:
@@ -8631,10 +8721,11 @@ def enable_audio():
         {
           "device":      null | int | "hw:1,0",   # sounddevice device id/name
           "sensitivity": 0.02,                     # noise-gate RMS threshold
-          "effect":      "flash" | "amplitude" | null,
+          "effect":      "flash" | "amplitude" | "spectrum" | null,
           "react_to":    "any" | "kick" | "snare", # which hits flash
           "decay_ms":    250,                      # flash fade-back, 50–2000
-          "groups":      ["front"]                 # default: every fixture
+          "groups":      ["front"],                # default: every fixture
+          "bands":       {"low": ["left"], "high": [3, 4]}  # spectrum; default: auto split
         }
 
     ``react_to`` without ``effect`` means the flash effect (older callers).
@@ -8669,7 +8760,10 @@ def enable_audio():
         }), 503
 
     if settings["effect"]:
-        _start_audio_react(settings)
+        try:
+            _start_audio_react(settings)
+        except AudioReactTargetError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
     else:
         _stop_audio_react()
     return jsonify({"success": True, **_audio_engine.get_state(), "react": _audio_react_state()})

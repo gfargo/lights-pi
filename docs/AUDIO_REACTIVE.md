@@ -68,6 +68,16 @@ Open **Audio** in the control UI (under More on a phone).
      brighter as it goes. Warm/cool white fixtures follow the loudness with
      their brightness. The loudness adjusts itself to the room, so a quiet
      set and a loud one both use the whole range.
+   - **Bands to fixtures** gives each fixture one frequency band: bass
+     (red), mids (amber) or highs (blue), like a spectrum analyser. Colour
+     fixtures show the band's colour, white fixtures its brightness, and a
+     quiet band glows faintly rather than going dark. The fixtures are split
+     into thirds from left to right across the **Stage** plan, so place
+     them there first; if any fixture isn't on the plan they're split in
+     fixture order. Three meters under the effect show each band and how
+     many fixtures follow it. Each band adjusts its own range, so a
+     bass-heavy mix still moves the highs. To choose the fixtures per band
+     yourself, use the API's `bands` (below).
    - **Off** keeps the mic listening (for audio-tempo chases) without
      touching the lights.
 
@@ -89,8 +99,9 @@ seconds, so it takes a few bars to settle after the music changes.
 - **Latency.** Effects render about 33 times a second on the same thread
   that talks to QLC+, so a hit reaches the lights within one frame (~30 ms)
   plus QLC+'s own output time.
-- **Not built.** Splitting frequency bands across fixtures
-  (`spectrum_split` in the original proposal).
+- **Bands.** Low is 30–150 Hz (kick, bass), mid 150 Hz–2 kHz (vocals,
+  guitars, keys), high 2–8 kHz (snare crack, hats, cymbals): the same split
+  that tells kicks from snares, measured about 43 times a second.
 
 ## API
 
@@ -100,8 +111,8 @@ For agents, the MCP server has `get_audio_state`, `enable_audio_react`,
 
 | Method | Path | Body |
 |---|---|---|
-| `GET` | `/api/audio` | Current state: `available`, `enabled`, `bpm`, `level` (0–1), `last_onset_kind`, `sensitivity`, `device`, and `react` (the running effect, or null) |
-| `POST` | `/api/audio/enable` | All optional: `effect` (`"flash"`, `"amplitude"` or null), `react_to` (`"any"`, `"kick"`, `"snare"`), `decay_ms` (50–2000, default 250), `groups`, `device`, `sensitivity`. Calling it again changes the effect without restarting the mic. `react_to` alone means `flash` |
+| `GET` | `/api/audio` | Current state: `available`, `enabled`, `bpm`, `level` (0–1), `bands` (low/mid/high, 0–1), `last_onset_kind`, `sensitivity`, `device`, and `react` (the running effect, or null; for spectrum it includes `fixtures_per_band`) |
+| `POST` | `/api/audio/enable` | All optional: `effect` (`"flash"`, `"amplitude"`, `"spectrum"` or null), `react_to` (`"any"`, `"kick"`, `"snare"`), `decay_ms` (50–2000, default 250), `groups`, `bands` (spectrum: `{"low": ["back"], "mid": ["front"], "high": [3, 4]}`, group names or fixture IDs; fixtures not named sit out; omit to split automatically), `device`, `sensitivity`. Calling it again changes the effect without restarting the mic. `react_to` alone means `flash` |
 | `POST` | `/api/audio/disable` | Stops the effect (restoring the look underneath) and capture |
 | `POST` | `/api/audio/sensitivity` | `{"sensitivity": 0.02}`; changes the gate without restarting |
 | `POST` | `/api/audio/calibrate` | Needs the engine enabled; returns the measured noise floor and new threshold |

@@ -150,7 +150,7 @@ Needs a USB mic on the Pi; see [AUDIO_REACTIVE.md](AUDIO_REACTIVE.md).
 | Tool                    | Effect                                                  |
 |-------------------------|---------------------------------------------------------|
 | `get_audio_state`       | Mic state, BPM, loudness, last hit kind, running effect |
-| `enable_audio_react`    | Start the mic with `flash` (on `any`/`kick`/`snare` hits, fading back over `decay_ms`) or `amplitude` (colour follows loudness), optionally on some groups |
+| `enable_audio_react`    | Start the mic with `flash` (on `any`/`kick`/`snare` hits, fading back over `decay_ms`) `amplitude` (colour follows loudness) or `spectrum` (low/mid/high bands to fixtures, automatic or by `bands`), optionally on some groups |
 | `disable_audio_react`   | Stop the mic and effect; restores the look from before  |
 | `set_audio_sensitivity` | Change the noise gate without restarting                |
 

@@ -202,7 +202,8 @@ class TestEngineWiring:
 
 class TestReactConfig:
     def test_defaults_and_legacy_react_to(self):
-        assert app._audio_react_config({}) == ({"effect": None, "react_to": "any", "decay_ms": 250, "groups": None}, None)
+        assert app._audio_react_config({}) == (
+            {"effect": None, "react_to": "any", "decay_ms": 250, "groups": None, "bands": None}, None)
         assert app._audio_react_config({"react_to": "kick"})[0]["effect"] == "flash"
         assert app._audio_react_config({"effect": "off"})[0]["effect"] is None
 
