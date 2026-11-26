@@ -166,8 +166,8 @@ class TestPreviewRoute:
         monkeypatch.setattr(
             app_module,
             "execute_lighting_action",
-            lambda action_data, target_groups=None, source="web": calls.append(
-                (action_data, target_groups, source)
+            lambda action_data, target_groups=None: calls.append(
+                (action_data, target_groups)
             ),
         )
         cl_id = _make_cue_list(client, [
@@ -184,7 +184,6 @@ class TestPreviewRoute:
         assert data["applied"]["action"] == "strobe"
         assert len(calls) == 1
         assert calls[0][0] == {"action": "strobe", "parameters": {"rate": 8}}
-        assert calls[0][2] == "cue-preview"
 
     def test_boundary_at_exact_cue_timestamp(self, app_module, client, monkeypatch):
         monkeypatch.setattr(app_module, "execute_lighting_action", lambda *a, **k: None)

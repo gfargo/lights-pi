@@ -288,6 +288,10 @@ on the SlimPAR Pro W when asked for "soft warm light".
 | DELETE | `/api/cue_lists/<id>` | Remove (stops playback first if running) |
 | POST | `/api/cue_lists/<id>/go` | GO — start cue-list playback from the top |
 | POST | `/api/cue_lists/<id>/stop` | Halt running cue list |
+| POST | `/api/cue_lists/<id>/preview` | Apply the cue active at `at_ms` without starting playback; optional `cues` previews unsaved edits |
+| GET | `/api/cue_lists/<id>/waveform` | Waveform peaks for the timeline (stored browser-decoded peaks, else a WAV in `~/.qlcplus/audio`) |
+| PUT | `/api/cue_lists/<id>/waveform` | Store peaks the browser decoded from the show's audio, and the file name |
+| DELETE | `/api/cue_lists/<id>/waveform` | Detach the audio (drops the stored peaks) |
 | POST | `/api/chat` | Agentic chat — server-side tool-use loop over Anthropic/OpenAI with access to ~39 tools |
 
 ### `/api/chat` — agentic conversation
